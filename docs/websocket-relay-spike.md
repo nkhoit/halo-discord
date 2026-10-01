@@ -23,9 +23,8 @@ Teardown when the spike ends (deletes the Worker and its Durable Objects):
 cd services\relay; npx wrangler delete halo-relay-spike
 ```
 
-Pending: the P1 re-run after the fixes (needs one accepted UAC prompt for the
-clumsy controller), a subjective play check by a person, and the decision on
-how friends would run the client for a real test.
+Pending: a subjective play check by a person, and the friends test (private
+Access-protected hosting and rooms in the relay; see the plan in progress).
 
 Restart the local setup (PowerShell, repository root):
 
@@ -355,8 +354,15 @@ Live, in a match through the deployed relay:
 
 ### P1 after the fixes
 
-Not run yet: the impaired runs need clumsy, which needs one accepted UAC
-prompt for its controller; the prompt was cancelled twice while no one was at
-the machine. Reconnect does not change the head-of-line behaviour under loss
-that failed P1, and placement changes only the base round trip, so P1 is not
-expected to pass; it should still be re-measured for the record.
+Same method (guest-scoped clumsy, 120 s per profile), relay version
+`a2336159`:
+
+| Relay | Room | P0 RTT p50 / p99 | P1 gaps > 150 ms per min, guest / host | P1 guest gap p99 / max | Snaps, disconnects |
+| --- | --- | --- | --- | --- | --- |
+| 1 socket | SJC | 78 / 200-256 ms | 16.5 / 28.3 (before: 26.5 / 58.6) | 161 / 260 ms | 0, 0 |
+| 2 sockets | LAX | 98 / 269-300 ms | 15 / 43 (before: 41 / 60.5) | 171 / 285 ms | 0, 0 |
+
+Better than before and without disconnects, but still 2.5-7 times the P1 bar
+of 6 per minute: reconnecting does not change head-of-line blocking under
+loss, and placement changes only the base round trip. The verdict stands:
+NO-GO for a TCP relay at 1% loss; acceptable on a clean connection.
