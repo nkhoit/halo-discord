@@ -4,6 +4,52 @@ Is Halo still fun when every multiplayer packet goes through a WebSocket relay
 instead of WebRTC? This note records the test setup, measurements and the
 GO/NO-GO.
 
+## Resume here (paused 2026-10-01)
+
+Done and committed: local Windows build, hidden-page pump fix, `?netstats=1`,
+`services/relay` with tests, the `?transport=relay` client, and local results
+(below). Nothing is deployed.
+
+Pending:
+
+1. Approval to deploy `services/relay` as `halo-relay-spike` to the logged-in
+   Cloudflare account (`cd services/relay && npx wrangler deploy`). Not given
+   yet; do not deploy without it.
+2. The P0-P3 measurement runs (clean; +40 ms with 1% loss; +40 ms with 3% loss;
+   2 s throttle bursts every 30 s) for WebRTC, relay with 1 socket and relay
+   with 2 sockets, then the GO/NO-GO against the bar in the plan.
+3. Decide the test rig. The agreed plan is two of your own machines with clumsy
+   on the guest; machine B needs its own build and maps served on its own
+   `127.0.0.1:8765` and a port forward to machine A's signaling on `:8787`
+   (for example `ssh -L 8787:127.0.0.1:8787 A`, or a `netsh interface
+   portproxy` rule with signaling started with `--ip 0.0.0.0`). The fallback is
+   one machine with clumsy filtering the relay's TCP 443 traffic, which still
+   puts both clients' traffic through the deployed relay.
+
+Restart the local setup (PowerShell, repository root):
+
+```powershell
+# build.ninja (ignored) already names build\emsdk's emcc; if it is missing:
+#   python configure.py --release --pgo=off --lto=off --web-cc=build\emsdk\upstream\emscripten\emcc.exe
+ninja web
+python tools\web_local_config.py --relay http://127.0.0.1:8788   # or the deployed relay URL
+# each in its own terminal:
+python tools\web_serve.py --port 8765
+cd services\signaling; npx wrangler dev --port 8787 --ip 127.0.0.1 --local   # uses the ignored .dev.vars
+cd services\relay; npx wrangler dev --port 8788 --ip 127.0.0.1 --local
+```
+
+Local-only pieces that are not in Git and must exist: `assets\maps` (from
+`tools\xiso_extract.py`), the junction `build\web\assets\maps -> assets\maps`,
+an empty `port\web\assets` directory, and `services\signaling\.dev.vars`
+(`ENVIRONMENT=development`, `TURNSTILE_TEST_BYPASS=true`, random
+`ROOM_ID_SECRET`, `ABUSE_ID_SECRET`, `ADMIN_TOKEN`, `TURNSTILE_SECRET`).
+
+Then open two Chrome profiles at
+`http://127.0.0.1:8765/build/web/halo.html?netstats=1` (add
+`&transport=relay`, optionally `&relaySockets=2`), host in one, join with the
+invite in the other, and read `HaloWebTransport.netStats()` in each.
+
 ## Build
 
 - Native Windows with emsdk 6.0.10 (6.0.9 behaves the same).
