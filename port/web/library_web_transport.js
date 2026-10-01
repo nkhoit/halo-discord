@@ -4,8 +4,8 @@
    supplied by the page: this module owns peer connections and DataChannels,
    but does not know whether offers travel through a Worker, a local test
    harness, or another signalling service.  With configure({ transport:
-   'relay' }) the same peers travel through a WebSocket relay
-   (services/relay) instead, and take no signals. */
+   'relay' }) the same peers travel through a WebSocket relay (server/)
+   instead, and take no signals. */
 
 addToLibrary({
   $HaloWebTransportRuntime__postset: 'HaloWebTransportRuntime.install();',

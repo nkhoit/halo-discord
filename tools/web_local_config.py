@@ -41,7 +41,7 @@ def main() -> int:
     )
     parser.add_argument("--signaling", default="http://127.0.0.1:8787")
     parser.add_argument(
-        "--relay", help="WebSocket relay for ?transport=relay (services/relay)"
+        "--relay", help="WebSocket relay for ?transport=relay (the server/ origin)"
     )
     arguments = parser.parse_args()
 

@@ -2,7 +2,7 @@
 
 /* End-to-end resume through the WebSocket relay: two independent copies of
    the transport (host and guest, each in its own realm with its own Wasm
-   stand-in) talk through an in-memory relay that mirrors services/relay.
+   stand-in) talk through an in-memory relay that mirrors server/src/relay.ts.
    Frames wait "in flight" inside the relay, so dropping a socket or
    restarting the relay really loses them; the reliable stream must still
    arrive exactly once and in order. */
