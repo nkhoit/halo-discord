@@ -83,3 +83,39 @@ Nothing is sent anywhere and nothing changes on the wire. Each window has:
 Host to guest, the game sends both channels every tick (about 34 reliable and
 40 unreliable frames per second), so head-of-line blocking on a reliable
 stream also delays per-tick data.
+
+## WebSocket relay: local results
+
+Use: `python tools/web_local_config.py --relay <relay URL>` after `ninja web`,
+then open the page with `?transport=relay` (and `&relaySockets=2` to split
+reliable and unreliable traffic across two sockets). Rooms and invites still
+come from the signaling service; only gameplay frames change path.
+
+Relay capacity, measured with a synthetic host/guest pair sending 100-byte
+frames each way plus 10 relay echoes a second, against `wrangler dev` on this
+machine:
+
+| Room sockets | 120 frames/s each way | 300 frames/s each way | 800 frames/s each way |
+| --- | --- | --- | --- |
+| hibernatable (`ctx.acceptWebSocket`) | echo grows to ~140 ms | not run | collapses, frames lost |
+| plain (`server.accept()`) | 0.7 ms | 0.5 ms, none lost | 0.6 ms, none lost |
+
+A two-player match is about 300 frames a second through the room in total
+(guest to host about 90 datagrams/s, host to guest about 34 reliable and 40
+unreliable frames/s, plus probes). Through the hibernatable room it backed up
+until relay echoes took 11-13 s and the join failed, so the room uses plain
+WebSockets; a busy room never hibernates anyway. Whether hosted Durable
+Objects share the hibernation dispatch cost was not measured.
+
+Two clients on one machine, local relay, zero added latency, guest moving
+(windows fully in a match only):
+
+| Transport | Ticks/s | Peer RTT p50 | Probe RTT p99 | Per-tick gap p99 (max) | Gaps > 150 ms | Own-unit snaps | Drops |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| WebRTC | 30 | ~0 ms | n/a | 34 ms | 0 | 0 | 0 |
+| relay, 1 socket | 30 | 0.9 ms | 2.9 ms | 17-36 ms (38 ms) | 0 | 0 | 0 |
+| relay, 2 sockets | 30 | 0.8 ms | 2.1 ms | 17-34 ms (34 ms) | 0 | 0 | 0 |
+
+Locally, with no loss, the relay is indistinguishable from WebRTC. The
+question this spike answers is what loss and distance do to it; that needs
+the deployed relay.
