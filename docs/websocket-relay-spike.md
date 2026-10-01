@@ -4,12 +4,13 @@ Is Halo still fun when every multiplayer packet goes through a WebSocket relay
 instead of WebRTC? This note records the test setup, measurements and the
 GO/NO-GO.
 
-## Resume here (updated 2026-10-01)
+## Resume here (paused 2026-10-01)
 
 Done and committed: local Windows build, hidden-page pump fix, `?netstats=1`,
-`services/relay` with tests, the `?transport=relay` client, local results, and
-the P0-P3 runs with a GO/NO-GO (see "Measurements through the deployed
-relay").
+`services/relay` with tests, the `?transport=relay` client, local results,
+the P0-P3 runs with a GO/NO-GO, and the afternoon fixes (room placement,
+reconnect and resume, close logging) with P0/P1 re-measured. Verdict
+unchanged: a TCP relay is fine on a clean connection and NO-GO at 1% loss.
 
 Deployed: `services/relay` as Worker `halo-relay-spike` on the
 cloudflare@khoit.dev account, `https://halo-relay-spike.halo-ce-nkhoit.workers.dev`.
@@ -17,14 +18,35 @@ Current version `a2336159-740f-4168-ad02-c49a832e29af` (resume, room
 placement, close logging); earlier versions `b9dc076d`, `177ec9c5`,
 `f0abcbfd`. ALLOWED_ORIGINS is loopback-only.
 
+The account hit the Workers Free daily Durable Objects limit (100,000
+requests; the soak and the measurement runs used it up). The hosted relay
+errors until 2026-10-02 00:00 UTC. Do not run soaks or long tests against it;
+keep load testing local (`wrangler dev`). A WebSocket message to a Durable
+Object bills as 1/20 of a request, and a two-player match is about 300
+messages a second through the room (about 15 billed requests a second).
+
 Teardown when the spike ends (deletes the Worker and its Durable Objects):
 
 ```powershell
 cd services\relay; npx wrangler delete halo-relay-spike
 ```
 
-Pending: a subjective play check by a person, and the friends test (private
-Access-protected hosting and rooms in the relay; see the plan in progress).
+Pending decisions (nothing started):
+
+1. Hosting platform for the friends test: stay on Cloudflare and upgrade to
+   Workers Paid (about $5/month) first, or move the relay and hosting to Azure.
+2. Approval of the friends-test plan: one Access-protected Worker serving the
+   page, wasm, maps (private R2 bucket, range requests) and relay, verifying
+   `Cf-Access-Jwt-Assertion` itself; room membership moved into the relay
+   (client-generated room ID and invite link, build-ID pin, display names),
+   with the loopback gate and WebRTC default unchanged elsewhere. Suggested
+   additions if approved:
+   - bound and sanitize display names in the relay;
+   - log the Access email per socket, for diagnosing drops;
+   - batch all of a tick's frames into one WebSocket message per socket, to
+     cut billed Durable Object requests.
+
+Also pending: a subjective play check by a person.
 
 Restart the local setup (PowerShell, repository root):
 
