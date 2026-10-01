@@ -253,3 +253,19 @@ describe("frame limits", () => {
     expect(host.frames[0]!.byteLength).toBe(7 + SEQUENCE_BYTES + MAXIMUM_HALO_FRAME_BYTES);
   });
 });
+
+describe("heartbeat", () => {
+  it("keeps answering sockets and drops ones that stop answering pings", async () => {
+    await server.close();
+    server = await start({}, 300, 40);
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST);
+    const guest = await join(server.base, room, "guest", "user-a", GUEST_A);
+    guest.socket.pause();
+    await until(() => server.logs.some((entry) => entry.event === "close" && entry.id === GUEST_A), 1000);
+    expect(server.logs.find((entry) => entry.event === "close" && entry.id === GUEST_A)).toMatchObject({ code: 1006 });
+    await settle();
+    expect(host.socket.readyState).toBe(host.socket.OPEN);
+    expect(host.texts.some((text) => text.type === "peer-down" && text.id === GUEST_A)).toBe(true);
+  });
+});

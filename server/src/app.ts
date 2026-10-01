@@ -24,6 +24,7 @@ import { buildFile, type Context, hostedPage, isolationHeaders, mapFile, serveFi
 import { verifyToken } from "./tokens.ts";
 
 export const AUTH_DEADLINE_MILLISECONDS = 5000;
+export const HEARTBEAT_MILLISECONDS = 30_000;
 
 export interface App {
   server: Server;
@@ -40,7 +41,7 @@ function splitContext(pathname: string): { context: Context; path: string } {
 }
 
 export function createApp(config: Config, discord: DiscordApi | null, log: Log = consoleLog,
-    authDeadlineMilliseconds = AUTH_DEADLINE_MILLISECONDS): App {
+    authDeadlineMilliseconds = AUTH_DEADLINE_MILLISECONDS, heartbeatMilliseconds = HEARTBEAT_MILLISECONDS): App {
   const auth = new Auth(config, discord);
   const relay = new Relay(config.maxRooms, log);
   const origins = new Set([config.publicOrigin, ...config.extraOrigins]);
@@ -113,7 +114,10 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     const query = parseSocketQuery(url);
     if (!ROOM_ID_PATTERN.test(roomId) || !query) return reject(400, "Bad Request");
     if (!origins.has(request.headers.origin ?? "")) return reject(403, "Forbidden");
-    sockets.handleUpgrade(request, stream, head, (socket) => authenticate(socket, roomId, query));
+    sockets.handleUpgrade(request, stream, head, (socket) => {
+      watch(socket);
+      authenticate(socket, roomId, query);
+    });
   });
 
   /* Browsers cannot set headers on a WebSocket, so the token arrives in the
@@ -144,6 +148,26 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       }, message.build);
     });
   }
+
+  /* Protocol pings keep idle sockets open through proxies that close quiet
+     WebSockets (Cloudflare: 100 s) and find peers that vanished without a
+     close; browsers answer them without page code. */
+  const alive = new WeakSet<WebSocket>();
+  function watch(socket: WebSocket): void {
+    alive.add(socket);
+    socket.on("pong", () => alive.add(socket));
+  }
+  const heartbeat = setInterval(() => {
+    for (const socket of sockets.clients) {
+      if (!alive.delete(socket)) {
+        socket.terminate();
+        continue;
+      }
+      socket.ping();
+    }
+  }, heartbeatMilliseconds);
+  heartbeat.unref();
+  server.on("close", () => clearInterval(heartbeat));
 
   return { server, relay, sockets };
 }

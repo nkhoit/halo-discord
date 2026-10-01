@@ -84,10 +84,10 @@ export interface Running {
   close(): Promise<void>;
 }
 
-export async function start(overrides: Partial<Config> = {}, authDeadline = 300): Promise<Running> {
+export async function start(overrides: Partial<Config> = {}, authDeadline = 300, heartbeat = 30_000): Promise<Running> {
   const discord = new FakeDiscord();
   const logs: Record<string, unknown>[] = [];
-  const app = createApp(testConfig(overrides), discord, (entry) => logs.push(entry), authDeadline);
+  const app = createApp(testConfig(overrides), discord, (entry) => logs.push(entry), authDeadline, heartbeat);
   await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const { port } = app.server.address() as AddressInfo;
   return {
