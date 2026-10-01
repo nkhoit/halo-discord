@@ -13,9 +13,9 @@ relay").
 
 Deployed: `services/relay` as Worker `halo-relay-spike` on the
 cloudflare@khoit.dev account, `https://halo-relay-spike.halo-ce-nkhoit.workers.dev`.
-First version `b9dc076d-9f60-4453-a926-64131bfe21ce`; current version
-`177ec9c5-9536-4049-b7e9-f56a9ebbc603` (adds data-center reporting).
-ALLOWED_ORIGINS is loopback-only.
+Current version `a2336159-740f-4168-ad02-c49a832e29af` (resume, room
+placement, close logging); earlier versions `b9dc076d`, `177ec9c5`,
+`f0abcbfd`. ALLOWED_ORIGINS is loopback-only.
 
 Teardown when the spike ends (deletes the Worker and its Durable Objects):
 
@@ -23,8 +23,9 @@ Teardown when the spike ends (deletes the Worker and its Durable Objects):
 cd services\relay; npx wrangler delete halo-relay-spike
 ```
 
-Pending: a subjective play check by a person (the runs used scripted movement),
-and the decision on what to try next (see the verdict).
+Pending: the P1 re-run after the fixes (needs one accepted UAC prompt for the
+clumsy controller), a subjective play check by a person, and the decision on
+how friends would run the client for a real test.
 
 Restart the local setup (PowerShell, repository root):
 
@@ -276,3 +277,86 @@ What would have to change before a relay can pass:
 2. A reconnect-and-resume layer, so a dropped WebSocket does not end a game.
 3. Datagram transport (WebTransport) where the platform allows it; over TCP,
    per-tick traffic cannot avoid head-of-line blocking.
+
+## Fixes after the first verdict (2026-10-01 afternoon)
+
+Relay version `a2336159-740f-4168-ad02-c49a832e29af`.
+
+### Room placement
+
+The host's first connection now creates the room with a Durable Object
+location hint for the host's own location (`request.cf` continent and
+longitude), so a host whose connection happens to land in DFW or BOS no longer
+creates its room there. P0, relay with one socket, three fresh rooms, both
+clients reaching PDX:
+
+| Room | Peer RTT p50 | p99 | One client-to-room leg (echo p50) |
+| --- | --- | --- | --- |
+| before: DFW room, or host on a far edge | 133-162 ms | 232-271 ms | 30-133 ms |
+| before: SJC | 81 ms | 171 ms | 40 ms |
+| after: SJC | 80-82 ms | 134-178 ms | 40-42 ms |
+| after: SJC | 81 ms | 177 ms | 41 ms |
+| after: SEA | 62 ms | 274-285 ms | 31-33 ms |
+
+The hint removes the far rooms, but within `wnam` Cloudflare chose SEA, SJC,
+LAX or DEN, never PDX. With about 20 ms from here to PDX and two legs per
+round trip, the best case is about 60 ms: the original P0 median bar (60 ms)
+is reachable only when the room lands in SEA, and the p99 bar (120 ms) was
+not met in any run. Choosing among several candidate rooms by measured round
+trip would make SEA-like placement the norm; it was not built.
+
+### The 1006 drops
+
+The relay now logs every accept, close and error (code, cleanliness, socket
+age) and every client records its close codes in `?netstats=1`.
+
+- Redeploys: confirmed. The room is terminated ("This script has been
+  upgraded. Please send a new request to connect to the new version.") and
+  every socket in it closes with 1006 at once. During the roll-out, about 15
+  seconds, a reconnect can land on an old instance and be dropped again (seen
+  1-8 s after reconnecting).
+- The other three drops (all before this logging existed) closed only the
+  guest's sockets while the host's sockets in the same room stayed up, so
+  they were not room restarts; they were per-connection, on the client or edge
+  side. They did not recur: a 35-minute soak (4 host/guest rooms, 100
+  frames/s each way, about 4.7 socket-hours) and four game sessions produced
+  no unexplained closes; every logged close was a forced test drop (4999),
+  the redeploy (1006), or a page reload (1001). Root cause not established;
+  the instrumentation will identify the next one, and reconnecting now makes
+  it a sub-second stall instead of the end of a game.
+
+### Reconnect and resume
+
+When a relay socket closes, the client reconnects both sockets to the same
+room with the same identity (250 ms, then 0.5, 1, 2 and 4 s), and the relay
+replaces any stale socket of that identity and re-announces it. Reliable
+frames carry a sequence number and a cumulative acknowledgement; each side
+keeps unacknowledged frames (up to 4 MB, then backpressure), replays them in
+order after its own reconnect or the peer's re-announcement, and delivers
+each sequence number exactly once. The game keeps the peer throughout; only a
+peer without a path for 20 s fails. Datagrams without a path are dropped.
+
+Tests (`port/web/tests/library_web_transport_resume_test.js`): two independent
+copies of the transport talk through an in-memory relay that holds frames in
+flight, so drops really lose data. The reliable streams arrive exactly once
+and in order across a guest drop, a host drop, a sender drop that loses an
+in-flight acknowledgement (replayed duplicates must be discarded), and a
+relay restart; a stale socket's late frames and close are ignored; a peer
+gone past the grace period fails. Disabling the replay or the duplicate check
+makes the test fail. The relay tests cover the replacement and re-announcement.
+
+Live, in a match through the deployed relay:
+
+| Event | Outage | Longest per-tick gap | Game |
+| --- | --- | --- | --- |
+| Guest socket dropped | 413 ms | 673 ms | continued, 30 ticks/s, no snaps |
+| Host socket dropped | 346 ms | 453 ms | continued |
+| Relay redeployed (both sides dropped) | 431-433 ms | 500-527 ms | continued |
+
+### P1 after the fixes
+
+Not run yet: the impaired runs need clumsy, which needs one accepted UAC
+prompt for its controller; the prompt was cancelled twice while no one was at
+the machine. Reconnect does not change the head-of-line behaviour under loss
+that failed P1, and placement changes only the base round trip, so P1 is not
+expected to pass; it should still be re-measured for the record.
