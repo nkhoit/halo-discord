@@ -16,52 +16,51 @@ GO/NO-GO.
   ignored `.dev.vars` holding `ENVIRONMENT=development`,
   `TURNSTILE_TEST_BYPASS=true` and random secrets.
 
-## Test setup: hidden pages break the baseline
+## Hidden pages stalled packet delivery (fixed)
 
 Two instances on one machine showed rubber-banding with stock WebRTC. The
-cause is Chrome's timer throttling of hidden pages, not the netcode and not
+cause was Chrome's timer throttling of hidden pages, not the netcode and not
 CPU/GPU contention.
 
-`library_web_transport.js` moves received packets into WebAssembly from
-main-thread `setTimeout` callbacks (`schedulePump`). The game itself runs on
-a worker's `requestAnimationFrame` and keeps its 30 Hz tick when hidden, but
-in a hidden page (minimized, or otherwise reported hidden) Chrome runs chained
-timers once per second. That page then delivers at most one reliable frame
-and 16 datagrams per second, and its 256-datagram receive queue overflows.
+The game runs on a worker's `requestAnimationFrame` and keeps its 30 Hz tick
+when its page is hidden. `library_web_transport.js`, however, moved received
+packets into WebAssembly from main-thread `setTimeout` callbacks, and Chrome
+runs a hidden page's chained timers about once per second. A hidden page then
+delivered at most one reliable frame and 16 datagrams per second, and its
+256-datagram receive queue overflowed. The pump is now posted through a
+`MessageChannel`, which hidden pages do not throttle; only retries that make
+no progress (a full socket in WebAssembly) fall back to a timer.
 
 Measured on one machine (Ryzen 7 9800X3D, RTX 5090, Chrome 154, 240 Hz),
-Battle Creek Slayer, guest driven by a scripted 40 s mix of runs, rapid
-strafes, reversals and jumps; both pages sampled every 500 ms:
+Battle Creek Slayer, guest driven by a scripted mix of runs, rapid strafes,
+reversals and jumps; both pages sampled every 500 ms. "Flags" are Chrome's
+`--disable-background-timer-throttling --disable-renderer-backgrounding
+--disable-backgrounding-occluded-windows`.
 
-| Run | Flags | Host window | Host fps / ticks | Guest own-unit snaps (> 3.0 units) | Host rejected predictions | Max frame gap |
-| --- | --- | --- | --- | --- | --- | --- |
-| E1/E2 | on | visible, other monitor | 240 / 30.0 | 0 | 0 | 26 ms |
-| E3 (host moving) | on | visible | 240 / 30.0 | 0 | 0 | 250 ms, once |
-| E4 | on | minimized | 240 / 30.0 | 0 | 0 | 18 ms |
-| E5 | off | minimized | 239 / 30.0 | 2, 3.07 units each | 0 | 63 ms |
-| E6 | off | covered by the guest window | 236 / 30.0 | 0 | 0 | 9 ms |
-| E7 | off | visible, other monitor | 235 / 30.0 | 0 | 0 | 9 ms |
+| Run | Pump | Flags | Host window | Length | Host fps / ticks | Host datagram drops | Guest own-unit snaps (> 3.0 units) | Host rejected predictions |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E1/E2 | timer | on | visible, other monitor | 40 s | 240 / 30.0 | not read | 0 | 0 |
+| E3 (host moving) | timer | on | visible | 40 s | 240 / 30.0 | not read | 0 | 0 |
+| E4 | timer | on | minimized | 40 s | 240 / 30.0 | not read | 0 | 0 |
+| E5 | timer | off | minimized | 40 s | 239 / 30.0 | 4,830* | 2, 3.07 units each | 0 |
+| E6 | timer | off | covered by the guest window | 40 s | 236 / 30.0 | not read | 0 | 0 |
+| E7 | timer | off | visible, other monitor | 40 s | 235 / 30.0 | not read | 0 | 0 |
+| E8 | MessageChannel | off | minimized | 40 s | 240 / 30.0 | 0 | 0 | 0 |
+| E9 | MessageChannel | off | minimized | 90 s | 239 / 30.0 | 0 | 0 | 0 |
 
-In E5 the hidden host's chained `setTimeout(1)` fired every ~1000 ms (1-5 ms
-when visible) and the host dropped 4,830 of the guest's datagrams. It applied
-the guest's predicted position up to a second late, so the position it sent
-back was more than `LOCAL_CORRECTION_TOLERANCE` (3.0 units) behind and the
-guest snapped back: rubber-banding. Each instance used about 2.5 ms of CPU
-per frame, so two instances on this machine do not contend.
+*Read once after E5-E7 and a further 30 s with the host minimized; the host was hidden only during E5 and that probe. In E5 and E8 the hidden host's chained `setTimeout(1)` fired every ~1000 ms
+(1-5 ms when visible). With the timer pump the host applied the guest's
+predicted position up to a second late, so the position it sent back was more
+than `LOCAL_CORRECTION_TOLERANCE` (3.0 units) behind and the guest snapped
+back. With the MessageChannel pump the same throttling no longer reaches
+packet delivery.
 
-With localhost and zero added latency, nothing in the netcode itself snaps:
-no own-unit corrections and no rejected predictions in either direction.
+Frame pacing was clean in every run (about 2.5 ms of CPU per frame per
+instance; worst frame gaps 9-80 ms, with a single 250 ms host stall in E3), so
+two instances on this machine do not contend. With localhost and zero added
+latency the netcode itself never snapped: no own-unit corrections and no
+rejected predictions in either direction.
 
-Required setup for every measurement here:
-
-- Launch each Chrome with `--disable-background-timer-throttling
-  --disable-renderer-backgrounding --disable-backgrounding-occluded-windows`
-  (test only), and
-- keep both windows visible and not minimized (one per monitor, or one per
-  machine).
-
-Product consequence, independent of transport: a player whose page is hidden
-(a host who minimizes the window or switches away) stalls packet delivery for
-their machine. In a Discord Activity that is a host alt-tabbing. Scheduling
-the pump with something hidden pages do not throttle (a `MessageChannel`, or
-delivery directly from the socket's message handler) would remove it.
+Measurement setup: keep both windows visible where practical. The Chrome
+flags above are optional belt-and-braces for measurement runs; the baseline
+no longer depends on them.
