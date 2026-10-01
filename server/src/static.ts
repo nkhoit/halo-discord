@@ -1,0 +1,108 @@
+/* The game page and its maps. Only an allowlist of files is reachable, and
+   maps need a session: the page shell and wasm are public, game data is not. */
+
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { join } from "node:path";
+
+/* ui.map and the stock multiplayer maps; never the campaign. */
+export const MAPS = new Set([
+  "ui.map",
+  "beavercreek.map", "bloodgulch.map", "boardingaction.map", "carousel.map", "chillout.map",
+  "damnation.map", "hangemhigh.map", "longest.map", "prisoner.map", "putput.map", "ratrace.map",
+  "sidewinder.map", "wizard.map",
+]);
+
+const BUILD_FILES: Record<string, string> = {
+  "halo.html": "text/html; charset=utf-8",
+  "halo.js": "text/javascript; charset=utf-8",
+  "halo.wasm": "application/wasm",
+};
+
+const UI_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  svg: "image/svg+xml",
+};
+
+/* "page": a normal top-level page, isolated with COOP/COEP. "activity": the
+   Discord Activity iframe, where only Document-Isolation-Policy works. */
+export type Context = "page" | "activity";
+
+export function isolationHeaders(context: Context): Record<string, string> {
+  const common = {
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+  };
+  return context === "activity" ?
+    { ...common, "Document-Isolation-Policy": "isolate-and-require-corp" } :
+    { ...common, "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" };
+}
+
+/* The build file for a request path relative to the site root, or null. */
+export function buildFile(path: string): { file: string; type: string } | null {
+  if (Object.hasOwn(BUILD_FILES, path)) return { file: path, type: BUILD_FILES[path]! };
+  const ui = /^assets\/ui\/((?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\.(png|jpg|svg)$/.exec(path);
+  if (ui) return { file: path, type: UI_TYPES[ui[2]!]! };
+  return null;
+}
+
+export function mapFile(path: string): string | null {
+  const match = /^assets\/maps\/([a-z0-9]+\.map)$/.exec(path);
+  return match && MAPS.has(match[1]!) ? match[1]! : null;
+}
+
+export function parseRange(header: string | undefined, size: number):
+    { start: number; end: number } | "unsatisfiable" | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  /* Multiple or malformed ranges: serve the whole file, as RFC 9110 allows. */
+  if (!match || (!match[1] && !match[2])) return null;
+  if (!match[1]) {
+    const suffix = Number(match[2]);
+    if (!suffix || !size) return "unsatisfiable";
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const end = match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+  if (start >= size || end < start) return "unsatisfiable";
+  return { start, end };
+}
+
+export async function serveFile(request: IncomingMessage, response: ServerResponse, directory: string,
+    file: string, type: string, headers: Record<string, string>, ranges: boolean): Promise<void> {
+  const path = join(directory, file);
+  let size: number;
+  try {
+    const info = await stat(path);
+    if (!info.isFile()) throw new Error("not a file");
+    size = info.size;
+  } catch {
+    response.writeHead(404, { ...headers, "Content-Type": "text/plain" }).end("not found");
+    return;
+  }
+  const base = { ...headers, "Content-Type": type, ...(ranges ? { "Accept-Ranges": "bytes" } : {}) };
+  const range = ranges && request.method === "GET" ? parseRange(request.headers.range, size) : null;
+  if (range === "unsatisfiable") {
+    response.writeHead(416, { ...base, "Content-Range": `bytes */${size}` }).end();
+    return;
+  }
+  if (range) {
+    response.writeHead(206, {
+      ...base,
+      "Content-Range": `bytes ${range.start}-${range.end}/${size}`,
+      "Content-Length": String(range.end - range.start + 1),
+    });
+  } else {
+    response.writeHead(200, { ...base, "Content-Length": String(size) });
+  }
+  if (request.method === "HEAD") {
+    response.end();
+    return;
+  }
+  const stream = createReadStream(path, range ? { start: range.start, end: range.end } : {});
+  stream.on("error", () => response.destroy());
+  stream.pipe(response);
+}
