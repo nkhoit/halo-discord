@@ -8,6 +8,7 @@
 #include <emscripten/heap.h>
 #include <emscripten/wasmfs.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,30 @@ EMSCRIPTEN_KEEPALIVE double platform_web_campaign_load_progress(void)
 EMSCRIPTEN_KEEPALIVE double platform_web_map_load_progress(void)
 {
 	return platform_web_campaign_load_progress();
+}
+
+/* (port/linux/game/network_distributed.c, Xbox ABI float real) */
+extern void network_distributed_web_statistics(long *ticks, long *own_corrections,
+	float *own_correction_maximum_squared, long *rejected_predictions);
+
+/* Local network statistics for ?netstats=1 (library_web_transport.js):
+ticks sent, own units put back by the host, the farthest of those in world
+units, and predictions the host refused. */
+EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
+{
+	static double values[4];
+	long ticks;
+	long own_corrections;
+	float own_correction_maximum_squared;
+	long rejected_predictions;
+
+	network_distributed_web_statistics(&ticks, &own_corrections,
+		&own_correction_maximum_squared, &rejected_predictions);
+	values[0] = (double)ticks;
+	values[1] = (double)own_corrections;
+	values[2] = sqrt((double)own_correction_maximum_squared);
+	values[3] = (double)rejected_predictions;
+	return values;
 }
 
 EMSCRIPTEN_KEEPALIVE long platform_web_campaign_load_index(void)

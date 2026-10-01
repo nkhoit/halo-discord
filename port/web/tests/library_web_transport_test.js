@@ -102,6 +102,8 @@ HaloWebTransportRuntime.install();
     remoteIdentifier: '020000000002',
   });
   const record = HaloWebTransportRuntime.peersById.get('friend');
+  assert.equal(record.netstats, null, 'netstats is off without ?netstats=1');
+  assert.throws(() => HaloWebTransport.netStats(), /netstats=1/);
   assert.equal(record.reliable.label, 'halo-reliable-v1');
   assert.equal(record.reliable.ordered, true);
   assert.equal(record.reliable.maxRetransmits, null);

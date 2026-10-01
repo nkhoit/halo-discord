@@ -42,6 +42,9 @@ static struct
 	unsigned long over_budget;
 	unsigned long stops;
 	long stop_connection;
+	double last_start;
+	double gap_maximum;
+	unsigned long hitches;
 } web_frame_meter;
 #endif
 
@@ -459,8 +462,20 @@ void platform_video_drawable_size(int *width, int *height)
 #ifdef HALO_WEB
 void platform_web_frame_begin(void)
 {
+	double now = emscripten_get_now();
+
+	if (web_frame_meter.last_start > 0.0)
+	{
+		double gap = now - web_frame_meter.last_start;
+
+		if (gap > web_frame_meter.gap_maximum)
+			web_frame_meter.gap_maximum = gap;
+		if (gap > 50.0)
+			web_frame_meter.hitches++;
+	}
+	web_frame_meter.last_start = now;
 	web_frame_meter.starts++;
-	web_frame_meter.callback_start = emscripten_get_now();
+	web_frame_meter.callback_start = now;
 }
 
 void platform_web_frame_end(void)
@@ -520,6 +535,21 @@ EMSCRIPTEN_KEEPALIVE double platform_web_profile_callback_total(void)
 EMSCRIPTEN_KEEPALIVE double platform_web_profile_callback_maximum(void)
 {
 	return web_frame_meter.callback_maximum;
+}
+
+/* the longest time between two frames since the last call */
+EMSCRIPTEN_KEEPALIVE double platform_web_profile_take_gap_maximum(void)
+{
+	double gap = web_frame_meter.gap_maximum;
+
+	web_frame_meter.gap_maximum = 0.0;
+	return gap;
+}
+
+/* frames that started more than 50 ms after the one before */
+EMSCRIPTEN_KEEPALIVE unsigned long platform_web_profile_hitches(void)
+{
+	return web_frame_meter.hitches;
 }
 #endif
 

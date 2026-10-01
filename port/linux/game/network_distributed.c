@@ -191,6 +191,31 @@ static struct
 	long corrections;
 } distributed_statistics;
 
+#ifdef HALO_WEB
+/* for the browser's local network statistics (?netstats=1,
+port/web/src/web_platform.c): the ticks sent, how often and how far the host
+put a client's own units back, and the predictions the host refused */
+static struct
+{
+	long ticks;
+	long own_corrections;
+	real own_correction_maximum_squared;
+	long rejected_predictions;
+} distributed_web_statistics;
+
+void network_distributed_web_statistics(
+	long *ticks,
+	long *own_corrections,
+	real *own_correction_maximum_squared,
+	long *rejected_predictions)
+{
+	*ticks = distributed_web_statistics.ticks;
+	*own_corrections = distributed_web_statistics.own_corrections;
+	*own_correction_maximum_squared = distributed_web_statistics.own_correction_maximum_squared;
+	*rejected_predictions = distributed_web_statistics.rejected_predictions;
+}
+#endif
+
 /* ---------- shared (network_distributed.h) */
 
 void network_distributed_statistics(
@@ -464,6 +489,10 @@ static void distributed_handle_predictions(
 
 			if (dx * dx + dy * dy + dz * dz <= HOST_ACCEPT_TOLERANCE * HOST_ACCEPT_TOLERANCE)
 				distributed_apply_state(unit_index, state, 0.0f);
+#ifdef HALO_WEB
+			else
+				distributed_web_statistics.rejected_predictions++;
+#endif
 		}
 	}
 }
@@ -574,6 +603,23 @@ static void distributed_handle_unit_states(
 		if (TEST_FLAG(state->flags, _distributed_unit_placed_bit) &&
 			object_get(unit_index)->object.parent_object_index == NONE)
 		{
+#ifdef HALO_WEB
+			if (local)
+			{
+				struct object_datum *object = object_get(unit_index);
+				real dx = state->position.x - object->object.position.x;
+				real dy = state->position.y - object->object.position.y;
+				real dz = state->position.z - object->object.position.z;
+				real distance_squared = dx * dx + dy * dy + dz * dz;
+
+				if (distance_squared > LOCAL_CORRECTION_TOLERANCE * LOCAL_CORRECTION_TOLERANCE)
+				{
+					distributed_web_statistics.own_corrections++;
+					if (distance_squared > distributed_web_statistics.own_correction_maximum_squared)
+						distributed_web_statistics.own_correction_maximum_squared = distance_squared;
+				}
+			}
+#endif
 			distributed_apply_state(unit_index, state, local ? LOCAL_CORRECTION_TOLERANCE : REMOTE_CORRECTION_TOLERANCE);
 		}
 	}
@@ -788,6 +834,9 @@ void network_distributed_tick(
 
 	if (!network_game_distributed() || game_time_get() == distributed_last_sent_time)
 		return;
+#ifdef HALO_WEB
+	distributed_web_statistics.ticks++;
+#endif
 	distributed_last_sent_time = game_time_get();
 	if (connection == _game_connection_network_server)
 	{

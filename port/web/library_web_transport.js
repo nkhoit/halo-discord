@@ -33,6 +33,13 @@ addToLibrary({
        spinning after this many and fall back to a timer. */
     IDLE_PUMP_RETRY_LIMIT: 32,
     pumping: false,
+    /* ?netstats=1: local measurement only, never sent anywhere. */
+    netstatsEnabled: false,
+    netstatsWindow: null,
+    netstatsHistory: [],
+    NETSTATS_HISTORY_WINDOWS: 720,
+    NETSTATS_GAP_SAMPLES: 8192,
+    NETSTATS_LOG_MILLISECONDS: 5000,
 
     normalizeAddress: function(address) {
       return address >>> 0;
@@ -329,8 +336,132 @@ addToLibrary({
         record.unreliableQueue.push(bytes);
         record.unreliableQueuedBytes += bytes.byteLength;
       }
+      if (record.netstats) runtime.netstatsArrival(record.netstats[reliable ? 0 : 1], bytes.byteLength);
       runtime.idlePumpRetries = 0;
       runtime.schedulePump();
+    },
+
+    netstatsChannel: function() {
+      return { frames: 0, bytes: 0, last: 0, gaps: [], gapMax: 0, over150: 0, over300: 0 };
+    },
+
+    netstatsArrival: function(channel, length) {
+      var now = performance.now();
+      if (channel.last) {
+        var gap = now - channel.last;
+        if (channel.gaps.length < HaloWebTransportRuntime.NETSTATS_GAP_SAMPLES) channel.gaps.push(gap);
+        if (gap > channel.gapMax) channel.gapMax = gap;
+        if (gap > 150) channel.over150++;
+        if (gap > 300) channel.over300++;
+      }
+      channel.last = now;
+      channel.frames++;
+      channel.bytes += length;
+    },
+
+    netstatsTakeChannel: function(channel, seconds) {
+      var gaps = channel.gaps.slice().sort(function(a, b) { return a - b; });
+      var percentile = function(fraction) {
+        return gaps.length ? +gaps[Math.min(gaps.length - 1, Math.floor(gaps.length * fraction))].toFixed(1) : null;
+      };
+      var result = {
+        framesPerSecond: +(channel.frames / seconds).toFixed(1),
+        bytesPerSecond: Math.round(channel.bytes / seconds),
+        gapP50Ms: percentile(0.5),
+        gapP99Ms: percentile(0.99),
+        gapMaxMs: +channel.gapMax.toFixed(1),
+        gapsOver150Ms: channel.over150,
+        gapsOver300Ms: channel.over300,
+      };
+      channel.frames = 0;
+      channel.bytes = 0;
+      channel.gaps = [];
+      channel.gapMax = 0;
+      channel.over150 = 0;
+      channel.over300 = 0;
+      return result;
+    },
+
+    netstatsGame: function() {
+      var game = {};
+      var values = Module['_platform_web_netstats'];
+      if (typeof values === 'function') {
+        var index = values() >>> 3;
+        game.ticks = HEAPF64[index];
+        game.ownCorrections = HEAPF64[index + 1];
+        game.ownCorrectionMaxUnits = +HEAPF64[index + 2].toFixed(2);
+        game.rejectedPredictions = HEAPF64[index + 3];
+      }
+      if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
+        game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
+        game.frameHitches = Module['_platform_web_profile_hitches']();
+      }
+      return game;
+    },
+
+    /* One measurement window: everything since the previous window. */
+    netstatsTakeWindow: async function() {
+      var runtime = HaloWebTransportRuntime;
+      var now = performance.now();
+      var previous = runtime.netstatsWindow || { time: now, game: {} };
+      var seconds = Math.max(0.001, (now - previous.time) / 1000);
+      var game = runtime.netstatsGame();
+      var delta = function(name) {
+        return game[name] !== undefined && previous.game[name] !== undefined ?
+          game[name] - previous.game[name] : null;
+      };
+      var peers = [];
+      for (var record of runtime.peersById.values()) {
+        if (!record.netstats) continue;
+        var rttMs = null;
+        try {
+          (await record.pc.getStats()).forEach(function(report) {
+            if (report.type === 'candidate-pair' && report.nominated &&
+                report.state === 'succeeded' && report.currentRoundTripTime !== undefined) {
+              rttMs = +(report.currentRoundTripTime * 1000).toFixed(1);
+            }
+          });
+        } catch (error) { /* closed while measuring */ }
+        peers.push({
+          peerId: record.peerId,
+          rttMs: rttMs,
+          droppedDatagrams: record.droppedDatagrams - (record.netstatsDropped || 0),
+          reliableQueued: record.reliableQueue.length,
+          unreliableQueued: record.unreliableQueue.length,
+          reliable: runtime.netstatsTakeChannel(record.netstats[0], seconds),
+          unreliable: runtime.netstatsTakeChannel(record.netstats[1], seconds),
+        });
+        record.netstatsDropped = record.droppedDatagrams;
+      }
+      runtime.netstatsWindow = { time: now, game: game };
+      return {
+        at: new Date().toISOString(),
+        windowSeconds: +seconds.toFixed(2),
+        visibility: document.visibilityState,
+        game: {
+          ticksPerSecond: delta('ticks') === null ? null : +(delta('ticks') / seconds).toFixed(1),
+          ownCorrections: delta('ownCorrections'),
+          ownCorrectionMaxUnits: game.ownCorrectionMaxUnits,
+          rejectedPredictions: delta('rejectedPredictions'),
+          frameGapMaxMs: game.frameGapMaxMs,
+          frameHitches: delta('frameHitches'),
+        },
+        peers: peers,
+      };
+    },
+
+    startNetstatsLog: function() {
+      var runtime = HaloWebTransportRuntime;
+      runtime.netstatsTakeWindow();
+      setInterval(function() {
+        runtime.netstatsTakeWindow().then(function(stats) {
+          runtime.netstatsHistory.push(stats);
+          if (runtime.netstatsHistory.length > runtime.NETSTATS_HISTORY_WINDOWS) {
+            runtime.netstatsHistory.shift();
+          }
+          console.info('[netstats] ' + JSON.stringify(stats));
+        });
+      }, runtime.NETSTATS_LOG_MILLISECONDS);
     },
 
     deliverOne: function(record, reliable) {
@@ -467,6 +598,8 @@ addToLibrary({
         reliableQueuedBytes: 0,
         unreliableQueuedBytes: 0,
         droppedDatagrams: 0,
+        netstats: runtime.netstatsEnabled ?
+          [runtime.netstatsChannel(), runtime.netstatsChannel()] : null,
         needsStateSync: true,
         lastPublicState: null,
         removed: false,
@@ -629,6 +762,9 @@ addToLibrary({
     install: function() {
       if (typeof window === 'undefined' || window.HaloWebTransport) return;
       var runtime = HaloWebTransportRuntime;
+      runtime.netstatsEnabled = !!window.location &&
+        /[?&]netstats=1(&|$)/.test(window.location.search);
+      if (runtime.netstatsEnabled) runtime.startNetstatsLog();
       window.HaloWebTransport = Object.freeze({
         configure: function(options) {
           options = options || {};
@@ -661,6 +797,11 @@ addToLibrary({
           var record = runtime.peersById.get(peerId);
           if (!record || record.removed) throw new Error('Unknown peer: ' + peerId);
           return record.pc.getStats();
+        },
+        /* Only with ?netstats=1: the logged windows, oldest first (an hour). */
+        netStats: function() {
+          if (!runtime.netstatsEnabled) throw new Error('Open the page with ?netstats=1');
+          return runtime.netstatsHistory.slice();
         },
         isSupported: function() { return typeof RTCPeerConnection === 'function'; },
       });

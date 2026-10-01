@@ -64,3 +64,22 @@ rejected predictions in either direction.
 Measurement setup: keep both windows visible where practical. The Chrome
 flags above are optional belt-and-braces for measurement runs; the baseline
 no longer depends on them.
+
+## Measuring: `?netstats=1`
+
+Open the page with `?netstats=1` to log a measurement window to the console
+every 5 s; `HaloWebTransport.netStats()` returns the last hour of windows.
+Nothing is sent anywhere and nothing changes on the wire. Each window has:
+
+- `game`: ticks per second, own-unit corrections from the host (the
+  rubber-band count, > 3.0 world units) and the largest since start, the
+  predictions the host refused (> 3.5 units), the longest frame gap and frames
+  more than 50 ms apart.
+- per peer: round-trip time (WebRTC's selected candidate pair), datagrams
+  dropped from the receive queue, queue depths, and for each channel frames and
+  bytes per second and receive gaps (median, p99, maximum, counts over 150 and
+  300 ms).
+
+Host to guest, the game sends both channels every tick (about 34 reliable and
+40 unreliable frames per second), so head-of-line blocking on a reliable
+stream also delays per-tick data.

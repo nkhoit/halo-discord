@@ -132,9 +132,10 @@ function frame(marker) {
   assert.deepEqual(received.map(bytes => bytes[4]), [7, 8]);
 
   runtime.pump = pump;
-  runtime.pumpChannel.port1.close();
   console.log('library_web_transport pump tests passed');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;
+}).finally(() => {
+  if (runtime.pumpChannel) runtime.pumpChannel.port1.close();
 });
