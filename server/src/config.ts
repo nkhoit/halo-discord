@@ -37,7 +37,7 @@ export function isLoopbackHost(host: string): boolean {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const host = env.HOST?.trim() || "127.0.0.1";
-  const port = Number(env.PORT ?? 8080);
+  const port = Number(env.PORT ?? 8090);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT is invalid");
   const publicOrigin = new URL(required(env, "PUBLIC_ORIGIN")).origin;
   const tokenSecret = required(env, "TOKEN_SECRET");

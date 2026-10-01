@@ -102,7 +102,7 @@ describe("configuration", () => {
   };
 
   it("loads a production configuration", () => {
-    expect(loadConfig(base)).toMatchObject({ host: "127.0.0.1", port: 8080, devLogin: false,
+    expect(loadConfig(base)).toMatchObject({ host: "127.0.0.1", port: 8090, devLogin: false,
       discord: { clientId: "1", guildId: "3" } });
   });
 
