@@ -4,94 +4,83 @@ Is Halo still fun when every multiplayer packet goes through a WebSocket relay
 instead of WebRTC? This note records the test setup, measurements and the
 GO/NO-GO.
 
-## Resume here (paused 2026-10-01)
+## Resume here (2026-10-01 evening)
 
-Done and committed: local Windows build, hidden-page pump fix, `?netstats=1`,
-`services/relay` with tests, the `?transport=relay` client, local results,
-the P0-P3 runs with a GO/NO-GO, and the afternoon fixes (room placement,
-reconnect and resume, close logging) with P0/P1 re-measured. Verdict
-unchanged: a TCP relay is fine on a clean connection and NO-GO at 1% loss.
+The runtime no longer uses Cloudflare. `server/` is one Node process that
+serves the page, the multiplayer maps, Discord login and the relay with room
+membership; [halo-server.md](halo-server.md) is its runbook. `services/relay`
+is gone from the tree and CI checks `server/` instead; the deployed Worker
+`halo-relay-spike` still exists (deletion awaits approval, command below).
+Verified end to end locally and in a container on forge. Revised verdict:
+conditional GO, see [Self-hosted server](#self-hosted-server-2026-10-01-evening).
 
-Deployed: `services/relay` as Worker `halo-relay-spike` on the
-cloudflare@khoit.dev account, `https://halo-relay-spike.halo-ce-nkhoit.workers.dev`.
-Current version `a2336159-740f-4168-ad02-c49a832e29af` (resume, room
-placement, close logging); earlier versions `b9dc076d`, `177ec9c5`,
-`f0abcbfd`. ALLOWED_ORIGINS is loopback-only.
+Decisions taken by the coordinating chat on the user's behalf, with reasons:
 
-The account hit the Workers Free daily Durable Objects limit (100,000
-requests; the soak and the measurement runs used it up). The hosted relay
-errors until 2026-10-02 00:00 UTC. Do not run soaks or long tests against it;
-keep load testing local (`wrangler dev`). A WebSocket message to a Durable
-Object bills as 1/20 of a request, and a two-player match is about 300
-messages a second through the room (about 15 billed requests a second).
+1. Self-host instead of Workers and Durable Objects: no per-request billing,
+   rooms in memory, and the same process can run on forge, an Azure VM or
+   anywhere behind cloudflared or Caddy.
+2. Maps are authorized by an HttpOnly session cookie rather than a fetch
+   wrapper adding a header. Same-origin fetches from every game thread carry
+   it with no Wasm or worker changes, and the token never appears in a URL or
+   in JavaScript-readable storage. The relay WebSocket sends a token from
+   `/auth/session` as its first message (browsers cannot set WebSocket
+   headers).
+3. The server rewrites `halo.html` for hosted use (relay rooms, no signaling
+   or Turnstile, game starts after a session exists), so a plain `ninja web`
+   output is deployable and nothing needs staging.
+4. Rooms: the host's page makes a random 128-bit room id; the invite is
+   `#room=<id>`, a fragment, so it is not sent to the server or logged.
+5. Batching is per game frame, not per 30 Hz tick: per tick would add up to
+   33 ms. Per frame cuts relay messages by 31% (guest) and 65% (host) for
+   about 2 ms per hop. Kept on; `?relayBatch=0` turns it off.
+6. The server pings every socket every 30 s, because Cloudflare closes
+   WebSockets idle for 100 s and a host alone in a lobby sends nothing.
+7. The page is served at `/` without redirects, because behind the Discord
+   Activity proxy the browser's path lacks the server's `/activity` prefix.
 
-Teardown when the spike ends (deletes the Worker and its Durable Objects):
+Pending, needing the user:
 
-```powershell
-cd services\relay; npx wrangler delete halo-relay-spike
-```
-
-Pending decisions (nothing started):
-
-1. Hosting platform for the friends test: stay on Cloudflare and upgrade to
-   Workers Paid (about $5/month) first, or move the relay and hosting to Azure.
-2. Approval of the friends-test plan (revised 2026-10-01: Discord auth instead
-   of Cloudflare Access; no Access or Zero Trust steps):
-   - Hosting: one Worker serving the page, wasm, maps (private R2 bucket, no
-     public URL, range requests) and the relay. The page shell and wasm may be
-     public; maps and relay require a valid token.
-   - Auth: Discord OAuth2 (`identify guilds`; `guilds.members.read` if role
-     checks are wanted later). The Worker exchanges the code server-side
-     (client secret as a Worker secret), confirms the user is in the
-     configured guild ID, and issues a short-lived HMAC-signed token bound to
-     the Discord user ID (about 1 h). Friends test: a "Log in with Discord"
-     redirect flow on the hosted page. Discord Activity later: the Embedded
-     App SDK authorize/authenticate flow against the same token endpoint.
-   - Tokens never go in URLs. Fetches use an Authorization header where
-     possible. The relay WebSocket authenticates with its first message
-     (browsers cannot set WebSocket headers) under a short deadline. FetchFS
-     map loads need a way to carry the token without query strings:
-     investigate a fetch wrapper (the page already wraps fetch for map paths
-     in `fetch_path_normalization.js`) versus a same-site cookie set by the
-     Worker after login, and justify the choice.
-   - The relay derives each player's identity from the token (Discord user
-     ID), not from client claims; display names can come from Discord.
-   - Rooms: membership moves into the relay (client-generated room ID and
-     invite link, build-ID pin, display names); the loopback gate and WebRTC
-     default stay unchanged elsewhere.
-   - Additions: bound and sanitize display names; log the Discord user ID per
-     socket for diagnosing drops; batch all of a tick's frames into one
-     WebSocket message per socket to cut billed Durable Object requests.
-   - Needed from the user when implementation starts: the Discord application
-     ID and client secret (reuse the probe app 1555066217545605222 or create a
-     new one), the redirect URI registration, and the guild ID.
-
-Also pending: a subjective play check by a person.
+- Discord application: OAuth redirect URI, client secret and server ID into
+  `server/.env` (steps in the runbook).
+- cloudflared on forge: install, `cloudflared tunnel login`, tunnel, DNS
+  route, service (steps in the runbook).
+- Approval to delete the Worker:
+  `npx wrangler delete --name halo-relay-spike` (logged-in Cloudflare
+  account).
+- Optional: repeat P1 with clumsy against the Node relay (needs UAC) to
+  cross-check the netem rig; netem already reproduced the Cloudflare numbers
+  on an equivalent path.
+- A subjective play check by a person, then the friends test.
+- Discord Activity client wiring (Embedded App SDK authorize, then
+  `POST /auth/activity`); the server side exists, the page does not use it yet.
 
 Restart the local setup (PowerShell, repository root):
 
 ```powershell
-# build.ninja (ignored) already names build\emsdk's emcc; if it is missing:
-#   python configure.py --release --pgo=off --lto=off --web-cc=build\emsdk\upstream\emscripten\emcc.exe
-ninja web
-python tools\web_local_config.py --relay http://127.0.0.1:8788   # or the deployed relay URL
-# each in its own terminal:
-python tools\web_serve.py --port 8765
-cd services\signaling; npx wrangler dev --port 8787 --ip 127.0.0.1 --local   # uses the ignored .dev.vars
-cd services\relay; npx wrangler dev --port 8788 --ip 127.0.0.1 --local
+ninja web                      # build.ninja names build\emsdk's emcc
+cd server; npm ci; npm start   # server\.env as in docs\halo-server.md (DEV_LOGIN=1)
 ```
 
-Local-only pieces that are not in Git and must exist: `assets\maps` (from
+Open `http://127.0.0.1:8090/?netstats=1` in one Chrome profile (dev login as
+"Developer") and
+`http://127.0.0.1:8090/auth/dev-login?name=Guest&return=%2F%3Fnetstats%3D1`
+in another; host in the first and open the `#room=` invite in the second.
+The WebRTC baseline still runs as before: `python tools\web_serve.py --port
+8765` plus `services\signaling` under `wrangler dev`, page
+`http://127.0.0.1:8765/build/web/halo.html`.
+
+Local-only pieces that are not in Git: `assets\maps` (from
 `tools\xiso_extract.py`), the junction `build\web\assets\maps -> assets\maps`,
-an empty `port\web\assets` directory, and `services\signaling\.dev.vars`
-(`ENVIRONMENT=development`, `TURNSTILE_TEST_BYPASS=true`, random
-`ROOM_ID_SECRET`, `ABUSE_ID_SECRET`, `ADMIN_TOKEN`, `TURNSTILE_SECRET`).
+an empty `port\web\assets` directory, `server\.env`, and
+`services\signaling\.dev.vars` for the WebRTC baseline.
 
-Then open two Chrome profiles at
-`http://127.0.0.1:8765/build/web/halo.html?netstats=1` (add
-`&transport=relay`, optionally `&relaySockets=2`), host in one, join with the
-invite in the other, and read `HaloWebTransport.netStats()` in each.
+Forge (`ssh forge@forge.story-nessie.ts.net`): `~/halo-discord/{build,maps,server}`,
+image `halo-server`, network `halo-net`, netem script
+`~/halo-discord/halo-netem.sh` (container netns only). The test container is
+stopped; the user's production container will use the real `.env`.
 
+Superseded Cloudflare history follows; the measurement sections stay as
+recorded.
 ## Build
 
 - Native Windows with emsdk 6.0.10 (6.0.9 behaves the same).
@@ -408,3 +397,102 @@ Better than before and without disconnects, but still 2.5-7 times the P1 bar
 of 6 per minute: reconnecting does not change head-of-line blocking under
 loss, and placement changes only the base round trip. The verdict stands:
 NO-GO for a TCP relay at 1% loss; acceptable on a clean connection.
+
+## Self-hosted server (2026-10-01 evening)
+
+### What it is
+
+`server/` replaces the Worker: rooms in memory, the same relay wire
+protocol, plus authentication by first message, room membership
+(`ready`/`peer-up`/`peer-down` with Discord display names, bounded and
+sanitized), a build-ID pin, one host per room, stale-socket replacement, a
+64-room cap, per-frame batching (`0x80`, then length-prefixed frames, up to
+64 KiB) and 30 s protocol pings. 46 tests (`npm run check`) cover auth,
+admission, routing and sender stamping, caps, malformed frames and batches,
+replacement, the heartbeat, the static allowlist, path traversal and byte
+ranges. The transport's resume test drives the client side through an
+in-memory relay with batches and authentication.
+
+### End to end, two Chrome profiles
+
+Locally (server on `127.0.0.1:8090`, dev login) and in the `halo-server`
+container on forge (tailnet origin treated as secure by a test-only Chrome
+flag; sessions minted with the container's secret): dev login, host creates a
+room, guest opens the `#room=` link, the page logs in first if needed, guest
+joins the lobby with the host's Discord-style name in the roster, the match
+runs at 30 ticks/s on both. Forced drops (`debugDropRelay()`) mid-match: guest
+socket back in 254 ms, host socket back in 254 ms; the host replayed 21
+reliable frames and the guest discarded 2 duplicates; 30 ticks/s and no
+snaps throughout. A host alone in its lobby without `?netstats=1` stayed
+connected for more than 100 s on server pings.
+
+### Batching
+
+P0, 120 s, guest moving, loopback:
+
+| | Messages/s guest / host | Frames per message guest / host | Probe RTT p50 guest / host |
+| --- | --- | --- | --- |
+| Batching off | 160 / 141 | 1.0 / 1.0 | 0.5 / 0.6 ms |
+| Batching on | 110 / 50 | 1.46 / 2.83 | 4.7 / 5.9 ms |
+
+Batches flush at the end of each game frame (render rate, about 110 a second
+here), with a 4 ms timer as fallback. The probe round trip waits for two
+flushes because probes and pongs are produced outside game frames; game
+frames leave at the end of the frame that produced them, so their added delay
+is part of one frame per hop. Under P1 (below) one unbatched run gave 0.48
+gaps per minute at the guest against 1.5-3.84 in three batched runs; all pass,
+and a single run cannot separate a small batching cost from run-to-run noise.
+
+### Impairment on forge (netem)
+
+Rig: the `halo-server` container on forge (LAN, about 1 ms from the PC), two
+Chrome profiles on the PC, same scripted guest movement, 120 s per profile,
+same `?netstats=1` summary. netem runs only inside the container's network
+namespace: an egress prio/netem qdisc for packets to the impaired client's
+TCP port and an ifb device (also in that namespace) for packets from it, so
+each direction gets the delay and loss, and only for that client. Verified:
+40 ms each way on the guest's port moved the guest's relay echo from 4.9 to
+84.8 ms while the host's stayed at 1.6-5.3 ms. This replaces the clumsy runs
+(no UAC); it is the same impairment (P1 = 40 ms and 1% each way on the
+guest), applied at the server end instead of the client end.
+
+| Profile (guest leg; host leg) | Batching | Guest leg RTT | Peer RTT p50 / p99 | Gaps > 150 ms per min, guest / host | Gap p99, guest / host | Gaps > 300 ms | Snaps |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| P0 (clean) | on | 4 ms | 8 / 14 ms | 0 / 0 | 38 / 18 ms | 0 | 0 |
+| P1S (20 ms + 1%) | off | 41 ms | 42 / 135 ms | 0 / 0 | 81 / 75 ms | 0 | 0 |
+| P1 (40 ms + 1%), 3 runs | on | 83-84 ms | 86 / 227-326 ms | 1.5-3.84 / 0 | 135-148 / 109-126 ms | 0 | 0 |
+| P1 (40 ms + 1%) | off | 92 ms | 93 / 250 ms | 0.48 / 0 | 128 / 107 ms | 0 | 0 |
+| P2 (40 ms + 3%) | on | 85 ms | 101 / 394 ms | 9.6 / 0 | 161 / 131 ms | 0 | 0 |
+| P0L (60 ms; 20 ms), no loss | off | 121 ms | 162 / 165 ms | 0 / 0 | 38 / 17 ms | 0 | 0 |
+| P1L (60 ms + 1%; 20 ms) | off | 129 ms | 173 / 413 ms | 28 / 41.5 | 186 / 155 ms | 1 | 0 |
+
+All runs held 30 ticks/s with no snaps, refused predictions, queue drops or
+disconnects.
+
+P1L reproduces the Cloudflare runs' geometry (guest leg about 131 ms with the
+impairment, host leg about 40 ms, peer round trip 173 ms) and their result:
+28 / 41.5 gaps per minute against 16.5-26.5 / 28-59 on Cloudflare. P0L shows
+the long path alone causes no gaps. So the earlier NO-GO came from loss on a
+long TCP leg, not from Cloudflare or from clumsy: a lost segment holds up
+everything behind it for about one round trip of that leg plus the duplicate
+acknowledgements needed to detect the loss, and once that leg's round trip
+passes about 100 ms most recoveries exceed the 150 ms gap threshold.
+
+### Revised verdict: conditional GO
+
+Against the bar fixed before testing, the TCP relay passes P1 (at most 6 gaps
+over 150 ms per minute, p99 gap at most 250 ms, no disconnects) when the
+impaired player's round trip to the place their TCP connection ends is under
+about 100 ms, and fails at about 130 ms. P2 (3% loss) exceeds the gap count
+even at 85 ms. P0 passes trivially on the LAN; the internet P0 depends on
+where the server runs and was not measured with friends.
+
+Consequences:
+
+- Put the server close to the players. A friend 40-80 ms from forge with 1%
+  loss lands in the passing band; a friend across an ocean does not.
+- For the Activity, each player's TCP connection ends at Discord's nearby
+  Cloudflare edge (about 15 ms median from here in the probe), so last-mile
+  loss is recovered on a short leg. This favours the relay, but it is an
+  inference: it has not been measured through Discord's proxy.
+- Loss above 1% remains a problem for any TCP relay; only datagrams fix that.
