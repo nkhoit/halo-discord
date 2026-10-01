@@ -246,10 +246,11 @@
      (server/) instead of WebRTC; the relay also owns room membership, so the
      signaling service is not used. Hosted pages opt in with
      <meta name="halo-transport" content="relay-rooms">; loopback pages may
-     opt in with ?transport=relay (?relay= overrides the relay URL,
-     ?relaySockets=2 splits reliable and unreliable traffic and ?relayBatch=0
-     sends every frame as its own message, for measurement). Login is a
-     session cookie on the relay's origin, which must be the page's origin. */
+     opt in with ?transport=relay (?relay= overrides the relay URL and
+     ?relaySockets=2 splits reliable and unreliable traffic). On any relay
+     page, ?relayBatch=0 sends every frame as its own message, for
+     measurement. Login is a session cookie on the relay's origin, which must
+     be the page's origin. */
   function relaySettings() {
     var page = new URL(global.location.href);
     var pageIsLoopback = page.hostname === "127.0.0.1" || page.hostname === "localhost";
@@ -266,7 +267,7 @@
     return {
       url: parsed.href.replace(/\/$/, ""),
       sockets: pageIsLoopback && page.searchParams.get("relaySockets") === "2" ? 2 : 1,
-      batch: !(pageIsLoopback && page.searchParams.get("relayBatch") === "0"),
+      batch: page.searchParams.get("relayBatch") !== "0",
     };
   }
 
