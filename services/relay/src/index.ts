@@ -21,6 +21,26 @@ function originAllowed(request: Request, env: Env): boolean {
   return env.ALLOWED_ORIGINS.split(",").map((value) => value.trim()).includes(origin);
 }
 
+const MIDDLE_EAST = new Set(["AE", "BH", "IL", "IQ", "IR", "JO", "KW", "LB", "OM", "QA", "SA", "SY", "YE"]);
+
+/* The Durable Object region nearest the client's location (not the edge it
+   happened to reach). Cloudflare honors a hint only when it creates the room,
+   which the host's first connection does. */
+export function locationHint(cf: IncomingRequestCfProperties | undefined): DurableObjectLocationHint | undefined {
+  if (!cf) return undefined;
+  const longitude = Number(cf.longitude);
+  if (cf.country && MIDDLE_EAST.has(cf.country)) return "me";
+  switch (cf.continent) {
+    case "NA": return Number.isFinite(longitude) && longitude > -100 ? "enam" : "wnam";
+    case "SA": return "sam";
+    case "EU": return Number.isFinite(longitude) && longitude > 15 ? "eeur" : "weur";
+    case "AS": return "apac";
+    case "OC": return "oc";
+    case "AF": return "afr";
+    default: return undefined;
+  }
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -33,10 +53,13 @@ export default {
       return text(426, "websocket upgrade required");
     }
     if (!originAllowed(request, env)) return text(403, "origin not allowed");
-    if (!parseMember(url)) return text(400, "invalid role, id or ch");
+    const member = parseMember(url);
+    if (!member) return text(400, "invalid role, id or ch");
     /* Tell the room which data center this client reached (diagnostic). */
     const forwarded = new Request(request);
     forwarded.headers.set("X-Relay-Colo", String(request.cf?.colo ?? "unknown"));
-    return env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(forwarded);
+    const id = env.ROOMS.idFromName(roomId);
+    const hint = member.role === "host" ? locationHint(request.cf) : undefined;
+    return env.ROOMS.get(id, hint ? { locationHint: hint } : undefined).fetch(forwarded);
   },
 } satisfies ExportedHandler<Env>;

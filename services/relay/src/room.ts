@@ -36,6 +36,11 @@ function closeQuietly(socket: WebSocket, code: number, reason: string): void {
   }
 }
 
+/* One JSON line per socket event, for `wrangler tail` (diagnostic). */
+function log(entry: Record<string, unknown>): void {
+  console.log(JSON.stringify(entry));
+}
+
 /* One room: a host and its guests. Frames travel host to guest and guest to
    host only, and every member's identity comes from its socket.
 
@@ -77,39 +82,59 @@ export class RelayRoom extends DurableObject<Env> {
     }
   }
 
-  private admissionError(joining: Member): string | null {
-    const members = [...this.members.values()];
-    if (members.length >= MAXIMUM_ROOM_SOCKETS) return "room full";
-    const host = members.find((member) => member.role === "host");
-    if (joining.role === "host" && host && host.id !== joining.id) return "room already has a host";
-    for (const member of members) {
+  /* A reconnect with the same identity replaces that identity's sockets for
+     the same traffic: the old ones may be half-open and never report closing. */
+  private admit(joining: Member): { error: string | null; replaced: WebSocket[] } {
+    const replaced: WebSocket[] = [];
+    let host: Member | undefined;
+    for (const [socket, member] of this.members) {
+      if (member.role === "host") host = member;
       if (member.id !== joining.id) continue;
-      if (member.role !== joining.role) return "identifier in use";
-      if (overlaps(member.kind, joining.kind)) return "duplicate socket";
+      if (member.role !== joining.role) return { error: "identifier in use", replaced: [] };
+      if (overlaps(member.kind, joining.kind)) replaced.push(socket);
     }
-    return null;
+    if (joining.role === "host" && host && host.id !== joining.id) {
+      return { error: "room already has a host", replaced: [] };
+    }
+    if (this.members.size - replaced.length >= MAXIMUM_ROOM_SOCKETS) {
+      return { error: "room full", replaced: [] };
+    }
+    return { error: null, replaced };
   }
 
   override async fetch(request: Request): Promise<Response> {
     const joining = parseMember(new URL(request.url));
     if (!joining) return new Response("invalid member", { status: 400 });
     const colo = { edge: request.headers.get("X-Relay-Colo") ?? "unknown", room: await this.roomColo() };
-    const error = this.admissionError(joining);
+    const { error, replaced } = this.admit(joining);
     if (error) return new Response(error, { status: 409 });
+    for (const socket of replaced) {
+      this.members.delete(socket);
+      closeQuietly(socket, CloseCode.Replaced, "replaced by a new connection");
+    }
 
-    const wasPresent = this.present(joining.id);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
+    const since = Date.now();
     server.binaryType = "arraybuffer";
     server.accept();
     server.addEventListener("message", (event) => this.receive(server, event.data));
     server.addEventListener("close", (event) => {
+      log({ event: "close", id: joining.id, kind: joining.kind, code: event.code,
+        reason: event.reason, clean: event.wasClean, ageMs: Date.now() - since,
+        known: this.members.has(server) });
       this.remove(server);
       closeQuietly(server, event.code, event.reason);
     });
-    server.addEventListener("error", () => this.remove(server));
+    server.addEventListener("error", (event) => {
+      log({ event: "error", id: joining.id, kind: joining.kind, ageMs: Date.now() - since,
+        message: String((event as ErrorEvent).message ?? "") });
+      this.remove(server);
+    });
     this.members.set(server, joining);
+    log({ event: "accept", id: joining.id, role: joining.role, kind: joining.kind, ...colo,
+      replaced: replaced.length, sockets: this.members.size });
 
     const peers = new Set<string>();
     for (const member of this.members.values()) {
@@ -121,7 +146,8 @@ export class RelayRoom extends DurableObject<Env> {
       peers: [...peers],
       colo,
     }));
-    if (!wasPresent && carries(joining.kind, true)) this.announce(joining, "peer-up", server);
+    /* Also after a reconnect: the counterparts replay what the old socket lost. */
+    if (carries(joining.kind, true)) this.announce(joining, "peer-up", server);
     return new Response(null, { status: 101, webSocket: client });
   }
 

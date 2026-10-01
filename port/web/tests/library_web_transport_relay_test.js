@@ -102,21 +102,34 @@ const states = [];
   assert.equal(lastState(), '1,1,1');
   assert(states.includes('connected'));
 
-  // Outbound frames carry the channel and the destination peer.
+  // Outbound frames carry the channel and the destination peer; reliable ones
+  // also their sequence number and the acknowledgement of the peer's frames.
   const frame = haloFrame(7);
   HEAPU8.set(frame, 512);
   assert.equal(library.web_transport_send(GUEST_ADDRESS, 1, 512, 12), 1);
   assert.equal(library.web_transport_send(GUEST_ADDRESS, 0, 512, 12), 1);
-  assert.deepEqual([...socket.sent[0]], [0, ...id(GUEST), ...frame]);
+  assert.deepEqual([...socket.sent[0]], [0, ...id(GUEST), 0, 0, 0, 1, 0, 0, 0, 0, ...frame]);
   assert.deepEqual([...socket.sent[1]], [1, ...id(GUEST), ...frame]);
 
   // Inbound frames reach the game at the peer's address; strangers are ignored.
   socket.binary([1, ...id(GUEST), ...haloFrame(9)]);
-  socket.binary([0, ...id('0200000000ff'), ...haloFrame(10)]);
+  socket.binary([0, ...id('0200000000ff'), 0, 0, 0, 1, 0, 0, 0, 0, ...haloFrame(10)]);
   await settle();
   assert.equal(calls.received.length, 1);
   assert.equal(calls.received[0][0], GUEST_ADDRESS);
   assert.equal(calls.received[0][1][4], 9);
+
+  // Reliable frames arrive once and in order; their acknowledgement goes back.
+  socket.sent.length = 0;
+  socket.binary([0, ...id(GUEST), 0, 0, 0, 1, 0, 0, 0, 1, ...haloFrame(11)]);
+  socket.binary([0, ...id(GUEST), 0, 0, 0, 1, 0, 0, 0, 1, ...haloFrame(11)]);
+  socket.binary([0, ...id(GUEST), 0, 0, 0, 3, 0, 0, 0, 1, ...haloFrame(13)]);
+  socket.binary([0, ...id(GUEST), 0, 0, 0, 2, 0, 0, 0, 1, ...haloFrame(12)]);
+  await settle();
+  assert.deepEqual(calls.received.slice(1).map(entry => entry[1][4]), [11, 12]);
+  await new Promise(resolve => setTimeout(resolve, runtime.RELAY_ACK_MILLISECONDS + 20));
+  assert.deepEqual([...socket.sent.find(bytes => bytes[0] === 7)], [7, ...id(GUEST), 0, 0, 0, 2]);
+  assert.equal(runtime.relayPeers.get(GUEST).resend.length, 0, 'the peer acknowledged frame 1');
 
   // A peer's ping is answered on the same socket.
   socket.sent.length = 0;
@@ -136,10 +149,12 @@ const states = [];
   await settle();
   assert.equal(lastState(), '1,1,1', 'reliable sends resume once the socket drains');
 
-  // The peer leaving the relay fails it, as a closed DataChannel would.
+  // A peer leaving the relay stays connected for the game until the grace
+  // period runs out (library_web_transport_resume_test.js).
   socket.text({ type: 'peer-down', id: GUEST });
-  assert(states.includes('failed'));
-  assert.equal(HaloWebTransport.listPeers().length, 0);
+  assert(!states.includes('failed'));
+  assert.equal(lastState(), '1,1,1');
+  assert.equal(runtime.relayLinked(runtime.relayPeers.get(GUEST)), false);
   HaloWebTransport.disconnectAll();
   assert.equal(socket.readyState, 3);
 
@@ -149,8 +164,9 @@ const states = [];
   assert.equal(reliable.url.searchParams.get('ch'), 'r');
   assert.equal(unreliable.url.searchParams.get('ch'), 'u');
   reliable.open();
-  unreliable.open();
   reliable.text({ type: 'ready', self: { id: HOST }, peers: [GUEST] });
+  assert.equal(lastState(), '0,0,0', 'linked only once both sockets are open');
+  unreliable.open();
   assert.equal(lastState(), '1,1,1');
   assert.equal(library.web_transport_send(GUEST_ADDRESS, 1, 512, 12), 1);
   assert.equal(library.web_transport_send(GUEST_ADDRESS, 0, 512, 12), 1);
@@ -158,10 +174,14 @@ const states = [];
   assert.equal(unreliable.sent.length, 1);
   assert.equal(unreliable.sent[0][0], 1);
 
-  // Losing either socket fails every relay peer.
+  // Losing either socket reconnects both, and the peer stays connected.
   unreliable.close(1006);
-  assert.equal(HaloWebTransport.listPeers().length, 0);
   assert.equal(reliable.readyState, 3);
+  assert.equal(HaloWebTransport.listPeers().length, 1);
+  await new Promise(resolve => setTimeout(resolve, runtime.RELAY_RECONNECT_MILLISECONDS[0] + 50));
+  assert.equal(sockets.length, 5, 'a new pair of sockets');
+  assert(!states.includes('failed'));
+  HaloWebTransport.disconnectAll();
   await assert.rejects(HaloWebTransport.handleSignal('guest', {}), /Unknown peer/);
 
   console.log('library_web_transport relay tests passed');

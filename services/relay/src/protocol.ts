@@ -6,9 +6,13 @@
    another. */
 
 export const HEADER_BYTES = 7;
+/* Reliable frames start with [u32 sequence][u32 acknowledgement] for the
+   clients' end-to-end replay; the relay does not read them. */
+export const SEQUENCE_BYTES = 8;
 export const MINIMUM_HALO_FRAME_BYTES = 12;
 export const MAXIMUM_HALO_FRAME_BYTES = 16396;
-export const MAXIMUM_FRAME_BYTES = HEADER_BYTES + MAXIMUM_HALO_FRAME_BYTES;
+export const MAXIMUM_FRAME_BYTES = HEADER_BYTES + SEQUENCE_BYTES + MAXIMUM_HALO_FRAME_BYTES;
+export const ACK_BYTES = 4;
 export const MAXIMUM_PROBE_BYTES = 64;
 /* One host and fifteen guests, each with a reliable and an unreliable socket. */
 export const MAXIMUM_ROOM_SOCKETS = 32;
@@ -22,12 +26,16 @@ export const Channel = {
   PongUnreliable: 5,
   /* Echoed by the relay itself: the client-to-relay round trip. */
   RelayEcho: 6,
+  /* [u32 acknowledgement] for the peer's reliable frames. */
+  Ack: 7,
 } as const;
 
 export const CloseCode = {
   UnsupportedData: 1003,
   PolicyViolation: 1008,
   MessageTooBig: 1009,
+  /* The same identity reconnected; this socket is stale. */
+  Replaced: 4000,
 } as const;
 
 export type Role = "host" | "guest";
@@ -61,7 +69,7 @@ export function parseMember(url: URL): Member | null {
 
 export function isReliableChannel(channel: number): boolean {
   return channel === Channel.Reliable || channel === Channel.PingReliable ||
-    channel === Channel.PongReliable;
+    channel === Channel.PongReliable || channel === Channel.Ack;
 }
 
 export function carries(kind: SocketKind, reliable: boolean): boolean {
@@ -69,9 +77,14 @@ export function carries(kind: SocketKind, reliable: boolean): boolean {
 }
 
 export function payloadLengthValid(channel: number, length: number): boolean {
-  if (channel === Channel.Reliable || channel === Channel.Unreliable) {
+  if (channel === Channel.Reliable) {
+    return length >= SEQUENCE_BYTES + MINIMUM_HALO_FRAME_BYTES &&
+      length <= SEQUENCE_BYTES + MAXIMUM_HALO_FRAME_BYTES;
+  }
+  if (channel === Channel.Unreliable) {
     return length >= MINIMUM_HALO_FRAME_BYTES && length <= MAXIMUM_HALO_FRAME_BYTES;
   }
+  if (channel === Channel.Ack) return length === ACK_BYTES;
   if (channel > Channel.Unreliable && channel <= Channel.RelayEcho) {
     return length >= 1 && length <= MAXIMUM_PROBE_BYTES;
   }

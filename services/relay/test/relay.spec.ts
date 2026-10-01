@@ -1,7 +1,13 @@
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { Channel, MAXIMUM_HALO_FRAME_BYTES, MAXIMUM_ROOM_SOCKETS } from "../src/protocol";
+import { locationHint } from "../src/index";
+import {
+  Channel,
+  MAXIMUM_HALO_FRAME_BYTES,
+  MAXIMUM_ROOM_SOCKETS,
+  SEQUENCE_BYTES,
+} from "../src/protocol";
 
 const ORIGIN = "http://127.0.0.1:8765";
 const HOST = "020000000001";
@@ -64,8 +70,10 @@ async function until(condition: () => boolean, milliseconds = 2_000): Promise<vo
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 100));
 
-function frame(channel: number, id: string, payloadBytes = 12, marker = 0x48): Uint8Array {
-  const bytes = new Uint8Array(7 + payloadBytes);
+function frame(channel: number, id: string, payloadBytes?: number, marker = 0x48): Uint8Array {
+  /* reliable frames carry an 8-byte sequence header before the Halo frame */
+  const size = payloadBytes ?? (channel === Channel.Reliable ? SEQUENCE_BYTES + 12 : 12);
+  const bytes = new Uint8Array(7 + size);
   bytes[0] = channel;
   for (let index = 0; index < 6; index++) {
     bytes[1 + index] = parseInt(id.slice(index * 2, index * 2 + 2), 16);
@@ -101,17 +109,55 @@ describe("relay admission", () => {
     expect((await upgrade(`/v1/rooms/${room}/ws?role=host&id=${HOST}&ch=x`)).status).toBe(400);
   });
 
-  it("allows one host, unique identifiers and no duplicate sockets", async () => {
+  it("allows one host and unique identifiers", async () => {
     const room = newRoom();
     await connect(room, "host", HOST);
     const path = (role: string, id: string, ch = "both") =>
       `/v1/rooms/${room}/ws?role=${role}&id=${id}&ch=${ch}`;
     expect((await upgrade(path("host", GUEST_A))).status).toBe(409);
     expect((await upgrade(path("guest", HOST))).status).toBe(409);
-    expect((await upgrade(path("host", HOST, "r"))).status).toBe(409);
     await connect(room, "guest", GUEST_A, "r");
-    await connect(room, "guest", GUEST_A, "u");
-    expect((await upgrade(path("guest", GUEST_A, "u"))).status).toBe(409);
+    expect((await upgrade(path("host", GUEST_A))).status).toBe(409);
+  });
+
+  it("replaces a reconnecting identity's stale socket and re-announces it", async () => {
+    const room = newRoom();
+    const host = await connect(room, "host", HOST);
+    const old = await connect(room, "guest", GUEST_A);
+    await until(() => host.texts.filter((text) => text.type === "peer-up").length === 1);
+
+    const fresh = await connect(room, "guest", GUEST_A);
+    expect((await old.closed).code).toBe(4000);
+    await until(() => host.texts.filter((text) => text.type === "peer-up").length === 2);
+    await settle();
+    expect(host.texts.some((text) => text.type === "peer-down")).toBe(false);
+
+    host.socket.send(frame(Channel.Reliable, GUEST_A, undefined, 5));
+    await until(() => fresh.frames.length === 1);
+    expect(fresh.frames[0]![7]).toBe(5);
+    expect(old.frames).toHaveLength(0);
+
+    /* A split reconnect replaces only the matching socket kinds. */
+    const reliable = await connect(room, "guest", GUEST_B, "r");
+    const unreliable = await connect(room, "guest", GUEST_B, "u");
+    await connect(room, "guest", GUEST_B, "u");
+    expect((await unreliable.closed).code).toBe(4000);
+    expect(reliable.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("hints the room's region from the host's location", () => {
+    const at = (continent: string, longitude: string, country = "XX") =>
+      locationHint({ continent, longitude, country } as unknown as IncomingRequestCfProperties);
+    expect(at("NA", "-122.6")).toBe("wnam");
+    expect(at("NA", "-74.0")).toBe("enam");
+    expect(at("EU", "-0.1")).toBe("weur");
+    expect(at("EU", "21.0")).toBe("eeur");
+    expect(at("AS", "139.7")).toBe("apac");
+    expect(at("AS", "51.5", "QA")).toBe("me");
+    expect(at("OC", "151.2")).toBe("oc");
+    expect(at("SA", "-46.6")).toBe("sam");
+    expect(at("AF", "3.4")).toBe("afr");
+    expect(locationHint(undefined)).toBeUndefined();
   });
 
   it("caps sockets per room", async () => {
@@ -165,7 +211,7 @@ describe("relay routing", () => {
     const a = await connect(room, "guest", GUEST_A);
     const b = await connect(room, "guest", GUEST_B);
 
-    host.socket.send(frame(Channel.Reliable, GUEST_A, 12, 1));
+    host.socket.send(frame(Channel.Reliable, GUEST_A, undefined, 1));
     await until(() => a.frames.length === 1);
     expect(sender(a.frames[0]!)).toBe(HOST);
     expect(a.frames[0]![7]).toBe(1);
@@ -174,7 +220,7 @@ describe("relay routing", () => {
     await until(() => host.frames.length === 1);
     expect(sender(host.frames[0]!)).toBe(GUEST_A);
 
-    a.socket.send(frame(Channel.Reliable, GUEST_B, 12, 3));
+    a.socket.send(frame(Channel.Reliable, GUEST_B, undefined, 3));
     await settle();
     expect(b.frames).toHaveLength(0);
   });
@@ -205,12 +251,14 @@ describe("relay routing", () => {
     const reliable = await connect(room, "guest", GUEST_A, "r");
     const unreliable = await connect(room, "guest", GUEST_A, "u");
 
-    host.socket.send(frame(Channel.Reliable, GUEST_A, 12, 1));
+    host.socket.send(frame(Channel.Reliable, GUEST_A, undefined, 1));
     host.socket.send(frame(Channel.Unreliable, GUEST_A, 12, 2));
     host.socket.send(frame(Channel.PingReliable, GUEST_A, 8, 3));
     host.socket.send(frame(Channel.PingUnreliable, GUEST_A, 8, 4));
-    await until(() => reliable.frames.length === 2 && unreliable.frames.length === 2);
-    expect(reliable.frames.map((bytes) => bytes[0])).toEqual([Channel.Reliable, Channel.PingReliable]);
+    host.socket.send(frame(Channel.Ack, GUEST_A, 4, 5));
+    await until(() => reliable.frames.length === 3 && unreliable.frames.length === 2);
+    expect(reliable.frames.map((bytes) => bytes[0]))
+      .toEqual([Channel.Reliable, Channel.PingReliable, Channel.Ack]);
     expect(unreliable.frames.map((bytes) => bytes[0])).toEqual([Channel.Unreliable, Channel.PingUnreliable]);
 
     unreliable.socket.send(frame(Channel.Reliable, HOST));
@@ -231,10 +279,13 @@ describe("relay frame limits", () => {
   const cases: [string, string | Uint8Array, number][] = [
     ["text", "hello", 1003],
     ["too short for a header", new Uint8Array([0, 1, 2]), 1008],
-    ["a Halo frame under 12 bytes", frame(Channel.Reliable, HOST, 11), 1008],
+    ["a Halo frame under 12 bytes", frame(Channel.Reliable, HOST, SEQUENCE_BYTES + 11), 1008],
+    ["a reliable frame without its sequence header", frame(Channel.Reliable, HOST, 12), 1008],
+    ["an acknowledgement of the wrong size", frame(Channel.Ack, HOST, 5), 1008],
     ["an unknown channel", frame(9, HOST), 1008],
     ["an oversized probe", frame(Channel.PingReliable, HOST, 65), 1008],
-    ["a frame over the size cap", frame(Channel.Reliable, HOST, MAXIMUM_HALO_FRAME_BYTES + 1), 1009],
+    ["a frame over the size cap",
+      frame(Channel.Reliable, HOST, SEQUENCE_BYTES + MAXIMUM_HALO_FRAME_BYTES + 1), 1009],
   ];
   for (const [name, message, code] of cases) {
     it(`closes a socket that sends ${name}`, async () => {
@@ -250,8 +301,8 @@ describe("relay frame limits", () => {
     const room = newRoom();
     const host = await connect(room, "host", HOST);
     const guest = await connect(room, "guest", GUEST_A);
-    guest.socket.send(frame(Channel.Reliable, HOST, MAXIMUM_HALO_FRAME_BYTES));
+    guest.socket.send(frame(Channel.Reliable, HOST, SEQUENCE_BYTES + MAXIMUM_HALO_FRAME_BYTES));
     await until(() => host.frames.length === 1);
-    expect(host.frames[0]!.byteLength).toBe(7 + MAXIMUM_HALO_FRAME_BYTES);
+    expect(host.frames[0]!.byteLength).toBe(7 + SEQUENCE_BYTES + MAXIMUM_HALO_FRAME_BYTES);
   });
 });
