@@ -21,8 +21,11 @@ def meta_pattern(name: str) -> re.Pattern[str]:
     )
 
 
-def configure(page: str, signaling_url: str) -> str:
+def configure(page: str, signaling_url: str, relay_url: str | None = None) -> str:
     signaling = f'<meta name="halo-signaling-url" content="{html.escape(signaling_url)}">'
+    if relay_url:
+        signaling += f'<meta name="halo-relay-url" content="{html.escape(relay_url)}">'
+    page = meta_pattern("halo-relay-url").sub("", page)
     page, count = meta_pattern("halo-signaling-url").subn(signaling, page, count=1)
     if count != 1:
         raise ValueError("halo-signaling-url metadata is missing")
@@ -37,11 +40,17 @@ def main() -> int:
         "--page", type=Path, default=repository / "build" / "web" / "halo.html"
     )
     parser.add_argument("--signaling", default="http://127.0.0.1:8787")
+    parser.add_argument(
+        "--relay", help="WebSocket relay for ?transport=relay (services/relay)"
+    )
     arguments = parser.parse_args()
 
     page = arguments.page.read_text(encoding="utf-8")
-    arguments.page.write_text(configure(page, arguments.signaling), encoding="utf-8")
-    print(f"{arguments.page}: signaling {arguments.signaling}, Turnstile off")
+    arguments.page.write_text(
+        configure(page, arguments.signaling, arguments.relay), encoding="utf-8"
+    )
+    relay = f", relay {arguments.relay}" if arguments.relay else ""
+    print(f"{arguments.page}: signaling {arguments.signaling}{relay}, Turnstile off")
     return 0
 
 

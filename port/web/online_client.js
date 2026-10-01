@@ -239,6 +239,27 @@
     return value && /^0x[A-Za-z0-9_-]{20,120}$/.test(value) ? value : null;
   }
 
+  /* ?transport=relay sends gameplay through the WebSocket relay
+     (services/relay) instead of WebRTC; rooms and invites are unchanged.
+     ?relay= overrides the halo-relay-url meta, and ?relaySockets=2 splits
+     reliable and unreliable traffic across two sockets. Loopback pages only. */
+  function relaySettings() {
+    var page = new URL(global.location.href);
+    var pageIsLoopback = page.hostname === "127.0.0.1" || page.hostname === "localhost";
+    if (!pageIsLoopback || page.searchParams.get("transport") !== "relay") return null;
+    var meta = document.querySelector('meta[name="halo-relay-url"]');
+    var configured = page.searchParams.get("relay") || (meta && meta.content);
+    if (!configured) throw new Error("The WebSocket relay URL is not configured.");
+    var parsed = new URL(configured, global.location.href);
+    if (["http:", "https:", "ws:", "wss:"].indexOf(parsed.protocol) < 0) {
+      throw new Error("The WebSocket relay URL must use HTTP(S) or WS(S).");
+    }
+    return {
+      url: parsed.href.replace(/\/$/, ""),
+      sockets: page.searchParams.get("relaySockets") === "2" ? 2 : 1,
+    };
+  }
+
   function clearTurnstileTimer() {
     if (humanVerification.renderTimer) global.clearTimeout(humanVerification.renderTimer);
     humanVerification.renderTimer = 0;
@@ -985,8 +1006,16 @@
   }
 
   function configureTransport(iceServers) {
+    var relay = relaySettings();
     transport().configure({
       iceServers: iceServers || [],
+      transport: relay ? "relay" : "webrtc",
+      relay: relay ? {
+        url: relay.url,
+        sockets: relay.sockets,
+        roomId: session.room && session.room.id,
+        role: session.role,
+      } : null,
       onSignal: function(event) {
         if (!session.active || session.closing || !event ||
             !session.peerPromises.has(event.peerId)) return;
@@ -1143,6 +1172,13 @@
 
   async function determineConnectionPath(peerId) {
     try {
+      if (relaySettings()) {
+        session.connectionPath = "relay-ws";
+        syncTelemetryContext();
+        telemetry("transport_connected", session.connectionPath);
+        elements.detail.textContent = "Connected through the WebSocket relay";
+        return;
+      }
       await new Promise(function(resolve) { setTimeout(resolve, 500); });
       var reports = await transport().getStats(peerId);
       var selected = null;
