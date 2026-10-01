@@ -49,7 +49,6 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     const url = new URL(request.url ?? "/", "http://relay.invalid");
     const { context, path } = splitContext(url.pathname);
     const headers = isolationHeaders(context);
-    const prefix = context === "activity" ? "/activity" : "";
     try {
       if (path === "/healthz") {
         response.writeHead(200, { "Content-Type": "text/plain" }).end("ok");
@@ -60,11 +59,10 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         response.writeHead(405, { Allow: "GET, HEAD" }).end();
         return;
       }
-      if (path === "/") {
-        response.writeHead(302, { Location: `${prefix}/halo.html` }).end();
-        return;
-      }
-      const relative = decodeURIComponent(path.slice(1));
+      /* "/" serves the page itself rather than redirecting: behind the Discord
+         Activity proxy the browser's path differs from this server's (the
+         proxy adds /activity), so only relative URLs are correct in both. */
+      const relative = path === "/" ? "halo.html" : decodeURIComponent(path.slice(1));
       const map = mapFile(relative);
       if (map) {
         if (!requestSession(config, request)) {

@@ -28,7 +28,9 @@ describe("the page", () => {
     expect(response.headers.get("cross-origin-embedder-policy")).toBe("require-corp");
     expect(response.headers.get("document-isolation-policy")).toBeNull();
     expect((await get("/halo.wasm")).headers.get("content-type")).toBe("application/wasm");
-    expect((await get("/")).headers.get("location")).toBe("/halo.html");
+    const root = await get("/");
+    expect(root.status).toBe(200);
+    expect(await root.text()).toContain("relay-rooms");
   });
 
   it("uses Document-Isolation-Policy under /activity for the Discord Activity", async () => {
@@ -36,7 +38,11 @@ describe("the page", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("document-isolation-policy")).toBe("isolate-and-require-corp");
     expect(response.headers.get("cross-origin-opener-policy")).toBeNull();
-    expect((await get("/activity/")).headers.get("location")).toBe("/activity/halo.html");
+    for (const root of ["/activity", "/activity/"]) {
+      const page = await get(root);
+      expect(page.status, root).toBe(200);
+      expect(page.headers.get("document-isolation-policy"), root).toBe("isolate-and-require-corp");
+    }
   });
 
   it("serves nothing outside the allowlist", async () => {
