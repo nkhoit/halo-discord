@@ -2,10 +2,29 @@ import { describe, expect, it } from "vitest";
 
 import { loadConfig } from "../src/config.ts";
 import { joinBatch, sanitizeName, splitBatch } from "../src/protocol.ts";
-import { buildFile, mapFile, parseRange } from "../src/static.ts";
+import { buildFile, hostedPage, mapFile, parseRange } from "../src/static.ts";
 import { issueToken, verifyToken } from "../src/tokens.ts";
+import { PAGE } from "./harness.ts";
 
 const SECRET = "x".repeat(40);
+
+describe("the hosted page", () => {
+  it("uses relay rooms, drops other services and waits for a session before the game", () => {
+    const page = hostedPage(PAGE);
+    expect(page).toContain('<meta name="halo-transport" content="relay-rooms">');
+    expect(page).toContain("name=halo-build-id");
+    for (const gone of ["halo-signaling-url", "halo-relay-url", "coi-serviceworker", "challenges.cloudflare.com",
+        "<script src=halo.js"]) {
+      expect(page, gone).not.toContain(gone);
+    }
+    expect(page).toMatch(/fetch\("auth\/session".*s\.src="halo\.js"/);
+  });
+
+  it("refuses a page that does not load the game exactly once", () => {
+    expect(() => hostedPage("<title>Halo</title>")).toThrow(/halo\.js/);
+    expect(() => hostedPage('<script src=halo.js></script><script src="halo.js"></script>')).toThrow(/halo\.js/);
+  });
+});
 
 describe("tokens", () => {
   it("round-trips and binds the Discord user", () => {

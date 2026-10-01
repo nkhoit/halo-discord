@@ -54,6 +54,37 @@ export function mapFile(path: string): string | null {
   return match && MAPS.has(match[1]!) ? match[1]! : null;
 }
 
+function metaPattern(name: string): RegExp {
+  return new RegExp(`<meta\\b(?=[^>]*\\bname=(?:["']${name}["']|${name})(?=[\\s>]))[^>]*>`, "g");
+}
+
+function scriptPattern(source: string): RegExp {
+  return new RegExp(`<script\\b[^>]*\\bsrc=["']?${source}[^>]*>\\s*</script>`, "g");
+}
+
+/* Gameplay and rooms go through this server, so the hosted page drops the
+   signaling, relay and Turnstile settings and the service-worker isolation
+   shim (this server sends the isolation headers). The game's first request
+   is a map, so it starts only once a session exists; otherwise the visitor
+   logs in and returns to the same address, invite fragment included. */
+const LOADER = `<meta name="halo-transport" content="relay-rooms"><script>` +
+  `fetch("auth/session",{credentials:"same-origin",cache:"no-store"}).then(function(r){` +
+  `if(r.status===401){location.replace("auth/login?return="+encodeURIComponent(location.pathname+location.search+location.hash));return}` +
+  `if(!r.ok)throw new Error("session "+r.status);` +
+  `var s=document.createElement("script");s.src="halo.js";document.head.appendChild(s)})` +
+  `.catch(function(e){console.error("Halo could not start:",e)})</script>`;
+
+export function hostedPage(page: string): string {
+  for (const name of ["halo-signaling-url", "halo-relay-url", "halo-turnstile-sitekey", "halo-transport"]) {
+    page = page.replace(metaPattern(name), "");
+  }
+  page = page.replace(scriptPattern("coi-serviceworker\\.js"), "");
+  page = page.replace(scriptPattern("https://challenges\\.cloudflare\\.com/"), "");
+  const game = scriptPattern("halo\\.js(?=[\"'\\s>])");
+  if ((page.match(game) ?? []).length !== 1) throw new Error("halo.html does not load halo.js exactly once");
+  return page.replace(game, LOADER);
+}
+
 export function parseRange(header: string | undefined, size: number):
     { start: number; end: number } | "unsatisfiable" | null {
   if (!header) return null;

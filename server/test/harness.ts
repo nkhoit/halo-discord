@@ -13,6 +13,14 @@ import { issueToken } from "../src/tokens.ts";
 export const ORIGIN = "http://127.0.0.1:9";
 export const SECRET = "test-secret-test-secret-test-secret-123";
 
+/* Shaped like the minified build/web/halo.html. */
+export const PAGE = '<!doctypehtml><html lang=en><head><meta charset=utf-8>' +
+  '<meta name="halo-signaling-url" content="http://127.0.0.1:8787">' +
+  '<meta name="halo-relay-url" content="https://relay.example">' +
+  '<meta content=web-multiplayer-v1 name=halo-build-id><script src=coi-serviceworker.js></script>' +
+  '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"async defer></script>' +
+  '<title>Halo</title><script src=halo.js async></script><body><canvas id=canvas></canvas>';
+
 /* Codes map to users; a user is a guild member unless listed in outsiders. */
 export class FakeDiscord implements DiscordApi {
   readonly users = new Map<string, DiscordUser>();
@@ -40,7 +48,7 @@ export function fixtures(): { buildDir: string; mapsDir: string } {
   const mapsDir = joinPath(root, "maps");
   mkdirSync(joinPath(buildDir, "assets", "ui", "maps"), { recursive: true });
   mkdirSync(mapsDir);
-  writeFileSync(joinPath(buildDir, "halo.html"), "<!doctype html><title>Halo</title>");
+  writeFileSync(joinPath(buildDir, "halo.html"), PAGE);
   writeFileSync(joinPath(buildDir, "halo.js"), "console.log('halo');");
   writeFileSync(joinPath(buildDir, "halo.wasm"), Buffer.from([0, 97, 115, 109]));
   writeFileSync(joinPath(buildDir, "secret.txt"), "not for you");

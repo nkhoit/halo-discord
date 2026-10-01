@@ -133,7 +133,14 @@ export class Auth {
   }
 
   private login(response: ServerResponse, url: URL): void {
-    if (!this.config.discord) return page(response, 404, "Discord login is not configured");
+    if (!this.config.discord) {
+      if (!this.config.devLogin) return page(response, 404, "Discord login is not configured");
+      response.writeHead(302, {
+        Location: `dev-login?return=${encodeURIComponent(safeReturnPath(url.searchParams.get("return")))}`,
+        "Cache-Control": "no-store",
+      }).end();
+      return;
+    }
     const state = randomBytes(32).toString("base64url");
     const returnPath = Buffer.from(safeReturnPath(url.searchParams.get("return"))).toString("base64url");
     const authorize = new URL("https://discord.com/oauth2/authorize");

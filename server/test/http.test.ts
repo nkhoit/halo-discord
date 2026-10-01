@@ -23,6 +23,7 @@ describe("the page", () => {
   it("is public and cross-origin isolated", async () => {
     const response = await get("/halo.html");
     expect(response.status).toBe(200);
+    expect(await response.text()).toContain('<meta name="halo-transport" content="relay-rooms">');
     expect(response.headers.get("cross-origin-opener-policy")).toBe("same-origin");
     expect(response.headers.get("cross-origin-embedder-policy")).toBe("require-corp");
     expect(response.headers.get("document-isolation-policy")).toBeNull();
@@ -157,5 +158,7 @@ describe("development login", () => {
     expect(response.status).toBe(302);
     const session = await get("/auth/session", { Cookie: `halo_session=${cookies(response).halo_session}` });
     expect(await session.json()).toMatchObject({ user: { id: "dev:Alice", name: "Alice" } });
+    const login = await get("/activity/auth/login?return=%2Factivity%2Fhalo.html%23room%3Dabc");
+    expect(login.headers.get("location")).toBe("dev-login?return=%2Factivity%2Fhalo.html%23room%3Dabc");
   });
 });

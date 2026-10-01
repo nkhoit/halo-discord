@@ -1,7 +1,9 @@
 /* The whole service: the game page, its maps, Discord login and the relay,
    on one origin. */
 
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import { join } from "node:path";
 import type { Duplex } from "node:stream";
 
 import { WebSocketServer, type WebSocket } from "ws";
@@ -18,7 +20,7 @@ import {
   parseSocketQuery,
 } from "./protocol.ts";
 import { consoleLog, type Log, Relay } from "./relay.ts";
-import { buildFile, type Context, isolationHeaders, mapFile, serveFile } from "./static.ts";
+import { buildFile, type Context, hostedPage, isolationHeaders, mapFile, serveFile } from "./static.ts";
 import { verifyToken } from "./tokens.ts";
 
 export const AUTH_DEADLINE_MILLISECONDS = 5000;
@@ -74,6 +76,20 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         return;
       }
       const build = buildFile(relative);
+      if (build?.file === "halo.html") {
+        let source: string;
+        try {
+          source = await readFile(join(config.buildDir, build.file), "utf8");
+        } catch {
+          response.writeHead(404, { ...headers, "Content-Type": "text/plain" }).end("not found");
+          return;
+        }
+        const page = Buffer.from(hostedPage(source));
+        response.writeHead(200, { ...headers, "Content-Type": build.type, "Cache-Control": "no-cache",
+          "Content-Length": String(page.length) });
+        response.end(request.method === "HEAD" ? undefined : page);
+        return;
+      }
       if (build) {
         await serveFile(request, response, config.buildDir, build.file, build.type,
           { ...headers, "Cache-Control": "no-cache" }, false);
