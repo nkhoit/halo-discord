@@ -4,27 +4,27 @@ Is Halo still fun when every multiplayer packet goes through a WebSocket relay
 instead of WebRTC? This note records the test setup, measurements and the
 GO/NO-GO.
 
-## Resume here (paused 2026-10-01)
+## Resume here (updated 2026-10-01)
 
 Done and committed: local Windows build, hidden-page pump fix, `?netstats=1`,
-`services/relay` with tests, the `?transport=relay` client, and local results
-(below). Nothing is deployed.
+`services/relay` with tests, the `?transport=relay` client, local results, and
+the P0-P3 runs with a GO/NO-GO (see "Measurements through the deployed
+relay").
 
-Pending:
+Deployed: `services/relay` as Worker `halo-relay-spike` on the
+cloudflare@khoit.dev account, `https://halo-relay-spike.halo-ce-nkhoit.workers.dev`.
+First version `b9dc076d-9f60-4453-a926-64131bfe21ce`; current version
+`177ec9c5-9536-4049-b7e9-f56a9ebbc603` (adds data-center reporting).
+ALLOWED_ORIGINS is loopback-only.
 
-1. Approval to deploy `services/relay` as `halo-relay-spike` to the logged-in
-   Cloudflare account (`cd services/relay && npx wrangler deploy`). Not given
-   yet; do not deploy without it.
-2. The P0-P3 measurement runs (clean; +40 ms with 1% loss; +40 ms with 3% loss;
-   2 s throttle bursts every 30 s) for WebRTC, relay with 1 socket and relay
-   with 2 sockets, then the GO/NO-GO against the bar in the plan.
-3. Decide the test rig. The agreed plan is two of your own machines with clumsy
-   on the guest; machine B needs its own build and maps served on its own
-   `127.0.0.1:8765` and a port forward to machine A's signaling on `:8787`
-   (for example `ssh -L 8787:127.0.0.1:8787 A`, or a `netsh interface
-   portproxy` rule with signaling started with `--ip 0.0.0.0`). The fallback is
-   one machine with clumsy filtering the relay's TCP 443 traffic, which still
-   puts both clients' traffic through the deployed relay.
+Teardown when the spike ends (deletes the Worker and its Durable Objects):
+
+```powershell
+cd services\relay; npx wrangler delete halo-relay-spike
+```
+
+Pending: a subjective play check by a person (the runs used scripted movement),
+and the decision on what to try next (see the verdict).
 
 Restart the local setup (PowerShell, repository root):
 
@@ -165,3 +165,114 @@ Two clients on one machine, local relay, zero added latency, guest moving
 Locally, with no loss, the relay is indistinguishable from WebRTC. The
 question this spike answers is what loss and distance do to it; that needs
 the deployed relay.
+
+## Measurements through the deployed relay (2026-10-01)
+
+### Rig and confounders
+
+One PC (Ryzen 7 9800X3D, Chrome 154), two Chrome profiles on separate
+monitors, Battle Creek Slayer, guest driven by a scripted loop of runs, rapid
+strafes, reversals and jumps; host idle. Each profile ran for about 120 s;
+only 5-second `?netstats=1` windows fully inside the match and fully under the
+profile count. Impairment was clumsy 0.3 (WinDivert), started with arguments
+by a small elevated controller.
+
+- Impairment is scoped to the guest only, never doubled. Relay: clumsy filters
+  the guest's own TCP connection(s) to Cloudflare by local port, both
+  directions; the host's relay leg is untouched (its relay echo stays at its
+  baseline while the guest's rises). WebRTC: clumsy filters the guest's UDP
+  port. Both browsers are on one machine, so WebRTC travels over loopback with
+  host candidates; WinDivert sees loopback packets only as outbound, which
+  covers both directions. Verified before the runs: P2 raised WebRTC's RTT from
+  1 ms to 84 ms, and P1 raised the guest's relay echo from 40 ms to 131 ms. So
+  the A/B is "one guest on a bad link" on both transports.
+- Profiles: P1 = 40 ms lag and 1% drop in each direction; P2 = 40 ms and 3%;
+  P3 = clumsy's throttle (1 s frames, its maximum) for 2 s every 30 s.
+- Unequal baselines: WebRTC between two local browsers has ~0 ms RTT, while
+  the relay goes to the real Cloudflare network. From this connection (Comcast,
+  Pacific Northwest) each new connection lands on PDX, SJC, DFW or BOS
+  (about one in three is not PDX), and the room's Durable Object ran in SJC or
+  DFW. Each client-to-room leg was 30-70 ms (133 ms for a host that landed on
+  a distant edge), so the clean relay round trip host to guest is 80-160 ms
+  before any impairment. A two-machine WebRTC game
+  would also cross the internet; the local WebRTC rows are a best case.
+
+### Results
+
+Guest = the impaired client (host-to-guest per-tick stream); host = the
+host's view of the guest-to-host stream. RTT is the peer round trip (WebRTC:
+selected candidate pair; relay: peer-echoed probe on the reliable socket).
+Gaps are between consecutive per-tick unreliable frames.
+
+| Transport (edges) | Profile | RTT p50 / p99 (ms) | Guest gap p99 / max (ms) | Gaps > 150 ms per min, guest / host | Gaps > 300 ms (g+h) | Own-unit snaps | Host refused predictions |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| WebRTC (loopback) | P0 | 0 | 38 / 38 | 0 / 0 | 0 | 0 | 0 |
+| WebRTC | P1 | 94 | 67 / 95 | 0 / 0 | 0 | 0 | 0 |
+| WebRTC | P2 | 95 | 71 / 117 | 0 / 0 | 0 | 0 | 0 |
+| WebRTC | P3 | - | 38 / 1838 | 3.8 / 3.8 | 16 | 0 | 0 |
+| Relay, 1 socket (host PDX, guest SJC, room SJC) | P0 | 81 / 171 | 53 / 131 | 0 / 0 | 0 | 0 | 0 |
+| Relay, 1 socket | P1 | 173 / 427 | 176 / 311 | 26.5 / 58.6 | 1 | 0 | 0 |
+| Relay, 1 socket | P2 | 266 / 701 | 198 / 425 | 73 / 134.5 | 13 | 0 | 0 |
+| Relay, 1 socket | P3 | 81 / 1981 | 53 / 1066 | 4 / 4 | 16 | 1 | 0 |
+| Relay, 1 socket (host on a far edge, room location not recorded) | P0 | 162 / 271 | 63 / 168 | 0.5 / 0 | 0 | 0 | 0 |
+| Relay, 1 socket (same) | P1 | 254 / 500 | 160 / 208 | 18 / 29.3 | 0 | 0 | 0 |
+| Relay, 1 socket (same) | P2 | 323 / 733 | 183 / 313 | 45 / 144.5 | 14 | 0 | 0 |
+| Relay, 1 socket (same) | P3 | 168 / 1919 | 70 / 1060 | 4.5 / 4 | 16 | 0 | 0 |
+| Relay, 2 sockets (all DFW) | P0 | 133 / 232 | 64 / 141 | 0 / 0 | 0 | 10 | 14 |
+| Relay, 2 sockets | P1 | 221 / 529 | 205 / 367 | 41 / 60.5 | 2 | 6 | 22 |
+| Relay, 2 sockets | P2 | 238 / 653 | 220 / 410 | 99 / 150 | 8 | 0 | 0 |
+| Relay, 2 sockets | P3 | 132 / 2233 | 57 / 1096 | 4 / 4 | 16 | 2 | 3 |
+
+Every run held 30 ticks/s, no receive-queue drops, no late-datagram drops at
+the sender, and at most 4 KB buffered in a relay socket. Raw rows:
+`results.jsonl` in the session files.
+
+Relay disconnects: in about 95 minutes of relay sessions the guest's relay
+socket(s) closed abnormally (1006, no close frame) four times, each time with
+no impairment active and within about 2 minutes of a match starting. In the
+drop recorded with socket logging, both of the guest's relay sockets closed
+together while the host's stayed up; for a dropped socket captured by
+`wrangler tail`, the Durable Object reported a normal outcome with no
+exception. The transport has no reconnect, so each one ended the guest's game.
+The WebRTC sessions (about 10 minutes) never dropped. One of the
+four followed a redeploy (a Durable Object restart drops its sockets); the
+cause of the other three is not established.
+
+### Verdict: NO-GO for "a TCP relay feels acceptable" as built
+
+Against the bar fixed before testing:
+
+- P0 relay round trip (median <= 60 ms, p99 <= 120 ms): **fail** in every run
+  (median 81-162 ms, p99 171-271 ms). The cause is the path, not TCP: each
+  client-to-room leg is 30-70 ms because the room's Durable Object ran in SJC
+  or DFW and connections land on varying edges. The gap criterion passed
+  (at most 1 gap over 150 ms, none over 300 ms).
+- P1 (at most 6 gaps over 150 ms per minute, p99 gap <= 250 ms, no
+  disconnects): **fail**. 1% loss on one guest's link gave 18-41 gaps over
+  150 ms per minute at the guest and 29-61 at the host, against 0 for WebRTC
+  under the identical impairment. p99 gaps stayed within 250 ms (160-205 ms),
+  and disconnects happened outside the impaired runs. Two sockets did not help:
+  the game sends per-tick data on its reliable stream too (about 34
+  frames/s), so splitting does not take per-tick traffic out of head-of-line
+  blocking. (The 2-socket run was also worse, but on a longer path.)
+- Recovery (P3): **pass**. After 2 s bursts the relay recovered like WebRTC
+  (same number of long gaps, maxima about 1.1 s versus 1.8 s), and socket
+  buffers never exceeded 4 KB.
+- Subjective feel was not assessed; the runs used scripted movement.
+
+The netcode kept the game consistent: 30 ticks/s throughout. Own-unit snaps
+and refused predictions appeared only on the relay: mostly in the all-DFW run
+(about 130 ms clean round trip, P0 and P1) and once during a P3 burst; never
+on WebRTC. What fails is smoothness under loss: on TCP
+every lost segment stalls everything behind it for a retransmission. That is
+the risk this spike set out to measure, and at 1% loss it is several times over
+the bar.
+
+What would have to change before a relay can pass:
+
+1. A shorter path: a room placed next to the players (Durable Object location
+   hints, or a relay outside Durable Objects), and edges that stay put. The P0
+   failure is mostly this.
+2. A reconnect-and-resume layer, so a dropped WebSocket does not end a game.
+3. Datagram transport (WebTransport) where the platform allows it; over TCP,
+   per-tick traffic cannot avoid head-of-line blocking.
