@@ -141,6 +141,7 @@ HaloWebTransportRuntime.install();
   assert.equal(HaloWebTransport.removePeer('friend'), true);
   await new Promise(resolve => setTimeout(resolve, 5));
   assert.deepEqual(calls.removed, [0x01004064]);
+  HaloWebTransportRuntime.pumpChannel.port1.close();
   console.log('library_web_transport tests passed');
 })().catch(error => {
   console.error(error);

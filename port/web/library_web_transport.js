@@ -26,6 +26,12 @@ addToLibrary({
       onError: null,
     },
     pumpTimer: 0,
+    pumpPosted: false,
+    pumpChannel: null,
+    idlePumpRetries: 0,
+    /* Retries that make no progress (a busy or full socket in Wasm) stop
+       spinning after this many and fall back to a timer. */
+    IDLE_PUMP_RETRY_LIMIT: 32,
     pumping: false,
 
     normalizeAddress: function(address) {
@@ -183,13 +189,35 @@ addToLibrary({
         !!record.unreliable && record.unreliable.readyState === 'open';
     },
 
-    schedulePump: function(delay) {
+    /* Hidden pages run chained timers about once a second, which would hold
+       received packets back from the game.  Message events are not
+       throttled, so pumps are posted through a MessageChannel. */
+    schedulePump: function() {
       var runtime = HaloWebTransportRuntime;
-      if (runtime.pumpTimer) return;
+      if (runtime.pumpPosted) return;
+      if (!runtime.pumpChannel) {
+        runtime.pumpChannel = new MessageChannel();
+        runtime.pumpChannel.port1.onmessage = function() {
+          runtime.pumpPosted = false;
+          runtime.pump();
+        };
+      }
+      runtime.pumpPosted = true;
+      runtime.pumpChannel.port2.postMessage(null);
+    },
+
+    scheduleIdlePumpRetry: function() {
+      var runtime = HaloWebTransportRuntime;
+      if (++runtime.idlePumpRetries <= runtime.IDLE_PUMP_RETRY_LIMIT) {
+        runtime.schedulePump();
+        return;
+      }
+      /* New packets and channel events still post pumps immediately. */
+      if (runtime.pumpTimer || runtime.pumpPosted) return;
       runtime.pumpTimer = setTimeout(function() {
         runtime.pumpTimer = 0;
         runtime.pump();
-      }, delay || 0);
+      }, 4);
     },
 
     syncPeerState: function(record) {
@@ -211,7 +239,7 @@ addToLibrary({
       }
       if (result === 0) {
         record.needsStateSync = true;
-        runtime.schedulePump(1);
+        runtime.scheduleIdlePumpRetry();
         return;
       }
       record.needsStateSync = false;
@@ -246,7 +274,7 @@ addToLibrary({
       channel.onopen = function() {
         record.needsStateSync = true;
         runtime.syncPeerState(record);
-        runtime.schedulePump(0);
+        runtime.schedulePump();
       };
       channel.onclose = function() {
         if (!record.removed) {
@@ -301,7 +329,8 @@ addToLibrary({
         record.unreliableQueue.push(bytes);
         record.unreliableQueuedBytes += bytes.byteLength;
       }
-      runtime.schedulePump(0);
+      runtime.idlePumpRetries = 0;
+      runtime.schedulePump();
     },
 
     deliverOne: function(record, reliable) {
@@ -328,9 +357,12 @@ addToLibrary({
       if (runtime.pumping) return;
       runtime.pumping = true;
       var retry = false;
+      var queuedBefore = 0;
+      var queuedAfter = 0;
       try {
         runtime.peersById.forEach(function(record) {
           if (record.removed) return;
+          queuedBefore += record.reliableQueue.length + record.unreliableQueue.length;
           if (record.needsStateSync) runtime.syncPeerState(record);
           var reliableResult = runtime.deliverOne(record, true);
           if (reliableResult < 0) {
@@ -350,6 +382,7 @@ addToLibrary({
               break;
             }
           }
+          queuedAfter += record.reliableQueue.length + record.unreliableQueue.length;
           if (record.needsStateSync ||
               (runtime.channelsReady(record) &&
                (record.reliableQueue.length || record.unreliableQueue.length))) retry = true;
@@ -357,7 +390,13 @@ addToLibrary({
       } finally {
         runtime.pumping = false;
       }
-      if (retry) runtime.schedulePump(1);
+      if (!retry) return;
+      if (queuedAfter < queuedBefore) {
+        runtime.idlePumpRetries = 0;
+        runtime.schedulePump();
+      } else {
+        runtime.scheduleIdlePumpRetry();
+      }
     },
 
     makeOffer: async function(record, iceRestart) {
@@ -568,7 +607,7 @@ addToLibrary({
         runtime.UNRELIABLE_HIGH_WATER;
       if (!runtime.channelWriteable(channel, highWater)) {
         record.needsStateSync = true;
-        runtime.schedulePump(1);
+        runtime.schedulePump();
         return 0;
       }
       try {
@@ -576,13 +615,13 @@ addToLibrary({
         channel.send(frame);
         if (channel.bufferedAmount > highWater) {
           record.needsStateSync = true;
-          runtime.schedulePump(1);
+          runtime.schedulePump();
         }
         return 1;
       } catch (error) {
         runtime.reportError(record, error);
         record.needsStateSync = true;
-        runtime.schedulePump(1);
+        runtime.schedulePump();
         return 0;
       }
     },
