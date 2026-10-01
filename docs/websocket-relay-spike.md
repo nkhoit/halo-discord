@@ -35,16 +35,36 @@ Pending decisions (nothing started):
 
 1. Hosting platform for the friends test: stay on Cloudflare and upgrade to
    Workers Paid (about $5/month) first, or move the relay and hosting to Azure.
-2. Approval of the friends-test plan: one Access-protected Worker serving the
-   page, wasm, maps (private R2 bucket, range requests) and relay, verifying
-   `Cf-Access-Jwt-Assertion` itself; room membership moved into the relay
-   (client-generated room ID and invite link, build-ID pin, display names),
-   with the loopback gate and WebRTC default unchanged elsewhere. Suggested
-   additions if approved:
-   - bound and sanitize display names in the relay;
-   - log the Access email per socket, for diagnosing drops;
-   - batch all of a tick's frames into one WebSocket message per socket, to
-     cut billed Durable Object requests.
+2. Approval of the friends-test plan (revised 2026-10-01: Discord auth instead
+   of Cloudflare Access; no Access or Zero Trust steps):
+   - Hosting: one Worker serving the page, wasm, maps (private R2 bucket, no
+     public URL, range requests) and the relay. The page shell and wasm may be
+     public; maps and relay require a valid token.
+   - Auth: Discord OAuth2 (`identify guilds`; `guilds.members.read` if role
+     checks are wanted later). The Worker exchanges the code server-side
+     (client secret as a Worker secret), confirms the user is in the
+     configured guild ID, and issues a short-lived HMAC-signed token bound to
+     the Discord user ID (about 1 h). Friends test: a "Log in with Discord"
+     redirect flow on the hosted page. Discord Activity later: the Embedded
+     App SDK authorize/authenticate flow against the same token endpoint.
+   - Tokens never go in URLs. Fetches use an Authorization header where
+     possible. The relay WebSocket authenticates with its first message
+     (browsers cannot set WebSocket headers) under a short deadline. FetchFS
+     map loads need a way to carry the token without query strings:
+     investigate a fetch wrapper (the page already wraps fetch for map paths
+     in `fetch_path_normalization.js`) versus a same-site cookie set by the
+     Worker after login, and justify the choice.
+   - The relay derives each player's identity from the token (Discord user
+     ID), not from client claims; display names can come from Discord.
+   - Rooms: membership moves into the relay (client-generated room ID and
+     invite link, build-ID pin, display names); the loopback gate and WebRTC
+     default stay unchanged elsewhere.
+   - Additions: bound and sanitize display names; log the Discord user ID per
+     socket for diagnosing drops; batch all of a tick's frames into one
+     WebSocket message per socket to cut billed Durable Object requests.
+   - Needed from the user when implementation starts: the Discord application
+     ID and client secret (reuse the probe app 1555066217545605222 or create a
+     new one), the redirect URI registration, and the guild ID.
 
 Also pending: a subjective play check by a person.
 
