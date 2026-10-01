@@ -20,6 +20,14 @@ function overlaps(a: SocketKind, b: SocketKind): boolean {
   return a === "both" || b === "both" || a === b;
 }
 
+function sendQuietly(socket: WebSocket, message: string | ArrayBuffer | Uint8Array): void {
+  try {
+    socket.send(message);
+  } catch {
+    /* closing: its close event removes it */
+  }
+}
+
 function closeQuietly(socket: WebSocket, code: number, reason: string): void {
   try {
     socket.close(code, reason);
@@ -29,25 +37,18 @@ function closeQuietly(socket: WebSocket, code: number, reason: string): void {
 }
 
 /* One room: a host and its guests. Frames travel host to guest and guest to
-   host only, and every member's identity comes from its socket. */
+   host only, and every member's identity comes from its socket.
+
+   The sockets are plain (not hibernatable) WebSockets. A room is busy for
+   the whole match, so hibernation saves nothing, and its per-message event
+   dispatch could not keep up with a match's few hundred frames a second in
+   local development; a plain socket listener does. */
 export class RelayRoom extends DurableObject<Env> {
-  /* Rebuilt from the hibernated sockets' attachments after a wake. */
-  private members: Map<WebSocket, Member> | null = null;
+  private members = new Map<WebSocket, Member>();
 
-  private memberMap(): Map<WebSocket, Member> {
-    if (!this.members) {
-      this.members = new Map();
-      for (const socket of this.ctx.getWebSockets()) {
-        const member = socket.deserializeAttachment() as Member | null;
-        if (member) this.members.set(socket, member);
-      }
-    }
-    return this.members;
-  }
-
-  private present(id: string, except?: WebSocket): boolean {
-    for (const [socket, member] of this.memberMap()) {
-      if (socket !== except && member.id === id && carries(member.kind, true)) return true;
+  private present(id: string): boolean {
+    for (const member of this.members.values()) {
+      if (member.id === id && carries(member.kind, true)) return true;
     }
     return false;
   }
@@ -59,15 +60,15 @@ export class RelayRoom extends DurableObject<Env> {
 
   private announce(about: Member, type: "peer-up" | "peer-down", except?: WebSocket): void {
     const message = JSON.stringify({ type, id: about.id });
-    for (const [socket, member] of this.memberMap()) {
+    for (const [socket, member] of this.members) {
       if (socket !== except && this.counterpart(about, member) && carries(member.kind, true)) {
-        socket.send(message);
+        sendQuietly(socket, message);
       }
     }
   }
 
   private admissionError(joining: Member): string | null {
-    const members = [...this.memberMap().values()];
+    const members = [...this.members.values()];
     if (members.length >= MAXIMUM_ROOM_SOCKETS) return "room full";
     const host = members.find((member) => member.role === "host");
     if (joining.role === "host" && host && host.id !== joining.id) return "room already has a host";
@@ -89,12 +90,18 @@ export class RelayRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    this.ctx.acceptWebSocket(server);
-    server.serializeAttachment(joining);
-    this.memberMap().set(server, joining);
+    server.binaryType = "arraybuffer";
+    server.accept();
+    server.addEventListener("message", (event) => this.receive(server, event.data));
+    server.addEventListener("close", (event) => {
+      this.remove(server);
+      closeQuietly(server, event.code, event.reason);
+    });
+    server.addEventListener("error", () => this.remove(server));
+    this.members.set(server, joining);
 
     const peers = new Set<string>();
-    for (const member of this.memberMap().values()) {
+    for (const member of this.members.values()) {
       if (this.counterpart(joining, member) && carries(member.kind, true)) peers.add(member.id);
     }
     server.send(JSON.stringify({
@@ -106,13 +113,10 @@ export class RelayRoom extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  override webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
-    const sender = this.memberMap().get(socket);
-    if (!sender) {
-      closeQuietly(socket, CloseCode.PolicyViolation, "unknown socket");
-      return;
-    }
-    if (typeof message === "string") {
+  private receive(socket: WebSocket, message: unknown): void {
+    const sender = this.members.get(socket);
+    if (!sender) return;
+    if (!(message instanceof ArrayBuffer)) {
       closeQuietly(socket, CloseCode.UnsupportedData, "binary frames only");
       return;
     }
@@ -128,7 +132,7 @@ export class RelayRoom extends DurableObject<Env> {
       return;
     }
     if (channel === Channel.RelayEcho) {
-      socket.send(message);
+      sendQuietly(socket, message);
       return;
     }
     const reliable = isReliableChannel(channel);
@@ -138,11 +142,11 @@ export class RelayRoom extends DurableObject<Env> {
     }
 
     const destination = identifierText(bytes.subarray(1, HEADER_BYTES));
-    for (const [target, member] of this.memberMap()) {
+    for (const [target, member] of this.members) {
       if (member.id === destination && this.counterpart(sender, member) &&
           carries(member.kind, reliable)) {
         writeIdentifier(bytes, sender.id);
-        target.send(bytes);
+        sendQuietly(target, bytes);
         return;
       }
     }
@@ -150,19 +154,10 @@ export class RelayRoom extends DurableObject<Env> {
        a network would. */
   }
 
-  override webSocketClose(socket: WebSocket, code: number, reason: string): void {
-    this.remove(socket);
-    closeQuietly(socket, code, reason);
-  }
-
-  override webSocketError(socket: WebSocket): void {
-    this.remove(socket);
-  }
-
   private remove(socket: WebSocket): void {
-    const member = this.memberMap().get(socket);
+    const member = this.members.get(socket);
     if (!member) return;
-    this.memberMap().delete(socket);
+    this.members.delete(socket);
     if (carries(member.kind, true) && !this.present(member.id)) {
       this.announce(member, "peer-down");
     }
