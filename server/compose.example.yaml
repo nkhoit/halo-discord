@@ -1,0 +1,21 @@
+# Example: `docker compose -f compose.example.yaml up -d --build` from server/.
+# Settings come from server/.env (see example.env); the values below override
+# the ones that differ inside the container. The port is published on
+# loopback only: cloudflared or Caddy on the same machine is the public side.
+services:
+  halo-server:
+    build: .
+    image: halo-server
+    container_name: halo-server
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8090"
+      BUILD_DIR: /data/build
+      MAPS_DIR: /data/maps
+    volumes:
+      - ../build/web:/data/build:ro
+      - ./maps:/data/maps:ro
+    ports:
+      - "127.0.0.1:8090:8090"
+    restart: unless-stopped
