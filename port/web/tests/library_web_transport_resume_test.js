@@ -20,34 +20,46 @@ const idBytes = text => Array.from({ length: 6 }, (_, i) => parseInt(text.slice(
 const idText = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 
 class FakeRelay {
-  constructor() { this.sockets = new Set(); this.inFlight = []; this.refuse = false; }
-  members() { return [...this.sockets].filter(s => s.readyState === 1); }
+  constructor() { this.sockets = new Set(); this.inFlight = []; this.refuse = false; this.batches = 0; }
+  members() { return [...this.sockets].filter(s => s.readyState === 1 && s.id); }
   carries(kind, reliable) { return kind === 'both' || kind === (reliable ? 'r' : 'u'); }
   connect(socket) {
     if (this.refuse) { setTimeout(() => socket.serverClose(1006), 0); return; }
+    this.sockets.add(socket);
+    setTimeout(() => { socket.readyState = 1; socket.onopen(); }, 5);
+  }
+  /* Like services: the first message authenticates and names the identifier. */
+  text(socket, value) {
+    const message = JSON.parse(value);
+    if (message.type !== 'auth' || socket.id) { this.leave(socket, 4401); return; }
     for (const other of this.members()) {
-      if (other.id === socket.id && (other.kind === 'both' || socket.kind === 'both' || other.kind === socket.kind)) {
+      if (other.id === message.id && (other.kind === 'both' || socket.kind === 'both' || other.kind === socket.kind)) {
         this.sockets.delete(other);
         other.serverClose(4000);
       }
     }
-    this.sockets.add(socket);
-    setTimeout(() => {
-      socket.readyState = 1;
-      socket.onopen();
-      const peers = [...new Set(this.members().filter(m => m.id !== socket.id && m.role !== socket.role &&
-        this.carries(m.kind, true)).map(m => m.id))];
-      socket.deliverText({ type: 'ready', self: { id: socket.id }, peers });
-      if (this.carries(socket.kind, true)) {
-        for (const m of this.members()) {
-          if (m.id !== socket.id && m.role !== socket.role && this.carries(m.kind, true)) {
-            m.deliverText({ type: 'peer-up', id: socket.id });
-          }
+    socket.id = message.id;
+    const peers = [...new Set(this.members().filter(m => m.id !== socket.id && m.role !== socket.role &&
+      this.carries(m.kind, true)).map(m => m.id))];
+    socket.deliverText({ type: 'ready', self: { id: socket.id }, peers });
+    if (this.carries(socket.kind, true)) {
+      for (const m of this.members()) {
+        if (m.id !== socket.id && m.role !== socket.role && this.carries(m.kind, true)) {
+          m.deliverText({ type: 'peer-up', id: socket.id });
         }
       }
-    }, 5);
+    }
   }
   receive(from, bytes) {
+    if (bytes[0] === 0x80) {
+      this.batches++;
+      for (let offset = 1; offset < bytes.length;) {
+        const length = (bytes[offset] << 8) | bytes[offset + 1];
+        this.receive(from, bytes.slice(offset + 2, offset + 2 + length));
+        offset += 2 + length;
+      }
+      return;
+    }
     const channel = bytes[0];
     if (channel === 6) { this.inFlight.push({ to: from, bytes }); return; }
     const reliable = channel === 0 || channel === 2 || channel === 3 || channel === 7;
@@ -96,7 +108,7 @@ function makeClient(relay, name, self, role, peer) {
     constructor(url) {
       const parsed = new URL(url);
       this.role = parsed.searchParams.get('role');
-      this.id = parsed.searchParams.get('id');
+      this.id = null;
       this.kind = parsed.searchParams.get('ch') === 'both' ? 'both' : parsed.searchParams.get('ch');
       this.readyState = 0;
       this.bufferedAmount = 0;
@@ -104,7 +116,8 @@ function makeClient(relay, name, self, role, peer) {
     }
     send(value) {
       if (this.readyState !== 1) throw new Error('not open');
-      relay.receive(this, Uint8Array.from(value));
+      if (typeof value === 'string') relay.text(this, value);
+      else relay.receive(this, Uint8Array.from(value));
     }
     close() { if (this.readyState < 2) relay.leave(this, 1000); }
     serverClose(code) {
@@ -145,7 +158,8 @@ function makeClient(relay, name, self, role, peer) {
   const api = context.HaloWebTransport;
   api.configure({
     transport: 'relay',
-    relay: { url: 'https://relay.test', sockets: 1, roomId: 'room-1', role },
+    relay: { url: 'https://relay.test', sockets: 1, roomId: 'room-1', role,
+      auth: { getToken: () => `token-${name}`, build: 'b1' } },
     onSignal() { throw new Error('relay peers must not signal'); },
     onStateChange: event => states.push(event.state),
     onError() {},
@@ -225,8 +239,9 @@ async function pump(relay, times = 6) {
     /* Delivered, but the acknowledgement dies with the sender's socket: the
        replay repeats frames the receiver already has. */
     for (let i = 0; i < 10; i++) host.send(true);
+    await sleep(10); // the batch leaves the host's outbox
     relay.flush();
-    await sleep(5);
+    await sleep(15); // delivered; the guest's acknowledgement is now in flight
     assert.equal(guest.delivered.reliable.length, 90);
     relay.drop(HOST);
     await sleep(400);
@@ -276,6 +291,7 @@ async function pump(relay, times = 6) {
     await sleep(80);
     host.runtime.relayCheckGrace();
     assert(host.states.includes('failed'), 'the host gives up on a guest that never returns');
+    assert(relay.batches > 0, 'frames travelled in batches');
     console.log('library_web_transport resume tests passed');
   } finally {
     host.close();

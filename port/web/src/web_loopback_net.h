@@ -52,5 +52,9 @@ void *web_net_remote_ingress_buffer(void);
 int web_net_remote_ingress_capacity(void);
 /* 1: consumed, 0: retry later, -1: malformed/fatal protocol input. */
 int web_net_remote_receive(unsigned long address, int length);
+/* Batched transports (the WebSocket relay): web_net_end_frame, called once
+per game frame, sends what the frame queued. */
+void web_net_remote_set_batching(int enabled);
+void web_net_end_frame(void);
 
 #endif

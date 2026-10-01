@@ -41,9 +41,13 @@ class FakeWebSocket {
     this.readyState = 0;
     this.bufferedAmount = 0;
     this.sent = [];
+    this.texts = [];
     sockets.push(this);
   }
-  send(value) { this.sent.push(new Uint8Array(value)); }
+  send(value) {
+    if (typeof value === 'string') this.texts.push(JSON.parse(value));
+    else this.sent.push(new Uint8Array(value));
+  }
   close(code) {
     if (this.readyState === 3) return;
     this.readyState = 3;
@@ -74,7 +78,8 @@ function haloFrame(marker) {
 async function addGuest(sockets_) {
   HaloWebTransport.configure({
     transport: 'relay',
-    relay: { url: 'https://relay.test/', sockets: sockets_, roomId: 'room-1', role: 'host' },
+    relay: { url: 'https://relay.test/', sockets: sockets_, roomId: 'room-1', role: 'host', batch: false,
+      auth: { getToken: () => 'session-token', build: 'web-1' } },
     onSignal() { throw new Error('relay peers must not signal'); },
     onStateChange: event => states.push(event.state),
     onError() {},
@@ -91,11 +96,12 @@ const states = [];
   await addGuest(1);
   assert.equal(sockets.length, 1);
   const socket = sockets[0];
-  assert.equal(socket.url.href,
-    'wss://relay.test/v1/rooms/room-1/ws?role=host&id=020000000001&ch=both');
+  assert.equal(socket.url.href, 'wss://relay.test/v1/rooms/room-1/ws?role=host&ch=both');
   assert.equal(states[0], 'connecting');
 
   socket.open();
+  assert.deepEqual(socket.texts, [{ type: 'auth', token: 'session-token', id: HOST, build: 'web-1' }],
+    'the session token is the first message');
   assert.equal(lastState(), '0,0,0', 'not connected until the relay reports the peer');
   socket.text({ type: 'ready', self: { id: HOST }, peers: [] });
   socket.text({ type: 'peer-up', id: GUEST });
@@ -184,10 +190,56 @@ const states = [];
   HaloWebTransport.disconnectAll();
   await assert.rejects(HaloWebTransport.handleSignal('guest', {}), /Unknown peer/);
 
+  // Room mode: the relay's membership supplies the peers; frames are batched
+  // per socket until the game frame ends.
+  const discovered = [];
+  let batching = null;
+  Module._web_net_remote_set_batching = enabled => { batching = enabled; };
+  HaloWebTransport.configure({
+    relay: { url: 'https://relay.test/', sockets: 1, roomId: 'room-2', role: 'host', rooms: true,
+      auth: { getToken: () => 'session-token', build: 'web-1' } },
+    onRelayPeer: peer => discovered.push(peer),
+  });
+  HaloWebTransport.openRelay();
+  assert.equal(batching, 1, 'the game is asked to flush once per frame');
+  const room = sockets[sockets.length - 1];
+  room.open();
+  room.text({ type: 'ready', self: { id: HOST }, peers: [GUEST], names: { [GUEST]: 'Guest One' } });
+  await settle();
+  assert.deepEqual(discovered, [{ peerId: 'relay-' + GUEST, identifier: GUEST, name: 'Guest One', role: 'guest' }]);
+  assert.equal(HaloWebTransport.listPeers()[0].state, 'connected');
+
+  room.sent.length = 0;
+  assert.equal(library.web_transport_send(GUEST_ADDRESS, 1, 512, 12), 1);
+  assert.equal(library.web_transport_send(GUEST_ADDRESS, 0, 512, 12), 1);
+  assert.equal(library.web_transport_send(GUEST_ADDRESS, 0, 512, 12), 1);
+  assert.equal(room.sent.length, 0, 'held until the frame ends');
+  library.web_transport_flush();
+  assert.equal(room.sent.length, 1, 'one message for the frame');
+  const batch = room.sent[0];
+  assert.equal(batch[0], 0x80);
+  const lengths = [];
+  for (let offset = 1; offset < batch.length;) {
+    const length = (batch[offset] << 8) | batch[offset + 1];
+    lengths.push([batch[offset + 2], length]);
+    offset += 2 + length;
+  }
+  assert.deepEqual(lengths, [[0, 7 + 8 + 12], [1, 7 + 12], [1, 7 + 12]]);
+
+  const before = calls.received.length;
+  const inner = [[1, ...id(GUEST), ...haloFrame(21)], [1, ...id(GUEST), ...haloFrame(22)]];
+  room.binary([0x80, ...inner.flatMap(frame => [0, frame.length, ...frame])]);
+  await settle();
+  assert.deepEqual(calls.received.slice(before).map(entry => entry[1][4]), [21, 22], 'a batch is split on arrival');
+
+  HaloWebTransport.disconnectAll();
+  assert.equal(batching, 0);
+
   console.log('library_web_transport relay tests passed');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;
 }).finally(() => {
+  HaloWebTransport.disconnectAll();
   if (runtime.pumpChannel) runtime.pumpChannel.port1.close();
 });

@@ -481,7 +481,12 @@ addToLibrary({
           reconnects: relay.reconnects,
           lastOutageMs: relay.lastOutageMilliseconds,
           closeCodes: relay.closeCodes,
+          framesSent: relay.framesSent,
+          messagesSent: relay.messagesSent,
+          framesPerMessage: relay.messagesSent ? +(relay.framesSent / relay.messagesSent).toFixed(2) : null,
         };
+        relay.framesSent = 0;
+        relay.messagesSent = 0;
         relay.echo = [[], []];
         relay.maxBuffered = [0, 0];
         relay.closeCodes = [];
@@ -866,6 +871,9 @@ addToLibrary({
     RELAY_ACK_MILLISECONDS: 50,
     RELAY_GRACE_MILLISECONDS: 20000,
     RELAY_RECONNECT_MILLISECONDS: [250, 500, 1000, 2000, 4000],
+    RELAY_BATCH_MARKER: 0x80,
+    RELAY_BATCH_LIMIT: 60 * 1024,
+    RELAY_FLUSH_MILLISECONDS: 4,
     relayPeers: new Map(),
     relay: null,
 
@@ -917,6 +925,14 @@ addToLibrary({
         closeCodes: [],
         echo: [[], []],
         maxBuffered: [0, 0],
+        /* Frames waiting for the end of the game frame, per socket. */
+        batching: options.batch !== false,
+        outbox: new Map(),
+        flushTimer: 0,
+        framesSent: 0,
+        messagesSent: 0,
+        names: new Map(),
+        discovering: new Set(),
       };
       runtime.relay = relay;
       runtime.relayConnect(relay);
@@ -925,6 +941,12 @@ addToLibrary({
       if (runtime.netstatsEnabled) {
         relay.timers.push(setInterval(runtime.relayProbe, runtime.RELAY_PROBE_MILLISECONDS));
       }
+      runtime.relaySetBatching(relay.batching);
+    },
+
+    relaySetBatching: function(enabled) {
+      var setter = typeof Module !== 'undefined' && Module['_web_net_remote_set_batching'];
+      if (typeof setter === 'function') setter(enabled ? 1 : 0);
     },
 
     relayConnect: function(relay) {
@@ -937,11 +959,22 @@ addToLibrary({
       var open = function(kind) {
         var url = new URL('v1/rooms/' + encodeURIComponent(relay.options.roomId) + '/ws',
           base.href.replace(/\/?$/, '/'));
-        url.search = new URLSearchParams({ role: relay.options.role, id: identifier, ch: kind }).toString();
+        url.search = new URLSearchParams({ role: relay.options.role, ch: kind }).toString();
         var socket = new WebSocket(url.href);
         var current = function() { return runtime.relay === relay && relay.generation === generation; };
         socket.binaryType = 'arraybuffer';
-        socket.onopen = function() { if (current()) runtime.relaySyncAll(); };
+        socket.onopen = function() {
+          if (!current()) return;
+          /* Browsers cannot set WebSocket headers: the session token is the
+             first message, and the relay answers it with "ready". */
+          var auth = relay.options.auth;
+          if (auth) {
+            socket.send(JSON.stringify({
+              type: 'auth', token: auth.getToken(), id: identifier, build: auth.build,
+            }));
+          }
+          runtime.relaySyncAll();
+        };
         socket.onmessage = function(event) { if (current()) runtime.relayMessage(relay, socket, event.data); };
         socket.onclose = function(event) { if (current()) runtime.relayLost(relay, event.code); };
         return socket;
@@ -969,6 +1002,8 @@ addToLibrary({
       relay.generation++;
       relay.ready = false;
       relay.present = new Set();
+      /* Reliable frames in it are still in the replay buffer. */
+      relay.outbox.clear();
       relay.closeCodes.push(code);
       if (!relay.outageStart) relay.outageStart = performance.now();
       runtime.relayCloseSockets(relay, 1000);
@@ -992,7 +1027,76 @@ addToLibrary({
       relay.timers.forEach(clearInterval);
       clearTimeout(relay.reconnectTimer);
       clearTimeout(relay.watchTimer);
+      clearTimeout(relay.flushTimer);
+      relay.outbox.clear();
+      runtime.relaySetBatching(false);
       runtime.relayCloseSockets(relay, 1000);
+    },
+
+    /* Queues a frame for the socket; relayFlush sends each socket's queue as
+       one message at the end of the game frame (web_net_end_frame), or after
+       RELAY_FLUSH_MILLISECONDS if the game is not ticking. */
+    relayQueue: function(socket, frame) {
+      var runtime = HaloWebTransportRuntime;
+      var relay = runtime.relay;
+      if (!relay || socket.readyState !== 1) return;
+      if (!relay.batching) {
+        runtime.relaySendMessage(relay, socket, [frame]);
+        return;
+      }
+      var box = relay.outbox.get(socket);
+      if (!box) {
+        box = { frames: [], bytes: 1 };
+        relay.outbox.set(socket, box);
+      }
+      if (box.bytes + 2 + frame.byteLength > runtime.RELAY_BATCH_LIMIT) {
+        runtime.relaySendMessage(relay, socket, box.frames);
+        box.frames = [];
+        box.bytes = 1;
+      }
+      box.frames.push(frame);
+      box.bytes += 2 + frame.byteLength;
+      if (!relay.flushTimer) relay.flushTimer = setTimeout(runtime.relayFlush, runtime.RELAY_FLUSH_MILLISECONDS);
+    },
+
+    relayFlush: function() {
+      var runtime = HaloWebTransportRuntime;
+      var relay = runtime.relay;
+      if (!relay) return;
+      clearTimeout(relay.flushTimer);
+      relay.flushTimer = 0;
+      relay.outbox.forEach(function(box, socket) {
+        if (box.frames.length) runtime.relaySendMessage(relay, socket, box.frames);
+      });
+      relay.outbox.clear();
+    },
+
+    relaySendMessage: function(relay, socket, frames) {
+      if (socket.readyState !== 1) return;
+      var message = frames[0];
+      if (frames.length > 1) {
+        var size = 1;
+        frames.forEach(function(frame) { size += 2 + frame.byteLength; });
+        message = new Uint8Array(size);
+        message[0] = HaloWebTransportRuntime.RELAY_BATCH_MARKER;
+        var offset = 1;
+        frames.forEach(function(frame) {
+          message[offset] = frame.byteLength >> 8;
+          message[offset + 1] = frame.byteLength & 255;
+          message.set(frame, offset + 2);
+          offset += 2 + frame.byteLength;
+        });
+      }
+      try {
+        socket.send(message);
+      } catch (error) {
+        /* Closing: its close event starts the reconnect and replay. */
+        return;
+      }
+      relay.framesSent += frames.length;
+      relay.messagesSent++;
+      var index = socket === relay.reliable ? 0 : 1;
+      if (socket.bufferedAmount > relay.maxBuffered[index]) relay.maxBuffered[index] = socket.bufferedAmount;
     },
 
     relaySyncAll: function() {
@@ -1044,24 +1148,73 @@ addToLibrary({
           }
           if (message.colo) relay.colo = message.colo;
           relay.present = new Set(Array.isArray(message.peers) ? message.peers : []);
+          if (message.names && typeof message.names === 'object') {
+            Object.keys(message.names).forEach(function(id) { relay.names.set(id, String(message.names[id])); });
+          }
           /* Anything sent before this socket may have died with the old one. */
           runtime.relayPeers.forEach(function(record) { record.needsResend = true; });
           runtime.relaySyncAll();
+          relay.present.forEach(function(id) { runtime.relayDiscover(relay, id); });
           return;
         }
         if (message.type === 'peer-up') {
           relay.present.add(message.id);
+          if (typeof message.name === 'string') relay.names.set(message.id, message.name);
           /* The peer's previous socket may have taken frames with it. */
           var returned = runtime.relayPeers.get(message.id);
           if (returned) returned.needsResend = true;
           runtime.relaySyncAll();
+          runtime.relayDiscover(relay, message.id);
         } else if (message.type === 'peer-down') {
           relay.present.delete(message.id);
           runtime.relaySyncAll();
         }
         return;
       }
-      if (!(data instanceof ArrayBuffer) || data.byteLength < runtime.RELAY_HEADER_BYTES) return;
+      if (!(data instanceof ArrayBuffer) || data.byteLength < 1) return;
+      var batch = new Uint8Array(data);
+      if (batch[0] !== runtime.RELAY_BATCH_MARKER) {
+        runtime.relayFrame(relay, socket, data);
+        return;
+      }
+      for (var offset = 1; offset + 2 <= batch.byteLength;) {
+        var length = (batch[offset] << 8) | batch[offset + 1];
+        offset += 2;
+        if (!length || offset + length > batch.byteLength) return;
+        runtime.relayFrame(relay, socket, data.slice(offset, offset + length));
+        offset += length;
+      }
+    },
+
+    /* Room mode: peers come from the relay's membership instead of signaling.
+       Each newly seen counterpart becomes a peer, reported to the page. */
+    relayDiscover: function(relay, id) {
+      var runtime = HaloWebTransportRuntime;
+      if (!relay.options.rooms || runtime.relayPeers.has(id) || relay.discovering.has(id) ||
+          !/^[0-9a-f]{12}$/.test(id)) return;
+      relay.discovering.add(id);
+      var peerId = 'relay-' + id;
+      runtime.addPeer({ peerId: peerId, remoteIdentifier: id, initiator: relay.options.role === 'host' })
+        .then(function() {
+          var callback = runtime.options.onRelayPeer;
+          if (typeof callback === 'function') {
+            callback({ peerId: peerId, identifier: id, name: relay.names.get(id) || null,
+              role: relay.options.role === 'host' ? 'guest' : 'host' });
+          }
+          /* addPeer may already have reported the peer connected, before the
+             callback registered it; report the current state again. */
+          var record = runtime.peersById.get(peerId);
+          if (record) record.lastPublicState = null;
+          runtime.relaySyncAll();
+        })
+        .catch(function(error) { runtime.reportError(null, error); })
+        .finally(function() { relay.discovering.delete(id); });
+    },
+
+    relayFrame: function(relay, socket, data) {
+      var runtime = HaloWebTransportRuntime;
+      var channels = runtime.RELAY_CHANNEL;
+      if (data.byteLength < runtime.RELAY_HEADER_BYTES) return;
       var bytes = new Uint8Array(data);
       var channel = bytes[0];
       var view = new DataView(data);
@@ -1099,7 +1252,7 @@ addToLibrary({
       } else if (channel === channels.PING_RELIABLE || channel === channels.PING_UNRELIABLE) {
         var reply = bytes.slice();
         reply[0] = channel + 1;
-        socket.send(reply);
+        runtime.relayQueue(socket, reply);
       } else if ((channel === channels.PONG_RELIABLE || channel === channels.PONG_UNRELIABLE) &&
                  record.relayProbes && data.byteLength >= payload + 8) {
         record.relayProbes[channel === channels.PONG_RELIABLE ? 0 : 1].push(
@@ -1125,7 +1278,7 @@ addToLibrary({
       frame[0] = runtime.RELAY_CHANNEL.ACK;
       frame.set(record.identifierBytes, 1);
       new DataView(frame.buffer).setUint32(runtime.RELAY_HEADER_BYTES, record.rxSequence);
-      runtime.relay.reliable.send(frame);
+      runtime.relayQueue(runtime.relay.reliable, frame);
       record.ackOwed = 0;
     },
 
@@ -1142,7 +1295,7 @@ addToLibrary({
       var socket = runtime.relay.reliable;
       record.resend.forEach(function(frame) {
         new DataView(frame.buffer).setUint32(runtime.RELAY_HEADER_BYTES + 4, record.rxSequence);
-        socket.send(frame);
+        runtime.relayQueue(socket, frame);
       });
       record.resentFrames += record.resend.length;
       record.ackOwed = 0;
@@ -1165,12 +1318,12 @@ addToLibrary({
       if (!relay || relay.failed || !relay.ready) return;
       runtime.relayPeers.forEach(function(record) {
         if (!runtime.relayLinked(record)) return;
-        relay.reliable.send(runtime.relayProbeFrame(channels.PING_RELIABLE, record.identifierBytes));
-        relay.unreliable.send(runtime.relayProbeFrame(channels.PING_UNRELIABLE, record.identifierBytes));
+        runtime.relayQueue(relay.reliable, runtime.relayProbeFrame(channels.PING_RELIABLE, record.identifierBytes));
+        runtime.relayQueue(relay.unreliable, runtime.relayProbeFrame(channels.PING_UNRELIABLE, record.identifierBytes));
       });
       [relay.reliable, relay.unreliable].forEach(function(socket, index) {
         if (socket.readyState === 1 && (index === 0 || socket !== relay.reliable)) {
-          socket.send(runtime.relayProbeFrame(channels.ECHO, null));
+          runtime.relayQueue(socket, runtime.relayProbeFrame(channels.ECHO, null));
         }
       });
     },
@@ -1219,15 +1372,8 @@ addToLibrary({
       return 1;
     },
 
-    relayTransmit: function(record, socket, frame, index) {
-      var relay = HaloWebTransportRuntime.relay;
-      try {
-        socket.send(frame);
-      } catch (error) {
-        /* Closing: its close event starts the reconnect and replay. */
-        return;
-      }
-      if (socket.bufferedAmount > relay.maxBuffered[index]) relay.maxBuffered[index] = socket.bufferedAmount;
+    relayTransmit: function(record, socket, frame) {
+      HaloWebTransportRuntime.relayQueue(socket, frame);
     },
 
     /* WebSocket has no bufferedamountlow event: poll while a peer is blocked. */
@@ -1280,7 +1426,6 @@ addToLibrary({
         rxSequence: 0,
         ackOwed: 0,
         needsResend: false,
-        needsResend: false,
         resend: [],
         resendBytes: 0,
         resentFrames: 0,
@@ -1324,6 +1469,7 @@ addToLibrary({
           if (options.onSignal !== undefined) runtime.options.onSignal = options.onSignal;
           if (options.onStateChange !== undefined) runtime.options.onStateChange = options.onStateChange;
           if (options.onError !== undefined) runtime.options.onError = options.onError;
+          if (options.onRelayPeer !== undefined) runtime.options.onRelayPeer = options.onRelayPeer;
           if (options.transport !== undefined) {
             if (options.transport !== 'webrtc' && options.transport !== 'relay') {
               throw new TypeError('transport must be "webrtc" or "relay"');
@@ -1339,6 +1485,9 @@ addToLibrary({
           }
         },
         getLocalIdentifier: function() { return runtime.localIdentifier(); },
+        /* Room mode: connects to the configured relay room; its members
+           become peers through onRelayPeer. */
+        openRelay: function() { runtime.openRelay(); },
         addPeer: function(options) { return runtime.addPeer(options); },
         handleSignal: function(peerId, signal) { return runtime.handleSignal(peerId, signal); },
         restartIce: function(peerId) { return runtime.restartIce(peerId); },
@@ -1389,5 +1538,13 @@ addToLibrary({
   web_transport_send__sig: 'iiiii',
   web_transport_send: function(address, reliable, buffer, length) {
     return HaloWebTransportRuntime.send(address, reliable, buffer, length);
+  },
+
+  /* Once per game frame while a batching transport is open. */
+  web_transport_flush__deps: ['$HaloWebTransportRuntime'],
+  web_transport_flush__proxy: 'sync',
+  web_transport_flush__sig: 'v',
+  web_transport_flush: function() {
+    HaloWebTransportRuntime.relayFlush();
   },
 });

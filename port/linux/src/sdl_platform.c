@@ -46,6 +46,7 @@ static struct
 	double gap_maximum;
 	unsigned long hitches;
 } web_frame_meter;
+extern void web_net_end_frame(void);
 #endif
 
 static struct platform_input_state input_state;
@@ -483,6 +484,8 @@ void platform_web_frame_end(void)
 	double now = emscripten_get_now();
 	double duration = now - web_frame_meter.callback_start;
 
+	/* (port/web/src/web_loopback_net.c) the frame's network output, batched */
+	web_net_end_frame();
 	web_frame_meter.loops++;
 	web_frame_meter.callback_total += duration;
 	if (duration > web_frame_meter.callback_maximum)

@@ -42,6 +42,10 @@ int web_transport_send(unsigned long address, int reliable,
 	return 1;
 }
 
+void web_transport_flush(void)
+{
+}
+
 static struct sockaddr_in address(unsigned long ip, unsigned short port)
 {
 	struct sockaddr_in result;
