@@ -34,6 +34,9 @@ export default {
     }
     if (!originAllowed(request, env)) return text(403, "origin not allowed");
     if (!parseMember(url)) return text(400, "invalid role, id or ch");
-    return env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(request);
+    /* Tell the room which data center this client reached (diagnostic). */
+    const forwarded = new Request(request);
+    forwarded.headers.set("X-Relay-Colo", String(request.cf?.colo ?? "unknown"));
+    return env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(forwarded);
   },
 } satisfies ExportedHandler<Env>;

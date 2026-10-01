@@ -466,6 +466,8 @@ addToLibrary({
       if (relay) {
         relaySummary = {
           sockets: relay.reliable === relay.unreliable ? 1 : 2,
+          edgeColo: relay.colo ? relay.colo.edge : null,
+          roomColo: relay.colo ? relay.colo.room : null,
           echoReliable: runtime.netstatsSamples(relay.echo[0]),
           echoUnreliable: relay.reliable === relay.unreliable ? null : runtime.netstatsSamples(relay.echo[1]),
           maxBufferedReliable: relay.maxBuffered[0],
@@ -942,6 +944,7 @@ addToLibrary({
         try { message = JSON.parse(data); } catch (error) { return; }
         if (message.type === 'ready' && Array.isArray(message.peers)) {
           message.peers.forEach(function(id) { relay.present.add(id); });
+          if (message.colo && socket === relay.reliable) relay.colo = message.colo;
         } else if (message.type === 'peer-up') {
           relay.present.add(message.id);
         } else if (message.type === 'peer-down') {

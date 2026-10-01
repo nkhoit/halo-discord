@@ -124,6 +124,18 @@ describe("relay admission", () => {
     expect(response.status).toBe(409);
     expect(await response.text()).toBe("room full");
   });
+  it("reports the data centers from the Worker, not from the client", async () => {
+    const room = newRoom();
+    const response = await upgrade(`/v1/rooms/${room}/ws?role=host&id=${HOST}`, { "X-Relay-Colo": "FAKE" });
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const ready = new Promise<Record<string, unknown>>((resolve) =>
+      socket.addEventListener("message", (event: MessageEvent) => resolve(JSON.parse(event.data as string))));
+    socket.accept();
+    const colo = (await ready).colo as { edge: string; room: string };
+    expect(colo.edge).not.toBe("FAKE");
+    expect(typeof colo.room).toBe("string");
+  });
 });
 
 describe("relay membership", () => {

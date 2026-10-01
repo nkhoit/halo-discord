@@ -45,6 +45,16 @@ function closeQuietly(socket: WebSocket, code: number, reason: string): void {
    local development; a plain socket listener does. */
 export class RelayRoom extends DurableObject<Env> {
   private members = new Map<WebSocket, Member>();
+  private location: Promise<string> | null = null;
+
+  /* Where this room runs, from Cloudflare's trace endpoint (diagnostic). */
+  private roomColo(): Promise<string> {
+    this.location ??= fetch("https://cloudflare.com/cdn-cgi/trace", { signal: AbortSignal.timeout(1500) })
+      .then((response) => response.text())
+      .then((body) => /^colo=(\w+)$/m.exec(body)?.[1] ?? "unknown")
+      .catch(() => "unknown");
+    return this.location;
+  }
 
   private present(id: string): boolean {
     for (const member of this.members.values()) {
@@ -83,6 +93,7 @@ export class RelayRoom extends DurableObject<Env> {
   override async fetch(request: Request): Promise<Response> {
     const joining = parseMember(new URL(request.url));
     if (!joining) return new Response("invalid member", { status: 400 });
+    const colo = { edge: request.headers.get("X-Relay-Colo") ?? "unknown", room: await this.roomColo() };
     const error = this.admissionError(joining);
     if (error) return new Response(error, { status: 409 });
 
@@ -108,6 +119,7 @@ export class RelayRoom extends DurableObject<Env> {
       type: "ready",
       self: { id: joining.id, role: joining.role, kind: joining.kind },
       peers: [...peers],
+      colo,
     }));
     if (!wasPresent && carries(joining.kind, true)) this.announce(joining, "peer-up", server);
     return new Response(null, { status: 101, webSocket: client });
