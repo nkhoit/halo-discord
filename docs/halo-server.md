@@ -111,7 +111,7 @@ those named resources are touched.
 Reuse the probe application (1555066217545605222) or create a new one at
 <https://discord.com/developers/applications>.
 
-1. OAuth2 > Redirects: add `https://halo.khoit.dev/auth/callback`
+1. OAuth2 > Redirects: add `https://halo.runtimeexception.net/auth/callback`
    (`PUBLIC_ORIGIN` + `/auth/callback`, exactly).
 2. OAuth2 > Client information: copy the Client ID; Reset Secret and copy
    it. Put them in `.env` as `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`.
@@ -119,18 +119,21 @@ Reuse the probe application (1555066217545605222) or create a new one at
    Advanced > Developer Mode on, then right-click the server icon > Copy
    Server ID, into `DISCORD_GUILD_ID`.
 4. Later, for the Activity: Activities > URL Mappings, prefix `/` to target
-   `halo.khoit.dev/activity`, and add
+   `halo.runtimeexception.net/activity`, and add
    `EXTRA_ORIGINS=https://<application id>.discordsays.com` to `.env`.
-   (Changing the probe app's mapping retires the probe Activity.)
+   (The probe app's root mapping still points at the probe Worker; changing
+   it retires the probe Activity.)
 
 Production `.env` additions: `NODE_ENV=production`, `DEV_LOGIN=0`,
-`PUBLIC_ORIGIN=https://halo.khoit.dev`, a fresh `TOKEN_SECRET`
-(`openssl rand -base64 48`), and `TRUST_PROXY` to match the front end.
+`PUBLIC_ORIGIN=https://halo.runtimeexception.net`, a fresh `TOKEN_SECRET`
+(`openssl rand -base64 48`), and `TRUST_PROXY` to match the front end. On
+forge this file is `~/halo-discord/server/.env` (mode 600).
 
 ## Expose it: Cloudflare Tunnel (named, locally managed)
 
-No inbound ports; `cloudflared` dials out to Cloudflare. On the host running
-the container (Ubuntu), following Cloudflare's
+No inbound ports; `cloudflared` dials out to Cloudflare. This is how forge is
+set up (cloudflared 2026.9.3 from Cloudflare's apt repo), following
+Cloudflare's
 [locally-managed tunnel guide](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/create-local-tunnel/):
 
 ```sh
@@ -139,21 +142,44 @@ curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
 sudo apt-get update && sudo apt-get install cloudflared
 
-cloudflared tunnel login                  # prints a URL; pick the khoit.dev zone
+cloudflared tunnel login                  # prints a URL; pick the runtimeexception.net zone
 cloudflared tunnel create halo            # note the UUID and credentials path
-cloudflared tunnel route dns halo halo.khoit.dev
+cloudflared tunnel route dns halo halo.runtimeexception.net
 
-cat > ~/.cloudflared/config.yml <<EOF
+cat > ~/.cloudflared/halo.yml <<EOF
 tunnel: <UUID>
 credentials-file: /home/forge/.cloudflared/<UUID>.json
 ingress:
-  - hostname: halo.khoit.dev
+  - hostname: halo.runtimeexception.net
     service: http://127.0.0.1:8090
   - service: http_status:404
 EOF
+```
 
-sudo cloudflared --config /home/forge/.cloudflared/config.yml service install
-sudo systemctl start cloudflared
+On forge the tunnel `halo` has id `58bb6d7a-2b1b-43bb-9abb-7a5eadcac383`.
+It runs under its own unit, `/etc/systemd/system/halo-cloudflared.service`,
+rather than the default `cloudflared.service`, so it cannot collide with
+other tunnels:
+
+```ini
+[Unit]
+Description=cloudflared tunnel for halo.runtimeexception.net
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=forge
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /home/forge/.cloudflared/halo.yml tunnel run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```sh
+sudo systemctl daemon-reload && sudo systemctl enable --now halo-cloudflared
+cloudflared tunnel info halo              # connections should be listed
 ```
 
 Set `TRUST_PROXY=cloudflare` (the auth rate limit keys on
@@ -166,7 +192,7 @@ which the server's 30 s protocol pings prevent.
 Point an A/AAAA record at the machine, open 80 and 443, and run Caddy with:
 
 ```
-halo.khoit.dev {
+halo.runtimeexception.net {
 	reverse_proxy 127.0.0.1:8090
 }
 ```
@@ -194,10 +220,17 @@ rules) or Caddy (allow 80/443 inbound).
 
 ```sh
 docker rm -f halo-server && docker network rm halo-net && docker rmi halo-server
-rm -rf ~/halo-discord                      # build, maps and server copy
-sudo systemctl disable --now cloudflared && sudo cloudflared service uninstall
-cloudflared tunnel delete halo             # then delete the halo CNAME in the khoit.dev DNS zone
+rm -rf ~/halo-discord                      # build, maps, server copy and .env
+sudo systemctl disable --now halo-cloudflared && sudo rm /etc/systemd/system/halo-cloudflared.service && sudo systemctl daemon-reload
+cloudflared tunnel delete halo
+rm ~/.cloudflared/halo.yml ~/.cloudflared/58bb6d7a-2b1b-43bb-9abb-7a5eadcac383.json
 ```
+
+Then delete the `halo` CNAME in the runtimeexception.net DNS zone. The
+account has other tunnels (`unraid`, `runtimeexception.net`,
+`momobot-spectator`) and `~/.cloudflared` may hold their files: delete only
+the `halo` tunnel and the two files above, never the whole directory or
+`cert.pem`.
 
 In the Discord Developer Portal remove the redirect URI (and the URL mapping
 if one was added), and reset the client secret.

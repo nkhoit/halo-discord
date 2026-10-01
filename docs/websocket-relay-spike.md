@@ -9,10 +9,19 @@ GO/NO-GO.
 The runtime no longer uses Cloudflare. `server/` is one Node process that
 serves the page, the multiplayer maps, Discord login and the relay with room
 membership; [halo-server.md](halo-server.md) is its runbook. `services/relay`
-is gone from the tree and CI checks `server/` instead; the deployed Worker
-`halo-relay-spike` still exists (deletion awaits approval, command below).
-Verified end to end locally and in a container on forge. Revised verdict:
+is gone from the tree and CI checks `server/` instead; the old Worker
+`halo-relay-spike` has been deleted. Verified end to end locally and in a
+container on forge. Revised verdict:
 conditional GO, see [Self-hosted server](#self-hosted-server-2026-10-01-evening).
+
+Public hostname: `https://halo.runtimeexception.net`. On forge,
+`~/halo-discord/server/.env` exists (mode 600, `PUBLIC_ORIGIN` set,
+`TOKEN_SECRET` generated); the named tunnel `halo`
+(`58bb6d7a-2b1b-43bb-9abb-7a5eadcac383`, config `~/.cloudflared/halo.yml`)
+runs as `halo-cloudflared.service` and forwards to `http://127.0.0.1:8090`;
+the Discord OAuth redirect `https://halo.runtimeexception.net/auth/callback`
+is registered on the probe app. The Activity root URL mapping still points at
+the probe Worker.
 
 Decisions taken by the coordinating chat on the user's behalf, with reasons:
 
@@ -40,19 +49,18 @@ Decisions taken by the coordinating chat on the user's behalf, with reasons:
 
 Pending, needing the user:
 
-- Discord application: OAuth redirect URI, client secret and server ID into
-  `server/.env` (steps in the runbook).
-- cloudflared on forge: install, `cloudflared tunnel login`, tunnel, DNS
-  route, service (steps in the runbook).
-- Approval to delete the Worker:
-  `npx wrangler delete --name halo-relay-spike` (logged-in Cloudflare
-  account).
+- `DISCORD_CLIENT_SECRET` and `DISCORD_GUILD_ID` in forge's
+  `~/halo-discord/server/.env` (placeholders now), then start the
+  `halo-server` container (command in the runbook) and smoke-test
+  `https://halo.runtimeexception.net/`.
 - Optional: repeat P1 with clumsy against the Node relay (needs UAC) to
   cross-check the netem rig; netem already reproduced the Cloudflare numbers
   on an equivalent path.
 - A subjective play check by a person, then the friends test.
 - Discord Activity client wiring (Embedded App SDK authorize, then
-  `POST /auth/activity`); the server side exists, the page does not use it yet.
+  `POST /auth/activity`) and the URL mapping to
+  `halo.runtimeexception.net/activity`; the server side exists, the page does
+  not use it yet.
 
 Restart the local setup (PowerShell, repository root):
 
