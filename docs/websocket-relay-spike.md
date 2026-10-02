@@ -10,7 +10,9 @@ The Activity works inside Discord (two PCs, two accounts, sessions 4-6).
 The work now is feel: frame pacing, then shooting and other players
 (issue #17; frame stalls #1-#3; netcode #7, #8).
 
-Done and committed (PR from `nkhoit-discord-activity` into `main`):
+Done, committed (PR from `nkhoit-discord-activity` into `main`, not merged)
+and deployed on forge (client asset version `964bf393b66208fa`; the
+server image is unchanged since the warm-up):
 
 - Shader programs compile in the background (#1): draws wait for a new
   program instead of the frame stalling (60-150 ms a compile before).
@@ -21,7 +23,12 @@ Done and committed (PR from `nkhoit-discord-activity` into `main`):
   A/B on the 240 Hz host: frames over 33/50/100 ms per minute 3.7/2.8/1.8
   uncapped, 0.8/0/0 at 120, 0/0/0 at 60; the uncapped gaps were the
   browser not delivering animation frames (`rafIntervalMaxMs` 62.5,
-  `rafLateMaxMs` 3.9). F8 overrides and is remembered.
+  `rafLateMaxMs` 3.9). F8 overrides and is remembered. The rate is
+  estimated from the 10th-percentile animation-frame interval (start-up
+  work lengthens the rest). On a display whose frames are not paced at a
+  fixed rate (variable refresh, or the compositor GPU-bound: this PC's
+  stand-in showed 5.0-6.5 ms intervals) it lands at half the measured rate,
+  about 90-98 fps there; check `frameCap` in the next session.
 - Feel telemetry and `tools/web/feel-scorecard.mjs` (#17): per player,
   freezes per minute in play, press-to-shot, hit-confirm latency, other
   players' correction distance and snaps, held relayed input, own
@@ -32,6 +39,14 @@ and the cap default; 74 ms peer round trip): host (240 Hz, F8 A/B mixed in)
 0.6/0.1/0 frames over 33/50/100 ms per minute, longest 63.7 ms; guest
 0/0/0, longest 20.5 ms; own corrections 0 for both; match start: loading
 gaps up to 1.1 s, then 308 ms in the host's first 15 s.
+
+Lab check of the feel telemetry (forge, SwiftShader at ~10 fps, scripted
+hits, no movement; frame numbers meaningless there): hit confirmation p50
+100 ms at a 10 ms peer round trip and 217 ms at 176 ms (a round trip plus
+about a tick); many scripted reports are refused by the host's checks
+(`unconfirmed`). The lab's movement bot presses menu buttons at random and
+sometimes quits to the dashboard before a match; `lab/lab-shoot.mjs` sets
+only the scripted hits.
 
 Next, in order (reorder by the first scorecard with feel data):
 
