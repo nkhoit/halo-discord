@@ -401,6 +401,12 @@ describe("measurement uploads", () => {
     const big = `halo_session=${token("45")}`;
     expect((await post(JSON.stringify({ pad: "x".repeat(20_000) }), big)).status).toBe(413);
     expect(JSON.stringify(server.logs)).not.toContain(token("42", "Chief"));
+    const map = await get("/assets/maps/bloodgulch.map", { Cookie: cookie, Range: "bytes=0-3" });
+    await map.arrayBuffer();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(server.logs.find((entry) => entry.event === "map")).toMatchObject({
+      event: "map", user: "42", file: "bloodgulch.map", range: "bytes=0-3", status: 206, bytes: 4,
+    });
   });
 });
 

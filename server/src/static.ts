@@ -215,8 +215,9 @@ export function parseRange(header: string | undefined, size: number):
   return { start, end };
 }
 
+/* Sends the file (or the requested range); returns the bytes of body sent. */
 export async function serveFile(request: IncomingMessage, response: ServerResponse, directory: string,
-    file: string, type: string, headers: Record<string, string>, ranges: boolean): Promise<void> {
+    file: string, type: string, headers: Record<string, string>, ranges: boolean): Promise<number> {
   const path = join(directory, file);
   let size: number;
   try {
@@ -225,13 +226,13 @@ export async function serveFile(request: IncomingMessage, response: ServerRespon
     size = info.size;
   } catch {
     response.writeHead(404, { ...headers, "Content-Type": "text/plain" }).end("not found");
-    return;
+    return 0;
   }
   const base = { ...headers, "Content-Type": type, ...(ranges ? { "Accept-Ranges": "bytes" } : {}) };
   const range = ranges && request.method === "GET" ? parseRange(request.headers.range, size) : null;
   if (range === "unsatisfiable") {
     response.writeHead(416, { ...base, "Content-Range": `bytes */${size}` }).end();
-    return;
+    return 0;
   }
   if (range) {
     response.writeHead(206, {
@@ -244,9 +245,10 @@ export async function serveFile(request: IncomingMessage, response: ServerRespon
   }
   if (request.method === "HEAD") {
     response.end();
-    return;
+    return 0;
   }
   const stream = createReadStream(path, range ? { start: range.start, end: range.end } : {});
   stream.on("error", () => response.destroy());
   stream.pipe(response);
+  return range ? range.end - range.start + 1 : size;
 }

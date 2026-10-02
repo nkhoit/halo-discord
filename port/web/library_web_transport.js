@@ -413,6 +413,18 @@ addToLibrary({
         game.hostInputs3 = HEAPF64[index + 10];
         game.multiTickFrames = HEAPF64[index + 11];
         game.maxTicksPerFrame = HEAPF64[index + 12];
+        game.tickMsMax = HEAPF64[index + 13];
+        game.callbackMsMax = +HEAPF64[index + 14].toFixed(1);
+        game.shaders = HEAPF64[index + 15];
+        game.shaderMs = HEAPF64[index + 16];
+        game.shaderMsMax = +HEAPF64[index + 17].toFixed(1);
+        game.textureUploads = HEAPF64[index + 18];
+        game.textureBytes = HEAPF64[index + 19];
+        game.textureMs = HEAPF64[index + 20];
+        game.textureMsMax = +HEAPF64[index + 21].toFixed(1);
+        game.textureHashMs = HEAPF64[index + 22];
+        game.textureHashMsMax = +HEAPF64[index + 23].toFixed(1);
+        game.textureDrops = HEAPF64[index + 24];
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
@@ -527,6 +539,20 @@ addToLibrary({
           ownSeatCorrections: delta('ownSeatCorrections'),
           /* the host: ticks that had 0, 1, 2 or 3+ client input packets */
           hostInputsPerTick: [delta('hostInputs0'), delta('hostInputs1'), delta('hostInputs2'), delta('hostInputs3')],
+          /* where long frames go: ticks, the whole frame callback, new shaders
+             and textures (uploads, hashing, idle drops that come back) */
+          tickMsMax: game.tickMsMax,
+          callbackMsMax: game.callbackMsMax,
+          shaders: delta('shaders'),
+          shaderMs: delta('shaderMs') === null ? null : +delta('shaderMs').toFixed(1),
+          shaderMsMax: game.shaderMsMax,
+          textureUploads: delta('textureUploads'),
+          textureKilobytes: delta('textureBytes') === null ? null : Math.round(delta('textureBytes') / 1024),
+          textureMs: delta('textureMs') === null ? null : +delta('textureMs').toFixed(1),
+          textureMsMax: game.textureMsMax,
+          textureHashMs: delta('textureHashMs') === null ? null : +delta('textureHashMs').toFixed(1),
+          textureHashMsMax: game.textureHashMsMax,
+          textureDrops: delta('textureDrops'),
         },
         peers: peers,
         relay: relaySummary,

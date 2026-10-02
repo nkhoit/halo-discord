@@ -23,6 +23,37 @@ memory_watch.c detects that by write-protecting the pages.
 #endif
 #include <stdlib.h>
 #include <string.h>
+#ifdef HALO_WEB
+#include <emscripten.h>
+
+/* (the browser's network statistics, port/web/src/web_platform.c) textures
+uploaded (decoded and handed to GL), their bytes and time, the time spent
+hashing texture contents to spot changes, and textures dropped for being
+idle, which come back as uploads when next drawn */
+static struct
+{
+	double uploads;
+	double upload_bytes;
+	double upload_milliseconds;
+	double upload_milliseconds_maximum;
+	double hash_milliseconds;
+	double hash_milliseconds_maximum;
+	double drops;
+} texture_web_statistics;
+
+void xgpu_web_texture_statistics(double values[7])
+{
+	values[0] = texture_web_statistics.uploads;
+	values[1] = texture_web_statistics.upload_bytes;
+	values[2] = texture_web_statistics.upload_milliseconds;
+	values[3] = texture_web_statistics.upload_milliseconds_maximum;
+	values[4] = texture_web_statistics.hash_milliseconds;
+	values[5] = texture_web_statistics.hash_milliseconds_maximum;
+	values[6] = texture_web_statistics.drops;
+	texture_web_statistics.upload_milliseconds_maximum = 0.0;
+	texture_web_statistics.hash_milliseconds_maximum = 0.0;
+}
+#endif
 
 #ifndef GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
 #define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83f1
@@ -821,8 +852,14 @@ GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *
 			(entry->content_hash_interval ? entry->content_hash_interval : 1))
 		{
 			unsigned long content_hash;
+			double started = emscripten_get_now();
+			double elapsed;
 
 			content_hash = texture_content_hash((const unsigned char *)entry->address, entry->size);
+			elapsed = emscripten_get_now() - started;
+			texture_web_statistics.hash_milliseconds += elapsed;
+			if (elapsed > texture_web_statistics.hash_milliseconds_maximum)
+				texture_web_statistics.hash_milliseconds_maximum = elapsed;
 
 			entry->content_hash_frame = texture_frame;
 			if (!entry->generation || content_hash != entry->content_hash)
@@ -839,9 +876,18 @@ GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *
 		}
 		if (changed || no_cache)
 		{
+			double started = emscripten_get_now();
+			double elapsed;
+
 			entry->generation = 1;
 			upload(entry->texture, entry->target, &entry->description,
 				(const unsigned char *)entry->address, palette);
+			elapsed = emscripten_get_now() - started;
+			texture_web_statistics.uploads++;
+			texture_web_statistics.upload_bytes += (double)entry->size;
+			texture_web_statistics.upload_milliseconds += elapsed;
+			if (elapsed > texture_web_statistics.upload_milliseconds_maximum)
+				texture_web_statistics.upload_milliseconds_maximum = elapsed;
 		}
 	}
 	#else
@@ -914,6 +960,9 @@ void xgpu_texture_cache_begin_frame(void)
 				glDeleteTextures(1, &entry->texture);
 				xgpu_gl_state_invalidate();
 				texture_drop_serial++;
+#ifdef HALO_WEB
+				texture_web_statistics.drops++;
+#endif
 				free(entry);
 			}
 			else

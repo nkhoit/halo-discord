@@ -62,7 +62,12 @@ extern void network_distributed_web_statistics(long *ticks, long *own_correction
 	float *own_aim_correction_maximum_degrees, long *own_seat_corrections);
 /* (source/game/player_queues_new.c, source/game/game_time.c) */
 extern void update_server_input_histogram(long histogram[4]);
-extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_ticks_per_frame);
+extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_ticks_per_frame,
+	long *maximum_tick_milliseconds);
+/* (port/linux/src/xbox_textures.c, d3d8_gl.c, sdl_platform.c) */
+extern void xgpu_web_texture_statistics(double values[7]);
+extern void xgpu_web_shader_statistics(double values[3]);
+extern double platform_web_profile_take_callback_maximum(void);
 
 /* Local network statistics for ?netstats=1 (library_web_transport.js):
  * [0] ticks sent, [1] own units put back by the host, [2] the farthest of
@@ -70,10 +75,15 @@ extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_
  * corrections that also turned the unit, [5] the most degrees one turned it,
  * [6] own seat corrections, [7..10] (the host) ticks with 0, 1, 2 and 3+
  * client input packets, [11] frames that ran several ticks to catch up,
- * [12] the most ticks one frame ran since the last read. */
+ * [12] the most ticks one frame ran since the last read, [13] the most
+ * milliseconds one frame spent on its ticks, [14] the longest frame callback
+ * (both since the last read), [15..17] shaders compiled and programs linked,
+ * their milliseconds and the longest, [18..21] textures uploaded, their
+ * bytes, milliseconds and the longest, [22..23] milliseconds spent hashing
+ * textures and the longest, [24] idle textures dropped. Counts are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
-	static double values[13];
+	static double values[25];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
@@ -84,13 +94,18 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	long histogram[4];
 	long multiple_tick_frames;
 	long maximum_ticks_per_frame;
+	long maximum_tick_milliseconds;
+	double textures[7];
+	double shaders[3];
 	int index;
 
 	network_distributed_web_statistics(&ticks, &own_corrections, &own_correction_maximum_squared,
 		&rejected_predictions, &own_aim_corrections, &own_aim_correction_maximum_degrees,
 		&own_seat_corrections);
 	update_server_input_histogram(histogram);
-	game_time_tick_statistics(&multiple_tick_frames, &maximum_ticks_per_frame);
+	game_time_tick_statistics(&multiple_tick_frames, &maximum_ticks_per_frame, &maximum_tick_milliseconds);
+	xgpu_web_texture_statistics(textures);
+	xgpu_web_shader_statistics(shaders);
 	values[0] = (double)ticks;
 	values[1] = (double)own_corrections;
 	values[2] = sqrt((double)own_correction_maximum_squared);
@@ -102,6 +117,17 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 		values[7 + index] = (double)histogram[index];
 	values[11] = (double)multiple_tick_frames;
 	values[12] = (double)maximum_ticks_per_frame;
+	values[13] = (double)maximum_tick_milliseconds;
+	values[14] = platform_web_profile_take_callback_maximum();
+	for (index = 0; index < 3; index++)
+		values[15 + index] = shaders[index];
+	values[18] = textures[0];
+	values[19] = textures[1];
+	values[20] = textures[2];
+	values[21] = textures[3];
+	values[22] = textures[4];
+	values[23] = textures[5];
+	values[24] = textures[6];
 	return values;
 }
 

@@ -36,6 +36,7 @@ static struct
 	double callback_start;
 	double callback_total;
 	double callback_maximum;
+	double window_callback_maximum;
 	unsigned long starts;
 	unsigned long loops;
 	unsigned long swaps;
@@ -490,6 +491,8 @@ void platform_web_frame_end(void)
 	web_frame_meter.callback_total += duration;
 	if (duration > web_frame_meter.callback_maximum)
 		web_frame_meter.callback_maximum = duration;
+	if (duration > web_frame_meter.window_callback_maximum)
+		web_frame_meter.window_callback_maximum = duration;
 	if (duration > 16.7)
 		web_frame_meter.over_budget++;
 }
@@ -547,6 +550,15 @@ EMSCRIPTEN_KEEPALIVE double platform_web_profile_take_gap_maximum(void)
 
 	web_frame_meter.gap_maximum = 0.0;
 	return gap;
+}
+
+/* the longest frame callback since the last call */
+EMSCRIPTEN_KEEPALIVE double platform_web_profile_take_callback_maximum(void)
+{
+	double longest = web_frame_meter.window_callback_maximum;
+
+	web_frame_meter.window_callback_maximum = 0.0;
+	return longest;
 }
 
 /* frames that started more than 50 ms after the one before */

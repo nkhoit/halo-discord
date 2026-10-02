@@ -31,6 +31,37 @@ Conventions carried over from the Xbox:
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef HALO_WEB
+#include <emscripten.h>
+
+/* (the browser's network statistics, port/web/src/web_platform.c) shaders
+compiled and programs linked, which the first draw of a new effect waits
+for, and their time */
+static struct
+{
+	double count;
+	double milliseconds;
+	double milliseconds_maximum;
+} shader_web_statistics;
+
+static void shader_web_count(double started)
+{
+	double elapsed = emscripten_get_now() - started;
+
+	shader_web_statistics.count++;
+	shader_web_statistics.milliseconds += elapsed;
+	if (elapsed > shader_web_statistics.milliseconds_maximum)
+		shader_web_statistics.milliseconds_maximum = elapsed;
+}
+
+void xgpu_web_shader_statistics(double values[3])
+{
+	values[0] = shader_web_statistics.count;
+	values[1] = shader_web_statistics.milliseconds;
+	values[2] = shader_web_statistics.milliseconds_maximum;
+	shader_web_statistics.milliseconds_maximum = 0.0;
+}
+#endif
 
 void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
 void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
@@ -724,10 +755,16 @@ static GLuint compile_shader(GLenum type, const char *source, const char *what)
 {
 	GLuint shader = glCreateShader(type);
 	GLint status = 0;
+#ifdef HALO_WEB
+	double started = emscripten_get_now();
+#endif
 
 	glShaderSource(shader, 1, &source, NULL);
 	glCompileShader(shader);
 	glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+#ifdef HALO_WEB
+	shader_web_count(started);
+#endif
 	if (!status)
 	{
 		char log[4096];
@@ -1944,8 +1981,17 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 	entry->program = glCreateProgram();
 	glAttachShader(entry->program, vertex_shader);
 	glAttachShader(entry->program, fragment_shader);
-	glLinkProgram(entry->program);
-	glGetProgramiv(entry->program, GL_LINK_STATUS, &status);
+	{
+#ifdef HALO_WEB
+		double started = emscripten_get_now();
+#endif
+
+		glLinkProgram(entry->program);
+		glGetProgramiv(entry->program, GL_LINK_STATUS, &status);
+#ifdef HALO_WEB
+		shader_web_count(started);
+#endif
+	}
 	if (!status)
 	{
 		char log[4096];

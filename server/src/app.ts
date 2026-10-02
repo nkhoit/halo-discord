@@ -257,13 +257,22 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       }
       const map = mapFile(relative);
       if (map) {
-        if (!requestSession(config, request)) {
+        const session = requestSession(config, request);
+        if (!session) {
           response.writeHead(401, { ...headers, Vary: MAP_CACHE.Vary, "Content-Type": "text/plain" })
             .end("login required");
           return;
         }
-        await serveFile(request, response, config.mapsDir, map, "application/octet-stream",
+        /* (diagnostics: when a game reads its maps, and how long each read takes) */
+        const started = Date.now();
+        const bytes = await serveFile(request, response, config.mapsDir, map, "application/octet-stream",
           { ...headers, ...MAP_CACHE }, true);
+        if (config.netstatsUpload) {
+          response.once("finish", () => log({
+            event: "map", user: session.sub, file: map, range: request.headers.range ?? null,
+            status: response.statusCode, bytes, ms: Date.now() - started,
+          }));
+        }
         return;
       }
       const build = buildFile(relative);
