@@ -50,6 +50,19 @@ in [websocket-relay-spike.md](websocket-relay-spike.md).
 - Maps extracted from your own disc with `tools/xiso_extract.py`. Only
   `ui.map` and the multiplayer maps are served; campaign maps in the same
   directory are never reachable.
+- Optional shader manifests next to the maps, `<map>.shaders`: the GL
+  programs each map draws, which the game builds while the map loads rather
+  than in its first frames. They are derived from the game data (recorded in
+  play), so they live with the maps and never in git. To record them, play
+  each map with the page open and run
+  `copy(UTF8ToString(Module._platform_web_shader_manifest()))` in the
+  console; save each result as a JSON string in a directory (one file per
+  map and player) and run
+  `node tools/web/merge-shader-manifests.mjs <that directory> <MAPS_DIR>`.
+  Rerecord after changes to the shader translators; a stale manifest only
+  wastes load time. Without them the game still learns each map's programs
+  per browser (kept in its storage) and builds them ahead from the second
+  visit.
 - `server/.env`, copied from [`server/example.env`](../server/example.env).
   Never commit it.
 - The site icon in `server/icons/` (favicon.ico, icon-64.png,
@@ -287,7 +300,8 @@ may be kept:
   `public, max-age=31536000, immutable`; a missing or stale `?v=` gets
   `no-cache`. A new build or server version changes the URLs, so nothing
   needs purging after a deploy.
-- Maps: `private, max-age=3600` with `Vary: Cookie, Authorization`. Shared
+- Maps and their shader manifests: `private, max-age=3600` with
+  `Vary: Cookie, Authorization`. Shared
   caches never store them; the player's own browser may keep them for an
   hour, which spares the server's upload when a match restarts.
 

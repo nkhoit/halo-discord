@@ -637,6 +637,62 @@ draws it (about 100-155 ms). If that remains noticeable, the next steps are
 warming known shaders during loading, KHR_parallel_shader_compile, and only
 then a soft cap on catch-up ticks.
 
+### Third and fourth sessions: what remained
+
+After the shader fix (session 3) the worst gaps fell from 208-591 ms to
+9-16 ms on the guest and 61 ms on the host. Session 4 (Activity, 04:20 UTC,
+moving only) left two kinds of stall:
+
+- Match start: one guest frame of 629 ms (callback 622 ms) with 44 shader
+  compiles (longest 136 ms) and 31 programs drawn for the first time; the
+  host 150 ms with 50 compiles. Transient buffer overflow 0, uploads cheap.
+  A genuinely new program is compiled, linked and (ANGLE) turned into
+  Direct3D executables on the frame that first draws it.
+- Later, host gaps of 25-61 ms with a frame callback of 3-26 ms and no
+  compiles, first draws or overflow: time lost outside the game's frame.
+
+### Building programs ahead
+
+Each map's programs are built before its first frame (`d3d8_gl.c`, warm-up
+section). When the game loads a map's tags (`scenario_tags_load`), the
+renderer reads two lists of vertex+fragment GLSL pairs: the server's manifest
+for the map (`assets/maps/<map>.shaders`, session-gated like the maps) and
+this browser's own list for the map in OPFS (`/storage/halo-shaders-<map>.txt`,
+which gains every program first drawn on the map that neither list named).
+It compiles and links them all first, so `KHR_parallel_shader_compile` can
+overlap them, then sets each up and draws one point with it into a 1x1
+RGBA8 + depth/stencil framebuffer, which makes ANGLE build its executables.
+While a map copies in from the network the work starts early, at most 8 ms a
+loading frame. The map's tag load is the trigger rather than the loading
+screen because a map already in the game's map cache (every visit after the
+first) skips the loading screen.
+
+The manifests were recorded in the forge lab (SwiftShader: the GLSL depends
+only on the shading language, so it matches every GPU): two bot clients
+played each multiplayer map for 60-100 s, and their lists were merged with
+`tools/web/merge-shader-manifests.mjs`. 38-65 programs a map (0.4-0.8 MB of
+text), 10 for the menu. In a lab match on Blood Gulch with the browser lists
+cleared, the warm-up built 41 programs and the match start still met 5 and 9
+new ones (effects the recording bots had not caused), then 0-2 a window.
+Programs built ahead showed no stall on their first real draw (15 of them in
+one window, longest callback 40 ms). Lab timings are not representative
+(SwiftShader at 5 fps with two clients), so the real check is a session.
+
+Netstats: `warmedPrograms` (built ahead in the window), `warmupMs` (the
+last warm-up's main-thread time), `unwarmedFirstDraws` (first draws of
+programs not built ahead: coverage gaps, each a possible stall).
+
+### Stalls outside the frame: instrumentation
+
+For the second kind, netstats now carry `outsideFrameMaxMs` (the longest
+time between the end of one frame callback and the start of the next, in the
+game's worker) and a `mainThread` section (event-loop lag p99/max from a
+4 ms MessageChannel ping, long tasks and their total and longest time, JS
+heap size and change), plus relay messages and kilobytes received. A render
+cap (`?fpsCap=120` or `60` on the browser page; F8 cycles off/120/60 in
+either page) tests whether the uncapped frame rate starves the browser's
+compositor or GPU process. Cause still open.
+
 ### Activity start-up crash found on the way
 
 The Embedded App SDK copies every console line to Discord (`captureLog`)

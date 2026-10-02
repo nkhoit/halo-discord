@@ -329,12 +329,12 @@ struct program_entry
 	GLint screen_offset;
 	/* (the browser's statistics) drawn at least once */
 	BOOL drawn;
-	/* (the browser) built ahead by the warm-up, already in this map's
-	persisted list, and the map (warm-up serial) it was last drawn in; ready
-	once linked and set up (the warm-up links ahead and sets up later) */
+	/* (the browser) built ahead by the warm-up; the map (warm-up serial)
+	whose manifest or persisted list names it, and the map it was last drawn
+	in; ready once linked and set up (the warm-up links ahead, sets up later) */
 	BOOL warmed;
 	BOOL ready;
-	BOOL persisted;
+	unsigned long listed_serial;
 	unsigned long used_serial;
 
 	/* the vertex constants c[0..constant_count) the program uses; with
@@ -2107,8 +2107,6 @@ static GLuint fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 static void program_setup(struct program_entry *entry);
 #ifdef HALO_WEB
 static BOOL program_finish(struct program_entry *entry);
-#endif
-#ifdef HALO_WEB
 static void shader_record(struct program_entry *entry);
 #endif
 
@@ -2169,9 +2167,6 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 		return NULL;
 	}
 	program_setup(entry);
-#ifdef HALO_WEB
-	shader_record(entry);
-#endif
 	last = entry;
 	return entry;
 }
@@ -2286,8 +2281,8 @@ static void shader_append_record(FILE *file, const struct source_entry *vertex, 
 	fputc('\n', file);
 }
 
-/* a program linked in play: kept in this map's list, to be built ahead next
-time */
+/* a program first drawn on this map that its lists did not name: added to
+its persisted list, to be built ahead next time */
 static void shader_record(struct program_entry *entry)
 {
 	struct source_entry *vertex;
@@ -2295,9 +2290,9 @@ static void shader_record(struct program_entry *entry)
 	char path[128];
 	FILE *file;
 
-	if (entry->persisted || !shader_warmup_map[0])
+	if (entry->listed_serial == shader_warmup_serial || !shader_warmup_map[0])
 		return;
-	entry->persisted = TRUE;
+	entry->listed_serial = shader_warmup_serial;
 	vertex = source_entry_for_shader(entry->vertex_shader);
 	fragment = source_entry_for_shader(entry->fragment_shader);
 	if (!vertex || !fragment)
@@ -2393,8 +2388,7 @@ static struct program_entry *program_link_ahead(GLuint vertex_shader, GLuint fra
 	{
 		if (entry->vertex_shader == vertex_shader && entry->fragment_shader == fragment_shader)
 		{
-			entry->warmed = TRUE;
-			entry->persisted = TRUE;
+			entry->listed_serial = shader_warmup_serial;
 			return NULL;
 		}
 	}
@@ -2403,7 +2397,7 @@ static struct program_entry *program_link_ahead(GLuint vertex_shader, GLuint fra
 	entry->fragment_shader = fragment_shader;
 	memset(&entry->uniforms, 0xff, sizeof(entry->uniforms));
 	entry->warmed = TRUE;
-	entry->persisted = TRUE;
+	entry->listed_serial = shader_warmup_serial;
 	entry->next = *bucket;
 	*bucket = entry;
 	entry->program = glCreateProgram();
@@ -3286,7 +3280,11 @@ static struct program_entry *prepare_draw(BOOL immediate)
 		if (!entry->warmed)
 			shader_web_statistics.unwarmed_first_draws++;
 	}
-	entry->used_serial = shader_warmup_serial;
+	if (entry->used_serial != shader_warmup_serial)
+	{
+		entry->used_serial = shader_warmup_serial;
+		shader_record(entry);
+	}
 #endif
 	state_program(entry->program);
 	gl_check_errors("program bind");
