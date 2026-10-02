@@ -397,6 +397,7 @@ symbols in this file:
 /* Browser performance meter (port/linux/src/sdl_platform.c). */
 void platform_web_frame_begin(void);
 void platform_web_frame_end(void);
+int platform_web_frame_skip(void);
 void platform_web_frame_stopped(long connection);
 void platform_log(const char *format, ...);
 #endif
@@ -3355,6 +3356,9 @@ static void main_loop_web_iteration(
 	boolean keep_running;
 
 	(void)unused;
+	/* (a measurement switch: render at most so many frames a second) */
+	if (platform_web_frame_skip())
+		return;
 	platform_web_frame_begin();
 	keep_running = main_loop_iteration();
 	platform_web_frame_end();

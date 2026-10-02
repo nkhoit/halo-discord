@@ -89,12 +89,13 @@ extern void xgpu_web_frame_statistics(double values[6]);
  * first draw, [34] after a transient pool overflow, [35] the most draws in a
  * frame, [36] the most transient uploads, [37] the most transient bytes,
  * [38] frames that overflowed the pool, [39] first draws (total), [40] frames
- * with first draws. [28..38] and [40] are since the last read; other counts
+ * with first draws, [41] the longest time outside the frame callback.
+ * [28..38], [40] and [41] are since the last read; other counts
  * are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
 	static double first_draws_total;
-	static double values[41];
+	static double values[42];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
@@ -156,6 +157,7 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 		first_draws_total += frame[4];
 		values[39] = first_draws_total;
 		values[40] = frame[5];
+		values[41] = times[7];
 	}
 	return values;
 }

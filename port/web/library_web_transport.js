@@ -438,6 +438,7 @@ addToLibrary({
         game.transientOverflowFrames = HEAPF64[index + 38];
         game.firstDraws = HEAPF64[index + 39];
         game.firstDrawFrames = HEAPF64[index + 40];
+        game.outsideFrameMaxMs = +HEAPF64[index + 41].toFixed(1);
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
@@ -523,6 +524,10 @@ addToLibrary({
           messagesSent: relay.messagesSent,
           framesPerMessage: relay.messagesSent ? +(relay.framesSent / relay.messagesSent).toFixed(2) : null,
         };
+        relaySummary.messagesReceived = relay.messagesReceived || 0;
+        relaySummary.kilobytesReceived = Math.round((relay.bytesReceived || 0) / 1024);
+        relay.messagesReceived = 0;
+        relay.bytesReceived = 0;
         relay.framesSent = 0;
         relay.messagesSent = 0;
         relay.echo = [[], []];
@@ -530,6 +535,7 @@ addToLibrary({
         relay.closeCodes = [];
       }
       runtime.netstatsWindow = { time: now, game: game };
+      var main = runtime.netstatsTakeMainThread();
       return {
         at: new Date().toISOString(),
         windowSeconds: +seconds.toFixed(2),
@@ -572,6 +578,10 @@ addToLibrary({
           maxTransientKilobytesPerFrame: game.maxTransientKilobytesPerFrame,
           transientOverflowFrames: game.transientOverflowFrames,
           overflowGapMaxMs: game.overflowGapMaxMs,
+          /* the longest time between one frame callback's end and the next
+             one's start, and the render cap in force (0: the display's rate) */
+          outsideFrameMaxMs: game.outsideFrameMaxMs,
+          frameCap: typeof Module['_platform_web_frame_cap'] === 'function' ? Module['_platform_web_frame_cap']() : null,
           shaderMs: delta('shaderMs') === null ? null : +delta('shaderMs').toFixed(1),
           shaderMsMax: game.shaderMsMax,
           textureUploads: delta('textureUploads'),
@@ -584,7 +594,64 @@ addToLibrary({
         },
         peers: peers,
         relay: relaySummary,
+        mainThread: main,
       };
+    },
+
+    /* The browser's main thread runs the relay's sockets, the transport's
+       pump and these statistics while the game runs on a worker: its long
+       tasks, how late a message posted every few milliseconds is handled (the
+       event loop's lag), and the JavaScript heap. */
+    netstatsStartMainThread: function() {
+      var runtime = HaloWebTransportRuntime;
+      var main = runtime.netstatsMain = { lags: [], longTasks: 0, longTaskMs: 0, longTaskMaxMs: 0, heapStart: null, heapMax: 0 };
+      if (typeof PerformanceObserver === 'function') {
+        try {
+          new PerformanceObserver(function(list) {
+            list.getEntries().forEach(function(entry) {
+              main.longTasks++;
+              main.longTaskMs += entry.duration;
+              if (entry.duration > main.longTaskMaxMs) main.longTaskMaxMs = entry.duration;
+            });
+          }).observe({ type: 'longtask', buffered: false });
+        } catch (error) { /* not supported */ }
+      }
+      if (typeof MessageChannel === 'function') {
+        var channel = new MessageChannel();
+        var sent = 0;
+        var ping = function() { sent = performance.now(); channel.port2.postMessage(0); };
+        channel.port1.onmessage = function() {
+          if (main.lags.length < 4096) main.lags.push(performance.now() - sent);
+          var timer = setTimeout(ping, 4);
+          /* (Node, for the tests: the sampler alone must not keep it running) */
+          if (timer && typeof timer.unref === 'function') timer.unref();
+        };
+        if (typeof channel.port1.unref === 'function') channel.port1.unref();
+        ping();
+      }
+    },
+
+    netstatsTakeMainThread: function() {
+      var main = HaloWebTransportRuntime.netstatsMain;
+      if (!main) return null;
+      var lags = main.lags.slice().sort(function(a, b) { return a - b; });
+      var heap = typeof performance !== 'undefined' && performance.memory ? performance.memory.usedJSHeapSize : null;
+      var result = {
+        lagP99Ms: lags.length ? +lags[Math.min(lags.length - 1, Math.floor(lags.length * 0.99))].toFixed(1) : null,
+        lagMaxMs: lags.length ? +lags[lags.length - 1].toFixed(1) : null,
+        lagSamples: lags.length,
+        longTasks: main.longTasks,
+        longTaskMs: Math.round(main.longTaskMs),
+        longTaskMaxMs: Math.round(main.longTaskMaxMs),
+        heapMegabytes: heap === null ? null : +(heap / 1048576).toFixed(1),
+        heapChangeMegabytes: heap === null || main.heapStart === null ? null : +((heap - main.heapStart) / 1048576).toFixed(1),
+      };
+      main.lags = [];
+      main.longTasks = 0;
+      main.longTaskMs = 0;
+      main.longTaskMaxMs = 0;
+      main.heapStart = heap;
+      return result;
     },
 
     netstatsSamples: function(samples) {
@@ -603,6 +670,7 @@ addToLibrary({
 
     startNetstatsLog: function() {
       var runtime = HaloWebTransportRuntime;
+      runtime.netstatsStartMainThread();
       runtime.netstatsTakeWindow();
       setInterval(function() {
         runtime.netstatsTakeWindow().then(function(stats) {
@@ -1228,6 +1296,8 @@ addToLibrary({
     relayMessage: function(relay, socket, data) {
       var runtime = HaloWebTransportRuntime;
       var channels = runtime.RELAY_CHANNEL;
+      relay.messagesReceived = (relay.messagesReceived || 0) + 1;
+      relay.bytesReceived = (relay.bytesReceived || 0) + (typeof data === 'string' ? data.length : data.byteLength || 0);
       if (typeof data === 'string') {
         var message;
         try { message = JSON.parse(data); } catch (error) { return; }

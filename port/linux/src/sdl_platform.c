@@ -53,6 +53,14 @@ static struct
 	unsigned long window_gap_count;
 	double first_draw_gap_maximum;
 	double overflow_gap_maximum;
+	/* the end of the last frame callback, and this window's longest time from
+	one callback's end to the next one's start (outside the game's frame:
+	presenting, the browser, other work on the worker) */
+	double last_end;
+	double outside_maximum;
+	/* frames per second to render at most, 0 for the display's rate (a
+	measurement switch: the simulation stays at 30 ticks a second) */
+	int frame_cap;
 } web_frame_meter;
 extern void web_net_end_frame(void);
 extern int xgpu_web_last_frame_flags(void);
@@ -501,6 +509,8 @@ void platform_web_frame_begin(void)
 				web_frame_meter.overflow_gap_maximum = gap;
 		}
 	}
+	if (web_frame_meter.last_end > 0.0 && now - web_frame_meter.last_end > web_frame_meter.outside_maximum)
+		web_frame_meter.outside_maximum = now - web_frame_meter.last_end;
 	web_frame_meter.last_start = now;
 	web_frame_meter.starts++;
 	web_frame_meter.callback_start = now;
@@ -513,6 +523,7 @@ void platform_web_frame_end(void)
 
 	/* (port/web/src/web_loopback_net.c) the frame's network output, batched */
 	web_net_end_frame();
+	web_frame_meter.last_end = now;
 	web_frame_meter.loops++;
 	web_frame_meter.callback_total += duration;
 	if (duration > web_frame_meter.callback_maximum)
@@ -581,10 +592,11 @@ EMSCRIPTEN_KEEPALIVE double platform_web_profile_take_gap_maximum(void)
 /* since the last call: [0] the 99th percentile gap between frame starts,
 [1..4] gaps over 16.7, 33.3, 50 and 100 ms, [5] the longest gap after a frame
 that drew a program for the first time, [6] after one that overflowed the
-transient buffer pool */
+transient buffer pool, [7] the longest time between one callback's end and
+the next one's start */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_profile_take_frame_times(void)
 {
-	static double values[7];
+	static double values[8];
 	static double sorted[4096];
 	unsigned long count = web_frame_meter.window_gap_count;
 	unsigned long index;
@@ -603,10 +615,30 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_profile_take_frame_times(void)
 	}
 	values[5] = web_frame_meter.first_draw_gap_maximum;
 	values[6] = web_frame_meter.overflow_gap_maximum;
+	values[7] = web_frame_meter.outside_maximum;
+	web_frame_meter.outside_maximum = 0.0;
 	web_frame_meter.window_gap_count = 0;
 	web_frame_meter.first_draw_gap_maximum = 0.0;
 	web_frame_meter.overflow_gap_maximum = 0.0;
 	return values;
+}
+
+EMSCRIPTEN_KEEPALIVE void platform_web_set_frame_cap(int frames_per_second)
+{
+	web_frame_meter.frame_cap = frames_per_second > 0 ? frames_per_second : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_frame_cap(void)
+{
+	return web_frame_meter.frame_cap;
+}
+
+/* whether this animation frame should be skipped to stay under the cap */
+int platform_web_frame_skip(void)
+{
+	if (web_frame_meter.frame_cap <= 0 || web_frame_meter.last_start <= 0.0)
+		return 0;
+	return emscripten_get_now() - web_frame_meter.last_start < 1000.0 / web_frame_meter.frame_cap - 1.0;
 }
 
 /* the longest frame callback since the last call */

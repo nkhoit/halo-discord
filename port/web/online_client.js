@@ -2239,10 +2239,58 @@
     }
   }
 
+  /* A measurement switch: render at most 120 or 60 frames a second (the
+     simulation stays at 30 ticks). ?fpsCap=120 sets it on a page; F8 cycles
+     it anywhere, including the Activity, which has no address bar. */
+  var FRAME_CAPS = [0, 120, 60];
+
+  function frameCap() {
+    var get = global.Module && global.Module._platform_web_frame_cap;
+    return typeof get === "function" ? get() : 0;
+  }
+
+  function setFrameCap(cap) {
+    var set = global.Module && global.Module._platform_web_set_frame_cap;
+    if (typeof set !== "function") return;
+    set(cap);
+    if (typeof document.createElement !== "function" || !document.body) return;
+    var notice = byId("frame-cap-notice");
+    if (!notice) {
+      notice = document.createElement("div");
+      notice.id = "frame-cap-notice";
+      notice.setAttribute("role", "status");
+      Object.assign(notice.style, { position: "fixed", top: "1rem", left: "50%", transform: "translateX(-50%)",
+        zIndex: "30", padding: ".4rem .8rem", borderRadius: ".4rem", background: "rgba(0, 0, 0, .75)",
+        color: "#fff", font: "14px system-ui, sans-serif", pointerEvents: "none" });
+      document.body.appendChild(notice);
+    }
+    notice.textContent = cap ? "Frame cap: " + cap + " fps" : "Frame cap: off (display rate)";
+    notice.hidden = false;
+    global.clearTimeout(notice.hideTimer);
+    notice.hideTimer = global.setTimeout(function() { notice.hidden = true; }, 2000);
+  }
+
+  var frameCapInitialized = false;
+
+  function initializeFrameCap() {
+    if (frameCapInitialized) return;
+    frameCapInitialized = true;
+    var requested = Number(new URL(global.location.href).searchParams.get("fpsCap"));
+    if (requested > 0) setFrameCap(requested);
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("keydown", function(event) {
+        if (event.key !== "F8" || event.repeat) return;
+        var index = FRAME_CAPS.indexOf(frameCap());
+        setFrameCap(FRAME_CAPS[(index + 1) % FRAME_CAPS.length]);
+      }, true);
+    }
+  }
+
   global.HaloOnline = Object.freeze({
     runtimeReady: function() {
       session.runtimeReady = true;
       setBusy(false);
+      initializeFrameCap();
       try {
         transport();
       } catch (error) {
