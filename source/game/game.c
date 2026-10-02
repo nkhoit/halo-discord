@@ -785,6 +785,18 @@ boolean game_map_loading_in_progress(
 	return globals->map_load_in_progress;
 }
 
+#ifdef HALO_WEB
+/* the map game_precache_new_map is loading, for the browser's loading screen
+(port/web/src/web_platform.c) */
+static char game_web_loading_map_name[64];
+
+const char *game_map_loading_name(
+	void)
+{
+	return game_web_loading_map_name;
+}
+#endif
+
 void game_unload(
 	void)
 {
@@ -870,6 +882,21 @@ void game_precache_new_map(
 
 	if (!cache_files_precache_map_loaded(map_name))
 	{
+#ifdef HALO_WEB
+		{
+			char const *base = map_name;
+			char const *cursor;
+
+			for (cursor = map_name; *cursor; cursor++)
+			{
+				if (*cursor == '\\' || *cursor == '/')
+					base = cursor + 1;
+			}
+			csstrncpy(game_web_loading_map_name, base,
+				sizeof(game_web_loading_map_name) - 1);
+			game_web_loading_map_name[sizeof(game_web_loading_map_name) - 1] = 0;
+		}
+#endif
 		if (cache_files_precache_in_progress() &&
 			!cache_files_precache_is_copying_map(map_name))
 		{

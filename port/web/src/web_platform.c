@@ -8,6 +8,7 @@
 #include <emscripten/heap.h>
 #include <emscripten/wasmfs.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,117 @@ EMSCRIPTEN_KEEPALIVE double platform_web_campaign_load_progress(void)
 EMSCRIPTEN_KEEPALIVE double platform_web_map_load_progress(void)
 {
 	return platform_web_campaign_load_progress();
+}
+
+/* (port/linux/game/network_distributed.c, Xbox ABI float real) */
+extern void network_distributed_web_statistics(long *ticks, long *own_corrections,
+	float *own_correction_maximum_squared, long *rejected_predictions, long *own_aim_corrections,
+	float *own_aim_correction_maximum_degrees, long *own_seat_corrections);
+/* (source/game/player_queues_new.c, source/game/game_time.c) */
+extern void update_server_input_histogram(long histogram[4]);
+extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_ticks_per_frame,
+	long *maximum_tick_milliseconds);
+/* (port/linux/src/xbox_textures.c, d3d8_gl.c, sdl_platform.c) */
+extern void xgpu_web_texture_statistics(double values[7]);
+extern void xgpu_web_shader_statistics(double values[9]);
+extern double platform_web_profile_take_callback_maximum(void);
+extern const double *platform_web_profile_take_frame_times(void);
+extern void xgpu_web_frame_statistics(double values[6]);
+
+/* Local network statistics for ?netstats=1 (library_web_transport.js):
+ * [0] ticks sent, [1] own units put back by the host, [2] the farthest of
+ * those in world units, [3] predictions the host refused, [4] own
+ * corrections that also turned the unit, [5] the most degrees one turned it,
+ * [6] own seat corrections, [7..10] (the host) ticks with 0, 1, 2 and 3+
+ * client input packets, [11] frames that ran several ticks to catch up,
+ * [12] the most ticks one frame ran since the last read, [13] the most
+ * milliseconds one frame spent on its ticks, [14] the longest frame callback
+ * (both since the last read), [15..17] shaders compiled and programs linked,
+ * their milliseconds and the longest, [18..21] textures uploaded, their
+ * bytes, milliseconds and the longest, [22..23] milliseconds spent hashing
+ * textures and the longest, [24] idle textures dropped, [25] of [15], shader
+ * compiles, [26] shaders reused for text compiled before, [27] new pixel
+ * shader keys, [28] the 99th percentile frame gap, [29..32] gaps over 16.7,
+ * 33.3, 50 and 100 ms, [33] the longest gap after a frame with a program's
+ * first draw, [34] after a transient pool overflow, [35] the most draws in a
+ * frame, [36] the most transient uploads, [37] the most transient bytes,
+ * [38] frames that overflowed the pool, [39] first draws (total), [40] frames
+ * with first draws, [41] the longest time outside the frame callback,
+ * [42] programs built ahead, [43] the last warm-up's milliseconds, [44] first
+ * draws of programs not built ahead.
+ * [28..38], [40] and [41] are since the last read; other counts
+ * are totals. */
+EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
+{
+	static double first_draws_total;
+	static double values[45];
+	long ticks;
+	long own_corrections;
+	float own_correction_maximum_squared;
+	long rejected_predictions;
+	long own_aim_corrections;
+	float own_aim_correction_maximum_degrees;
+	long own_seat_corrections;
+	long histogram[4];
+	long multiple_tick_frames;
+	long maximum_ticks_per_frame;
+	long maximum_tick_milliseconds;
+	double textures[7];
+	double shaders[9];
+	int index;
+
+	network_distributed_web_statistics(&ticks, &own_corrections, &own_correction_maximum_squared,
+		&rejected_predictions, &own_aim_corrections, &own_aim_correction_maximum_degrees,
+		&own_seat_corrections);
+	update_server_input_histogram(histogram);
+	game_time_tick_statistics(&multiple_tick_frames, &maximum_ticks_per_frame, &maximum_tick_milliseconds);
+	xgpu_web_texture_statistics(textures);
+	xgpu_web_shader_statistics(shaders);
+	values[0] = (double)ticks;
+	values[1] = (double)own_corrections;
+	values[2] = sqrt((double)own_correction_maximum_squared);
+	values[3] = (double)rejected_predictions;
+	values[4] = (double)own_aim_corrections;
+	values[5] = (double)own_aim_correction_maximum_degrees;
+	values[6] = (double)own_seat_corrections;
+	for (index = 0; index < 4; index++)
+		values[7 + index] = (double)histogram[index];
+	values[11] = (double)multiple_tick_frames;
+	values[12] = (double)maximum_ticks_per_frame;
+	values[13] = (double)maximum_tick_milliseconds;
+	values[14] = platform_web_profile_take_callback_maximum();
+	for (index = 0; index < 3; index++)
+		values[15 + index] = shaders[index];
+	values[18] = textures[0];
+	values[19] = textures[1];
+	values[20] = textures[2];
+	values[21] = textures[3];
+	values[22] = textures[4];
+	values[23] = textures[5];
+	values[24] = textures[6];
+	values[25] = shaders[3];
+	values[26] = shaders[4];
+	values[27] = shaders[5];
+	{
+		const double *times = platform_web_profile_take_frame_times();
+		double frame[6];
+
+		for (index = 0; index < 7; index++)
+			values[28 + index] = times[index];
+		xgpu_web_frame_statistics(frame);
+		values[35] = frame[0];
+		values[36] = frame[1];
+		values[37] = frame[2];
+		values[38] = frame[3];
+		first_draws_total += frame[4];
+		values[39] = first_draws_total;
+		values[40] = frame[5];
+		values[41] = times[7];
+		values[42] = shaders[6];
+		values[43] = shaders[7];
+		values[44] = shaders[8];
+	}
+	return values;
 }
 
 EMSCRIPTEN_KEEPALIVE long platform_web_campaign_load_index(void)

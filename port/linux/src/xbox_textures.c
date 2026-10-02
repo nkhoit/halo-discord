@@ -23,6 +23,37 @@ memory_watch.c detects that by write-protecting the pages.
 #endif
 #include <stdlib.h>
 #include <string.h>
+#ifdef HALO_WEB
+#include <emscripten.h>
+
+/* (the browser's network statistics, port/web/src/web_platform.c) textures
+uploaded (decoded and handed to GL), their bytes and time, the time spent
+hashing texture contents to spot changes, and textures dropped for being
+idle, which come back as uploads when next drawn */
+static struct
+{
+	double uploads;
+	double upload_bytes;
+	double upload_milliseconds;
+	double upload_milliseconds_maximum;
+	double hash_milliseconds;
+	double hash_milliseconds_maximum;
+	double drops;
+} texture_web_statistics;
+
+void xgpu_web_texture_statistics(double values[7])
+{
+	values[0] = texture_web_statistics.uploads;
+	values[1] = texture_web_statistics.upload_bytes;
+	values[2] = texture_web_statistics.upload_milliseconds;
+	values[3] = texture_web_statistics.upload_milliseconds_maximum;
+	values[4] = texture_web_statistics.hash_milliseconds;
+	values[5] = texture_web_statistics.hash_milliseconds_maximum;
+	values[6] = texture_web_statistics.drops;
+	texture_web_statistics.upload_milliseconds_maximum = 0.0;
+	texture_web_statistics.hash_milliseconds_maximum = 0.0;
+}
+#endif
 
 #ifndef GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
 #define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83f1
@@ -671,12 +702,23 @@ struct texture_entry
 	unsigned long content_hash;
 	unsigned long content_hash_frame;
 	unsigned long content_hash_interval;
+	/* (when it was last drawn: the browser's frame rate is the display's,
+	often 144 or 240, so idle time is measured in time, not frames) */
+	double last_used_milliseconds;
 	#endif
 	unsigned long last_used_frame;
 };
 
 #define TEXTURE_BUCKET_COUNT 4096
 #define TEXTURE_IDLE_FRAMES 1800
+#ifdef HALO_WEB
+/* 1800 frames is half a minute at 60 frames a second but 7.5 s at 240: a
+texture off screen that long was dropped and decoded and uploaded again on
+the frame it came back, often with many others at once (a respawn, a turn),
+which stalled the frame */
+#define TEXTURE_IDLE_MILLISECONDS 60000.0
+static double texture_frame_milliseconds;
+#endif
 #define MAXIMUM_PALETTE_VARIANTS 8
 
 static struct texture_entry *texture_buckets[TEXTURE_BUCKET_COUNT];
@@ -821,8 +863,14 @@ GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *
 			(entry->content_hash_interval ? entry->content_hash_interval : 1))
 		{
 			unsigned long content_hash;
+			double started = emscripten_get_now();
+			double elapsed;
 
 			content_hash = texture_content_hash((const unsigned char *)entry->address, entry->size);
+			elapsed = emscripten_get_now() - started;
+			texture_web_statistics.hash_milliseconds += elapsed;
+			if (elapsed > texture_web_statistics.hash_milliseconds_maximum)
+				texture_web_statistics.hash_milliseconds_maximum = elapsed;
 
 			entry->content_hash_frame = texture_frame;
 			if (!entry->generation || content_hash != entry->content_hash)
@@ -839,9 +887,18 @@ GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *
 		}
 		if (changed || no_cache)
 		{
+			double started = emscripten_get_now();
+			double elapsed;
+
 			entry->generation = 1;
 			upload(entry->texture, entry->target, &entry->description,
 				(const unsigned char *)entry->address, palette);
+			elapsed = emscripten_get_now() - started;
+			texture_web_statistics.uploads++;
+			texture_web_statistics.upload_bytes += (double)entry->size;
+			texture_web_statistics.upload_milliseconds += elapsed;
+			if (elapsed > texture_web_statistics.upload_milliseconds_maximum)
+				texture_web_statistics.upload_milliseconds_maximum = elapsed;
 		}
 	}
 	#else
@@ -876,6 +933,9 @@ GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *
 	}
 	#endif
 	entry->last_used_frame = texture_frame;
+	#ifdef HALO_WEB
+	entry->last_used_milliseconds = texture_frame_milliseconds;
+	#endif
 	#ifndef HALO_WEB
 	if (!palettized && !no_cache)
 	{
@@ -897,6 +957,9 @@ void xgpu_texture_cache_begin_frame(void)
 	unsigned long index;
 
 	texture_frame++;
+#ifdef HALO_WEB
+	texture_frame_milliseconds = emscripten_get_now();
+#endif
 	if (texture_frame % 600)
 		return;
 	/* drop textures that have not been used for a while */
@@ -908,12 +971,19 @@ void xgpu_texture_cache_begin_frame(void)
 		{
 			struct texture_entry *entry = *link;
 
+#ifdef HALO_WEB
+			if (texture_frame_milliseconds - entry->last_used_milliseconds > TEXTURE_IDLE_MILLISECONDS)
+#else
 			if (texture_frame - entry->last_used_frame > TEXTURE_IDLE_FRAMES)
+#endif
 			{
 				*link = entry->next;
 				glDeleteTextures(1, &entry->texture);
 				xgpu_gl_state_invalidate();
 				texture_drop_serial++;
+#ifdef HALO_WEB
+				texture_web_statistics.drops++;
+#endif
 				free(entry);
 			}
 			else

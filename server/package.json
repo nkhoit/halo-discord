@@ -1,0 +1,25 @@
+{
+  "name": "halo-relay-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/main.ts",
+    "test": "vitest run",
+    "check": "tsc --noEmit && vitest run"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "2.5.0",
+    "esbuild": "0.28.2",
+    "ws": "8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3",
+    "@types/ws": "8.18.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  }
+}

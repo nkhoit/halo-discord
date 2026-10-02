@@ -76,6 +76,25 @@ symbols in this file:
 boolean network_game_distributed(void);
 /* port/linux/game/network_distributed.c's */
 void network_distributed_tick(void);
+
+/* (the browser's network statistics) frames that ran more than one tick, to
+catch up after a stall, and the most ticks one frame ran since the last read */
+static long game_time_multiple_tick_frames;
+static long game_time_maximum_ticks_per_frame;
+/* ... and the longest one frame spent running its ticks, in milliseconds */
+static long game_time_maximum_tick_milliseconds;
+
+void game_time_tick_statistics(
+	long *multiple_tick_frames,
+	long *maximum_ticks_per_frame,
+	long *maximum_tick_milliseconds)
+{
+	*multiple_tick_frames = game_time_multiple_tick_frames;
+	*maximum_ticks_per_frame = game_time_maximum_ticks_per_frame;
+	*maximum_tick_milliseconds = game_time_maximum_tick_milliseconds;
+	game_time_maximum_ticks_per_frame = 0;
+	game_time_maximum_tick_milliseconds = 0;
+}
 #endif
 
 /* ---------- constants */
@@ -623,6 +642,9 @@ void game_time_update(
 				{
 					long final_server_time = MIN(maximum_possible_server_time, final_local_time);
 					long update_index;
+#ifdef HALO_LINUX
+					unsigned long ticks_started = system_milliseconds();
+#endif
 					server_updates = final_server_time - game_time_globals->server_time;
 					for (update_index = 0; update_index < server_updates; update_index++)
 					{
@@ -637,11 +659,25 @@ void game_time_update(
 						network_distributed_tick();
 #endif
 					}
+#ifdef HALO_LINUX
+					{
+						long elapsed = (long)(system_milliseconds() - ticks_started);
+
+						if (elapsed > game_time_maximum_tick_milliseconds)
+							game_time_maximum_tick_milliseconds = elapsed;
+					}
+#endif
 				}
 				else
 				{
 					server_updates = 0;
 				}
+#ifdef HALO_LINUX
+				if (server_updates > 1)
+					game_time_multiple_tick_frames++;
+				if (server_updates > game_time_maximum_ticks_per_frame)
+					game_time_maximum_ticks_per_frame = server_updates;
+#endif
 
 				code_000a50d0((short)(maximum_possible_server_time - game_time_globals->local_time),
 					(short)server_updates, 0, FALSE);

@@ -1,9 +1,11 @@
-/* WebRTC transport for the browser socket adapter.
+/* Browser transports for the browser socket adapter.
 
    The public API is window.HaloWebTransport.  Signalling is deliberately
    supplied by the page: this module owns peer connections and DataChannels,
    but does not know whether offers travel through a Worker, a local test
-   harness, or another signalling service. */
+   harness, or another signalling service.  With configure({ transport:
+   'relay' }) the same peers travel through a WebSocket relay (server/)
+   instead, and take no signals. */
 
 addToLibrary({
   $HaloWebTransportRuntime__postset: 'HaloWebTransportRuntime.install();',
@@ -24,9 +26,24 @@ addToLibrary({
       onSignal: null,
       onStateChange: null,
       onError: null,
+      transport: 'webrtc',
+      relay: null,
     },
     pumpTimer: 0,
+    pumpPosted: false,
+    pumpChannel: null,
+    idlePumpRetries: 0,
+    /* Retries that make no progress (a busy or full socket in Wasm) stop
+       spinning after this many and fall back to a timer. */
+    IDLE_PUMP_RETRY_LIMIT: 32,
     pumping: false,
+    /* ?netstats=1: local measurement only, never sent anywhere. */
+    netstatsEnabled: false,
+    netstatsWindow: null,
+    netstatsHistory: [],
+    NETSTATS_HISTORY_WINDOWS: 720,
+    NETSTATS_GAP_SAMPLES: 8192,
+    NETSTATS_LOG_MILLISECONDS: 5000,
 
     normalizeAddress: function(address) {
       return address >>> 0;
@@ -133,10 +150,10 @@ addToLibrary({
             error: error instanceof Error ? error : new Error(String(error)),
           });
         } catch (callbackError) {
-          console.error('Halo WebRTC error callback failed', callbackError);
+          console.error('Halo web transport error callback failed', callbackError);
         }
       } else {
-        console.error('Halo WebRTC transport', error);
+        console.error('Halo web transport', error);
       }
     },
 
@@ -179,27 +196,58 @@ addToLibrary({
     },
 
     channelsReady: function(record) {
+      if (record.relay) return HaloWebTransportRuntime.relayReady(record);
       return !!record.reliable && record.reliable.readyState === 'open' &&
         !!record.unreliable && record.unreliable.readyState === 'open';
     },
 
-    schedulePump: function(delay) {
+    /* Hidden pages run chained timers about once a second, which would hold
+       received packets back from the game.  Message events are not
+       throttled, so pumps are posted through a MessageChannel. */
+    schedulePump: function() {
       var runtime = HaloWebTransportRuntime;
-      if (runtime.pumpTimer) return;
+      if (runtime.pumpPosted) return;
+      if (!runtime.pumpChannel) {
+        runtime.pumpChannel = new MessageChannel();
+        runtime.pumpChannel.port1.onmessage = function() {
+          runtime.pumpPosted = false;
+          runtime.pump();
+        };
+      }
+      runtime.pumpPosted = true;
+      runtime.pumpChannel.port2.postMessage(null);
+    },
+
+    scheduleIdlePumpRetry: function() {
+      var runtime = HaloWebTransportRuntime;
+      if (++runtime.idlePumpRetries <= runtime.IDLE_PUMP_RETRY_LIMIT) {
+        runtime.schedulePump();
+        return;
+      }
+      /* New packets and channel events still post pumps immediately. */
+      if (runtime.pumpTimer || runtime.pumpPosted) return;
       runtime.pumpTimer = setTimeout(function() {
         runtime.pumpTimer = 0;
         runtime.pump();
-      }, delay || 0);
+      }, 4);
     },
 
     syncPeerState: function(record) {
       if (!record || record.removed) return;
       var runtime = HaloWebTransportRuntime;
       var connected = runtime.channelsReady(record);
-      var reliableWriteable = connected && runtime.channelWriteable(
-        record.reliable, runtime.RELIABLE_HIGH_WATER);
-      var unreliableWriteable = connected && runtime.channelWriteable(
-        record.unreliable, runtime.UNRELIABLE_HIGH_WATER);
+      var reliableWriteable;
+      var unreliableWriteable;
+      if (record.relay) {
+        reliableWriteable = connected && !record.relayBlocked;
+        /* Late datagrams are dropped at send time instead (relaySend). */
+        unreliableWriteable = connected;
+      } else {
+        reliableWriteable = connected && runtime.channelWriteable(
+          record.reliable, runtime.RELIABLE_HIGH_WATER);
+        unreliableWriteable = connected && runtime.channelWriteable(
+          record.unreliable, runtime.UNRELIABLE_HIGH_WATER);
+      }
       var result;
       try {
         result = runtime.moduleFunction('web_net_remote_set_peer_state')(
@@ -211,7 +259,7 @@ addToLibrary({
       }
       if (result === 0) {
         record.needsStateSync = true;
-        runtime.schedulePump(1);
+        runtime.scheduleIdlePumpRetry();
         return;
       }
       record.needsStateSync = false;
@@ -246,7 +294,7 @@ addToLibrary({
       channel.onopen = function() {
         record.needsStateSync = true;
         runtime.syncPeerState(record);
-        runtime.schedulePump(0);
+        runtime.schedulePump();
       };
       channel.onclose = function() {
         if (!record.removed) {
@@ -301,7 +349,363 @@ addToLibrary({
         record.unreliableQueue.push(bytes);
         record.unreliableQueuedBytes += bytes.byteLength;
       }
-      runtime.schedulePump(0);
+      if (record.netstats) runtime.netstatsArrival(record.netstats[reliable ? 0 : 1], bytes.byteLength);
+      runtime.idlePumpRetries = 0;
+      runtime.schedulePump();
+    },
+
+    netstatsChannel: function() {
+      return { frames: 0, bytes: 0, last: 0, gaps: [], gapMax: 0, over150: 0, over300: 0 };
+    },
+
+    netstatsArrival: function(channel, length) {
+      var now = performance.now();
+      if (channel.last) {
+        var gap = now - channel.last;
+        if (channel.gaps.length < HaloWebTransportRuntime.NETSTATS_GAP_SAMPLES) channel.gaps.push(gap);
+        if (gap > channel.gapMax) channel.gapMax = gap;
+        if (gap > 150) channel.over150++;
+        if (gap > 300) channel.over300++;
+      }
+      channel.last = now;
+      channel.frames++;
+      channel.bytes += length;
+    },
+
+    netstatsTakeChannel: function(channel, seconds) {
+      var gaps = channel.gaps.slice().sort(function(a, b) { return a - b; });
+      var percentile = function(fraction) {
+        return gaps.length ? +gaps[Math.min(gaps.length - 1, Math.floor(gaps.length * fraction))].toFixed(1) : null;
+      };
+      var result = {
+        framesPerSecond: +(channel.frames / seconds).toFixed(1),
+        bytesPerSecond: Math.round(channel.bytes / seconds),
+        gapP50Ms: percentile(0.5),
+        gapP99Ms: percentile(0.99),
+        gapMaxMs: +channel.gapMax.toFixed(1),
+        gapsOver150Ms: channel.over150,
+        gapsOver300Ms: channel.over300,
+      };
+      channel.frames = 0;
+      channel.bytes = 0;
+      channel.gaps = [];
+      channel.gapMax = 0;
+      channel.over150 = 0;
+      channel.over300 = 0;
+      return result;
+    },
+
+    netstatsGame: function() {
+      var game = {};
+      var values = Module['_platform_web_netstats'];
+      if (typeof values === 'function') {
+        var index = values() >>> 3;
+        game.ticks = HEAPF64[index];
+        game.ownCorrections = HEAPF64[index + 1];
+        game.ownCorrectionMaxUnits = +HEAPF64[index + 2].toFixed(2);
+        game.rejectedPredictions = HEAPF64[index + 3];
+        game.ownAimCorrections = HEAPF64[index + 4];
+        game.ownAimCorrectionMaxDegrees = +HEAPF64[index + 5].toFixed(1);
+        game.ownSeatCorrections = HEAPF64[index + 6];
+        game.hostInputs0 = HEAPF64[index + 7];
+        game.hostInputs1 = HEAPF64[index + 8];
+        game.hostInputs2 = HEAPF64[index + 9];
+        game.hostInputs3 = HEAPF64[index + 10];
+        game.multiTickFrames = HEAPF64[index + 11];
+        game.maxTicksPerFrame = HEAPF64[index + 12];
+        game.tickMsMax = HEAPF64[index + 13];
+        game.callbackMsMax = +HEAPF64[index + 14].toFixed(1);
+        game.shaders = HEAPF64[index + 15];
+        game.shaderMs = HEAPF64[index + 16];
+        game.shaderMsMax = +HEAPF64[index + 17].toFixed(1);
+        game.textureUploads = HEAPF64[index + 18];
+        game.textureBytes = HEAPF64[index + 19];
+        game.textureMs = HEAPF64[index + 20];
+        game.textureMsMax = +HEAPF64[index + 21].toFixed(1);
+        game.textureHashMs = HEAPF64[index + 22];
+        game.textureHashMsMax = +HEAPF64[index + 23].toFixed(1);
+        game.textureDrops = HEAPF64[index + 24];
+        game.shaderCompiles = HEAPF64[index + 25];
+        game.shaderSourceHits = HEAPF64[index + 26];
+        game.pixelShaderKeys = HEAPF64[index + 27];
+        game.frameGapP99Ms = +HEAPF64[index + 28].toFixed(1);
+        game.framesOver = [HEAPF64[index + 29], HEAPF64[index + 30], HEAPF64[index + 31], HEAPF64[index + 32]];
+        game.firstDrawGapMaxMs = +HEAPF64[index + 33].toFixed(1);
+        game.overflowGapMaxMs = +HEAPF64[index + 34].toFixed(1);
+        game.maxDrawsPerFrame = HEAPF64[index + 35];
+        game.maxTransientUploadsPerFrame = HEAPF64[index + 36];
+        game.maxTransientKilobytesPerFrame = Math.round(HEAPF64[index + 37] / 1024);
+        game.transientOverflowFrames = HEAPF64[index + 38];
+        game.firstDraws = HEAPF64[index + 39];
+        game.firstDrawFrames = HEAPF64[index + 40];
+        game.outsideFrameMaxMs = +HEAPF64[index + 41].toFixed(1);
+        game.warmedPrograms = HEAPF64[index + 42];
+        game.warmupMs = Math.round(HEAPF64[index + 43]);
+        game.unwarmedFirstDraws = HEAPF64[index + 44];
+      }
+      if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
+        game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
+        game.frameHitches = Module['_platform_web_profile_hitches']();
+        if (typeof Module['_platform_web_profile_over_budget'] === 'function') {
+          game.framesOverBudget = Module['_platform_web_profile_over_budget']();
+          game.frames = Module['_platform_web_profile_starts']();
+        }
+      }
+      return game;
+    },
+
+    /* One measurement window: everything since the previous window. */
+    netstatsTakeWindow: async function() {
+      var runtime = HaloWebTransportRuntime;
+      var now = performance.now();
+      var previous = runtime.netstatsWindow || { time: now, game: {} };
+      var seconds = Math.max(0.001, (now - previous.time) / 1000);
+      var game = runtime.netstatsGame();
+      var delta = function(name) {
+        return game[name] !== undefined && previous.game[name] !== undefined ?
+          game[name] - previous.game[name] : null;
+      };
+      var peers = [];
+      for (var record of runtime.peersById.values()) {
+        if (!record.netstats) continue;
+        var rttMs = null;
+        var relayStats;
+        if (record.relay) {
+          var probeReliable = runtime.netstatsSamples(record.relayProbes[0]);
+          var probeUnreliable = runtime.netstatsSamples(record.relayProbes[1]);
+          rttMs = probeReliable.p50Ms;
+          relayStats = {
+            probeReliable: probeReliable,
+            probeUnreliable: probeUnreliable,
+            staleDatagrams: record.staleDatagrams - (record.netstatsStale || 0),
+            resentFrames: record.resentFrames - (record.netstatsResent || 0),
+            duplicateFrames: record.duplicateFrames - (record.netstatsDuplicates || 0),
+            unacknowledgedFrames: record.resend.length,
+            linked: runtime.relayLinked(record),
+          };
+          record.relayProbes = [[], []];
+          record.netstatsStale = record.staleDatagrams;
+          record.netstatsResent = record.resentFrames;
+          record.netstatsDuplicates = record.duplicateFrames;
+        } else {
+          try {
+            (await record.pc.getStats()).forEach(function(report) {
+              if (report.type === 'candidate-pair' && report.nominated &&
+                  report.state === 'succeeded' && report.currentRoundTripTime !== undefined) {
+                rttMs = +(report.currentRoundTripTime * 1000).toFixed(1);
+              }
+            });
+          } catch (error) { /* closed while measuring */ }
+        }
+        peers.push({
+          peerId: record.peerId,
+          rttMs: rttMs,
+          droppedDatagrams: record.droppedDatagrams - (record.netstatsDropped || 0),
+          reliableQueued: record.reliableQueue.length,
+          unreliableQueued: record.unreliableQueue.length,
+          reliable: runtime.netstatsTakeChannel(record.netstats[0], seconds),
+          unreliable: runtime.netstatsTakeChannel(record.netstats[1], seconds),
+          relay: relayStats,
+        });
+        record.netstatsDropped = record.droppedDatagrams;
+      }
+      var relay = runtime.relay;
+      var relaySummary;
+      if (relay) {
+        relaySummary = {
+          sockets: relay.reliable === relay.unreliable ? 1 : 2,
+          edgeColo: relay.colo ? relay.colo.edge : null,
+          roomColo: relay.colo ? relay.colo.room : null,
+          echoReliable: runtime.netstatsSamples(relay.echo[0]),
+          echoUnreliable: relay.reliable === relay.unreliable ? null : runtime.netstatsSamples(relay.echo[1]),
+          maxBufferedReliable: relay.maxBuffered[0],
+          maxBufferedUnreliable: relay.maxBuffered[1],
+          reconnects: relay.reconnects,
+          lastOutageMs: relay.lastOutageMilliseconds,
+          closeCodes: relay.closeCodes,
+          framesSent: relay.framesSent,
+          messagesSent: relay.messagesSent,
+          framesPerMessage: relay.messagesSent ? +(relay.framesSent / relay.messagesSent).toFixed(2) : null,
+        };
+        relaySummary.messagesReceived = relay.messagesReceived || 0;
+        relaySummary.kilobytesReceived = Math.round((relay.bytesReceived || 0) / 1024);
+        relay.messagesReceived = 0;
+        relay.bytesReceived = 0;
+        relay.framesSent = 0;
+        relay.messagesSent = 0;
+        relay.echo = [[], []];
+        relay.maxBuffered = [0, 0];
+        relay.closeCodes = [];
+      }
+      runtime.netstatsWindow = { time: now, game: game };
+      var main = runtime.netstatsTakeMainThread();
+      return {
+        at: new Date().toISOString(),
+        windowSeconds: +seconds.toFixed(2),
+        visibility: document.visibilityState,
+        focused: typeof document.hasFocus === 'function' ? document.hasFocus() : null,
+        transport: runtime.options.transport,
+        game: {
+          ticksPerSecond: delta('ticks') === null ? null : +(delta('ticks') / seconds).toFixed(1),
+          ownCorrections: delta('ownCorrections'),
+          ownCorrectionMaxUnits: game.ownCorrectionMaxUnits,
+          rejectedPredictions: delta('rejectedPredictions'),
+          frameGapMaxMs: game.frameGapMaxMs,
+          frameHitches: delta('frameHitches'),
+          framesPerSecond: delta('frames') === null ? null : +(delta('frames') / seconds).toFixed(1),
+          framesOverBudget: delta('framesOverBudget'),
+          multiTickFrames: delta('multiTickFrames'),
+          maxTicksPerFrame: game.maxTicksPerFrame,
+          ownAimCorrections: delta('ownAimCorrections'),
+          ownAimCorrectionMaxDegrees: game.ownAimCorrectionMaxDegrees,
+          ownSeatCorrections: delta('ownSeatCorrections'),
+          /* the host: ticks that had 0, 1, 2 or 3+ client input packets */
+          hostInputsPerTick: [delta('hostInputs0'), delta('hostInputs1'), delta('hostInputs2'), delta('hostInputs3')],
+          /* where long frames go: ticks, the whole frame callback, new shaders
+             and textures (uploads, hashing, idle drops that come back) */
+          tickMsMax: game.tickMsMax,
+          callbackMsMax: game.callbackMsMax,
+          shaders: delta('shaders'),
+          shaderCompiles: delta('shaderCompiles'),
+          shaderSourceHits: delta('shaderSourceHits'),
+          pixelShaderKeys: delta('pixelShaderKeys'),
+          /* frame pacing: the gaps' 99th percentile, how many exceeded 16.7,
+             33.3, 50 and 100 ms, and what the slowest frames had done */
+          frameGapP99Ms: game.frameGapP99Ms,
+          framesOver16_33_50_100Ms: game.framesOver,
+          firstDraws: delta('firstDraws'),
+          firstDrawFrames: game.firstDrawFrames,
+          firstDrawGapMaxMs: game.firstDrawGapMaxMs,
+          maxDrawsPerFrame: game.maxDrawsPerFrame,
+          maxTransientUploadsPerFrame: game.maxTransientUploadsPerFrame,
+          maxTransientKilobytesPerFrame: game.maxTransientKilobytesPerFrame,
+          transientOverflowFrames: game.transientOverflowFrames,
+          overflowGapMaxMs: game.overflowGapMaxMs,
+          /* the longest time between one frame callback's end and the next
+             one's start, and the render cap in force (0: the display's rate) */
+          outsideFrameMaxMs: game.outsideFrameMaxMs,
+          /* the shader warm-up: programs built while the map loaded, the
+             last warm-up's time, and first draws it had not covered */
+          warmedPrograms: delta('warmedPrograms'),
+          warmupMs: game.warmupMs,
+          unwarmedFirstDraws: delta('unwarmedFirstDraws'),
+          frameCap: typeof Module['_platform_web_frame_cap'] === 'function' ? Module['_platform_web_frame_cap']() : null,
+          shaderMs: delta('shaderMs') === null ? null : +delta('shaderMs').toFixed(1),
+          shaderMsMax: game.shaderMsMax,
+          textureUploads: delta('textureUploads'),
+          textureKilobytes: delta('textureBytes') === null ? null : Math.round(delta('textureBytes') / 1024),
+          textureMs: delta('textureMs') === null ? null : +delta('textureMs').toFixed(1),
+          textureMsMax: game.textureMsMax,
+          textureHashMs: delta('textureHashMs') === null ? null : +delta('textureHashMs').toFixed(1),
+          textureHashMsMax: game.textureHashMsMax,
+          textureDrops: delta('textureDrops'),
+        },
+        peers: peers,
+        relay: relaySummary,
+        mainThread: main,
+      };
+    },
+
+    /* The browser's main thread runs the relay's sockets, the transport's
+       pump and these statistics while the game runs on a worker: its long
+       tasks, how late a message posted every few milliseconds is handled (the
+       event loop's lag), and the JavaScript heap. */
+    netstatsStartMainThread: function() {
+      var runtime = HaloWebTransportRuntime;
+      var main = runtime.netstatsMain = { lags: [], longTasks: 0, longTaskMs: 0, longTaskMaxMs: 0, heapStart: null, heapMax: 0 };
+      if (typeof PerformanceObserver === 'function') {
+        try {
+          new PerformanceObserver(function(list) {
+            list.getEntries().forEach(function(entry) {
+              main.longTasks++;
+              main.longTaskMs += entry.duration;
+              if (entry.duration > main.longTaskMaxMs) main.longTaskMaxMs = entry.duration;
+            });
+          }).observe({ type: 'longtask', buffered: false });
+        } catch (error) { /* not supported */ }
+      }
+      if (typeof MessageChannel === 'function') {
+        var channel = new MessageChannel();
+        var sent = 0;
+        var ping = function() { sent = performance.now(); channel.port2.postMessage(0); };
+        channel.port1.onmessage = function() {
+          if (main.lags.length < 4096) main.lags.push(performance.now() - sent);
+          var timer = setTimeout(ping, 4);
+          /* (Node, for the tests: the sampler alone must not keep it running) */
+          if (timer && typeof timer.unref === 'function') timer.unref();
+        };
+        if (typeof channel.port1.unref === 'function') channel.port1.unref();
+        ping();
+      }
+    },
+
+    netstatsTakeMainThread: function() {
+      var main = HaloWebTransportRuntime.netstatsMain;
+      if (!main) return null;
+      var lags = main.lags.slice().sort(function(a, b) { return a - b; });
+      var heap = typeof performance !== 'undefined' && performance.memory ? performance.memory.usedJSHeapSize : null;
+      var result = {
+        lagP99Ms: lags.length ? +lags[Math.min(lags.length - 1, Math.floor(lags.length * 0.99))].toFixed(1) : null,
+        lagMaxMs: lags.length ? +lags[lags.length - 1].toFixed(1) : null,
+        lagSamples: lags.length,
+        longTasks: main.longTasks,
+        longTaskMs: Math.round(main.longTaskMs),
+        longTaskMaxMs: Math.round(main.longTaskMaxMs),
+        heapMegabytes: heap === null ? null : +(heap / 1048576).toFixed(1),
+        heapChangeMegabytes: heap === null || main.heapStart === null ? null : +((heap - main.heapStart) / 1048576).toFixed(1),
+      };
+      main.lags = [];
+      main.longTasks = 0;
+      main.longTaskMs = 0;
+      main.longTaskMaxMs = 0;
+      main.heapStart = heap;
+      return result;
+    },
+
+    netstatsSamples: function(samples) {
+      var sorted = samples.slice().sort(function(a, b) { return a - b; });
+      var at = function(fraction) {
+        return sorted.length ?
+          +sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))].toFixed(1) : null;
+      };
+      return {
+        count: sorted.length,
+        p50Ms: at(0.5),
+        p99Ms: at(0.99),
+        maxMs: sorted.length ? +sorted[sorted.length - 1].toFixed(1) : null,
+      };
+    },
+
+    startNetstatsLog: function() {
+      var runtime = HaloWebTransportRuntime;
+      runtime.netstatsStartMainThread();
+      runtime.netstatsTakeWindow();
+      setInterval(function() {
+        runtime.netstatsTakeWindow().then(function(stats) {
+          runtime.netstatsHistory.push(stats);
+          if (runtime.netstatsHistory.length > runtime.NETSTATS_HISTORY_WINDOWS) {
+            runtime.netstatsHistory.shift();
+          }
+          /* (uploaded windows stay out of the console: several kilobytes
+             every five seconds, which an embedding page may forward) */
+          if (runtime.netstatsUpload) runtime.netstatsSend(stats);
+          else console.info('[netstats] ' + JSON.stringify(stats));
+        });
+      }, runtime.NETSTATS_LOG_MILLISECONDS);
+    },
+
+    /* With the server's halo-netstats-upload meta (an opt-in of the server's
+       operator), each window also goes to the server's log. */
+    netstatsSend: function(stats) {
+      try {
+        fetch('v1/netstats', {
+          method: 'POST',
+          credentials: 'same-origin',
+          keepalive: true,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(stats),
+        }).catch(function() {});
+      } catch (error) { /* best effort */ }
     },
 
     deliverOne: function(record, reliable) {
@@ -328,9 +732,12 @@ addToLibrary({
       if (runtime.pumping) return;
       runtime.pumping = true;
       var retry = false;
+      var queuedBefore = 0;
+      var queuedAfter = 0;
       try {
         runtime.peersById.forEach(function(record) {
           if (record.removed) return;
+          queuedBefore += record.reliableQueue.length + record.unreliableQueue.length;
           if (record.needsStateSync) runtime.syncPeerState(record);
           var reliableResult = runtime.deliverOne(record, true);
           if (reliableResult < 0) {
@@ -350,6 +757,7 @@ addToLibrary({
               break;
             }
           }
+          queuedAfter += record.reliableQueue.length + record.unreliableQueue.length;
           if (record.needsStateSync ||
               (runtime.channelsReady(record) &&
                (record.reliableQueue.length || record.unreliableQueue.length))) retry = true;
@@ -357,7 +765,13 @@ addToLibrary({
       } finally {
         runtime.pumping = false;
       }
-      if (retry) runtime.schedulePump(1);
+      if (!retry) return;
+      if (queuedAfter < queuedBefore) {
+        runtime.idlePumpRetries = 0;
+        runtime.schedulePump();
+      } else {
+        runtime.scheduleIdlePumpRetry();
+      }
     },
 
     makeOffer: async function(record, iceRestart) {
@@ -404,6 +818,9 @@ addToLibrary({
       if (runtime.peersByAddress.has(address)) {
         throw new Error('A virtual peer address is already in use');
       }
+      if (runtime.options.transport === 'relay') {
+        return runtime.addRelayPeer(options, identifier, address);
+      }
       var configuration = {
         iceServers: options.iceServers || runtime.options.iceServers || [],
         bundlePolicy: 'max-bundle',
@@ -428,6 +845,8 @@ addToLibrary({
         reliableQueuedBytes: 0,
         unreliableQueuedBytes: 0,
         droppedDatagrams: 0,
+        netstats: runtime.netstatsEnabled ?
+          [runtime.netstatsChannel(), runtime.netstatsChannel()] : null,
         needsStateSync: true,
         lastPublicState: null,
         removed: false,
@@ -484,6 +903,7 @@ addToLibrary({
       var runtime = HaloWebTransportRuntime;
       var record = runtime.peersById.get(peerId);
       if (!record || record.removed) throw new Error('Unknown peer: ' + peerId);
+      if (record.relay) throw new Error('Relay peers take no signals');
       if (!signal || (signal.description === undefined && signal.candidate === undefined)) {
         throw new TypeError('Signal must contain a description or candidate');
       }
@@ -539,6 +959,7 @@ addToLibrary({
     restartIce: async function(peerId) {
       var record = HaloWebTransportRuntime.peersById.get(peerId);
       if (!record || record.removed) throw new Error('Unknown peer: ' + peerId);
+      if (record.relay) return;
       await HaloWebTransportRuntime.makeOffer(record, true);
     },
 
@@ -549,7 +970,10 @@ addToLibrary({
       record.removed = true;
       if (record.reliable) record.reliable.close();
       if (record.unreliable) record.unreliable.close();
-      record.pc.close();
+      if (record.pc) record.pc.close();
+      if (record.relay && runtime.relayPeers.get(record.identifier) === record) {
+        runtime.relayPeers.delete(record.identifier);
+      }
       runtime.peersById.delete(peerId);
       if (runtime.peersByAddress.get(record.address) === record) {
         runtime.peersByAddress.delete(record.address);
@@ -563,12 +987,13 @@ addToLibrary({
       var runtime = HaloWebTransportRuntime;
       var record = runtime.peersByAddress.get(runtime.normalizeAddress(address));
       if (!record || record.removed || length < 12 || length > 16396) return 0;
+      if (record.relay) return runtime.relaySend(record, reliable, pointer, length);
       var channel = reliable ? record.reliable : record.unreliable;
       var highWater = reliable ? runtime.RELIABLE_HIGH_WATER :
         runtime.UNRELIABLE_HIGH_WATER;
       if (!runtime.channelWriteable(channel, highWater)) {
         record.needsStateSync = true;
-        runtime.schedulePump(1);
+        runtime.schedulePump();
         return 0;
       }
       try {
@@ -576,20 +1001,641 @@ addToLibrary({
         channel.send(frame);
         if (channel.bufferedAmount > highWater) {
           record.needsStateSync = true;
-          runtime.schedulePump(1);
+          runtime.schedulePump();
         }
         return 1;
       } catch (error) {
         runtime.reportError(record, error);
         record.needsStateSync = true;
-        runtime.schedulePump(1);
+        runtime.schedulePump();
         return 0;
       }
+    },
+
+    /* WebSocket relay (configure({ transport: 'relay' })).
+
+       Every peer shares this browser's socket(s) to the room's relay. Each
+       binary message is [channel][6-byte peer identifier][payload]; the relay
+       replaces the identifier with the sender's.
+
+       Reliable frames carry [u32 sequence][u32 acknowledgement][Halo frame].
+       The sender keeps each one until the peer acknowledges it and replays
+       the unacknowledged ones whenever either side reconnects; the receiver
+       delivers each sequence number once and in order.  Halo's reliable
+       streams therefore survive a dropped socket.  While a socket reconnects
+       or the peer is away, the game keeps the peer; only after
+       RELAY_GRACE_MILLISECONDS without a path does the peer fail.
+
+       TCP never drops, so a datagram that would wait behind a backed-up
+       socket, or has no path at all, is dropped here, as a network would. */
+    RELAY_CHANNEL: Object.freeze({
+      RELIABLE: 0, UNRELIABLE: 1, PING_RELIABLE: 2, PONG_RELIABLE: 3,
+      PING_UNRELIABLE: 4, PONG_UNRELIABLE: 5, ECHO: 6, ACK: 7,
+    }),
+    RELAY_HEADER_BYTES: 7,
+    RELAY_SEQUENCE_BYTES: 8,
+    RELAY_DATAGRAM_DROP_BYTES: 4096,
+    RELAY_PROBE_MILLISECONDS: 100,
+    RELAY_RESEND_LIMIT: 4 * 1024 * 1024,
+    RELAY_ACK_EVERY: 8,
+    RELAY_ACK_MILLISECONDS: 50,
+    RELAY_GRACE_MILLISECONDS: 20000,
+    RELAY_RECONNECT_MILLISECONDS: [250, 500, 1000, 2000, 4000],
+    RELAY_BATCH_MARKER: 0x80,
+    RELAY_BATCH_LIMIT: 60 * 1024,
+    RELAY_FLUSH_MILLISECONDS: 4,
+    relayPeers: new Map(),
+    relay: null,
+
+    relayKey: function(options) {
+      return [options.url, options.roomId, options.role, options.sockets].join('|');
+    },
+
+    /* A frame can reach this peer right now. */
+    relayLinked: function(record) {
+      var relay = HaloWebTransportRuntime.relay;
+      return !!relay && !relay.failed && relay.ready &&
+        relay.reliable.readyState === 1 && relay.unreliable.readyState === 1 &&
+        relay.present.has(record.identifier);
+    },
+
+    /* What the game sees: connected from the first link until the grace
+       period for an outage runs out. */
+    relayReady: function(record) {
+      return record.relayEverLinked ? !record.removed :
+        HaloWebTransportRuntime.relayLinked(record);
+    },
+
+    openRelay: function() {
+      var runtime = HaloWebTransportRuntime;
+      var options = runtime.options.relay;
+      if (!options || !options.url || !options.roomId || !options.role) {
+        throw new Error('The WebSocket relay is not configured');
+      }
+      var key = runtime.relayKey(options);
+      if (runtime.relay && runtime.relay.key === key && !runtime.relay.failed) return;
+      runtime.closeRelay();
+      var relay = {
+        key: key,
+        options: options,
+        generation: 0,
+        ready: false,
+        present: new Set(),
+        failed: false,
+        reliable: null,
+        unreliable: null,
+        reconnectAttempt: 0,
+        reconnectTimer: 0,
+        watchTimer: 0,
+        timers: [],
+        everReady: false,
+        reconnects: 0,
+        outageStart: 0,
+        lastOutageMilliseconds: null,
+        closeCodes: [],
+        echo: [[], []],
+        maxBuffered: [0, 0],
+        /* Frames waiting for the end of the game frame, per socket. */
+        batching: options.batch !== false,
+        outbox: new Map(),
+        flushTimer: 0,
+        framesSent: 0,
+        messagesSent: 0,
+        names: new Map(),
+        discovering: new Set(),
+      };
+      runtime.relay = relay;
+      runtime.relayConnect(relay);
+      relay.timers.push(setInterval(runtime.relayFlushAcks, runtime.RELAY_ACK_MILLISECONDS));
+      relay.timers.push(setInterval(runtime.relayCheckGrace, 1000));
+      if (runtime.netstatsEnabled) {
+        relay.timers.push(setInterval(runtime.relayProbe, runtime.RELAY_PROBE_MILLISECONDS));
+      }
+      runtime.relaySetBatching(relay.batching);
+    },
+
+    relaySetBatching: function(enabled) {
+      var setter = typeof Module !== 'undefined' && Module['_web_net_remote_set_batching'];
+      if (typeof setter === 'function') setter(enabled ? 1 : 0);
+    },
+
+    relayConnect: function(relay) {
+      var runtime = HaloWebTransportRuntime;
+      var generation = ++relay.generation;
+      var base = new URL(relay.options.url);
+      if (base.protocol === 'http:') base.protocol = 'ws:';
+      if (base.protocol === 'https:') base.protocol = 'wss:';
+      var identifier = runtime.localIdentifier();
+      var open = function(kind) {
+        var url = new URL('v1/rooms/' + encodeURIComponent(relay.options.roomId) + '/ws',
+          base.href.replace(/\/?$/, '/'));
+        url.search = new URLSearchParams({ role: relay.options.role, ch: kind }).toString();
+        var socket = new WebSocket(url.href);
+        var current = function() { return runtime.relay === relay && relay.generation === generation; };
+        socket.binaryType = 'arraybuffer';
+        socket.onopen = function() {
+          if (!current()) return;
+          /* Browsers cannot set WebSocket headers: the session token is the
+             first message, and the relay answers it with "ready". */
+          var auth = relay.options.auth;
+          if (auth) {
+            socket.send(JSON.stringify({
+              type: 'auth', token: auth.getToken(), id: identifier, build: auth.build,
+            }));
+          }
+          runtime.relaySyncAll();
+        };
+        socket.onmessage = function(event) { if (current()) runtime.relayMessage(relay, socket, event.data); };
+        socket.onclose = function(event) { if (current()) runtime.relayLost(relay, event.code); };
+        return socket;
+      };
+      relay.ready = false;
+      relay.present = new Set();
+      if (relay.options.sockets === 2) {
+        relay.reliable = open('r');
+        relay.unreliable = open('u');
+      } else {
+        relay.reliable = relay.unreliable = open('both');
+      }
+    },
+
+    relayCloseSockets: function(relay, code) {
+      [relay.reliable, relay.unreliable].forEach(function(socket) {
+        if (!socket) return;
+        try { socket.close(code || 1000); } catch (error) { /* already closed */ }
+      });
+    },
+
+    /* A socket closed while the relay was wanted: reconnect both. */
+    relayLost: function(relay, code) {
+      var runtime = HaloWebTransportRuntime;
+      relay.generation++;
+      relay.ready = false;
+      relay.present = new Set();
+      /* Reliable frames in it are still in the replay buffer. */
+      relay.outbox.clear();
+      relay.closeCodes.push(code);
+      if (!relay.outageStart) relay.outageStart = performance.now();
+      runtime.relayCloseSockets(relay, 1000);
+      runtime.relaySyncAll();
+      var delays = runtime.RELAY_RECONNECT_MILLISECONDS;
+      var delay = delays[Math.min(relay.reconnectAttempt++, delays.length - 1)];
+      clearTimeout(relay.reconnectTimer);
+      relay.reconnectTimer = setTimeout(function() {
+        relay.reconnectTimer = 0;
+        if (runtime.relay === relay && !relay.failed) runtime.relayConnect(relay);
+      }, delay);
+    },
+
+    closeRelay: function() {
+      var runtime = HaloWebTransportRuntime;
+      var relay = runtime.relay;
+      if (!relay) return;
+      runtime.relay = null;
+      relay.failed = true;
+      relay.generation++;
+      relay.timers.forEach(clearInterval);
+      clearTimeout(relay.reconnectTimer);
+      clearTimeout(relay.watchTimer);
+      clearTimeout(relay.flushTimer);
+      relay.outbox.clear();
+      runtime.relaySetBatching(false);
+      runtime.relayCloseSockets(relay, 1000);
+    },
+
+    /* Queues a frame for the socket; relayFlush sends each socket's queue as
+       one message at the end of the game frame (web_net_end_frame), or after
+       RELAY_FLUSH_MILLISECONDS if the game is not ticking. */
+    relayQueue: function(socket, frame) {
+      var runtime = HaloWebTransportRuntime;
+      var relay = runtime.relay;
+      if (!relay || socket.readyState !== 1) return;
+      if (!relay.batching) {
+        runtime.relaySendMessage(relay, socket, [frame]);
+        return;
+      }
+      var box = relay.outbox.get(socket);
+      if (!box) {
+        box = { frames: [], bytes: 1 };
+        relay.outbox.set(socket, box);
+      }
+      if (box.bytes + 2 + frame.byteLength > runtime.RELAY_BATCH_LIMIT) {
+        runtime.relaySendMessage(relay, socket, box.frames);
+        box.frames = [];
+        box.bytes = 1;
+      }
+      box.frames.push(frame);
+      box.bytes += 2 + frame.byteLength;
+      if (!relay.flushTimer) relay.flushTimer = setTimeout(runtime.relayFlush, runtime.RELAY_FLUSH_MILLISECONDS);
+    },
+
+    relayFlush: function() {
+      var runtime = HaloWebTransportRuntime;
+      var relay = runtime.relay;
+      if (!relay) return;
+      clearTimeout(relay.flushTimer);
+      relay.flushTimer = 0;
+      relay.outbox.forEach(function(box, socket) {
+        if (box.frames.length) runtime.relaySendMessage(relay, socket, box.frames);
+      });
+      relay.outbox.clear();
+    },
+
+    relaySendMessage: function(relay, socket, frames) {
+      if (socket.readyState !== 1) return;
+      var message = frames[0];
+      if (frames.length > 1) {
+        var size = 1;
+        frames.forEach(function(frame) { size += 2 + frame.byteLength; });
+        message = new Uint8Array(size);
+        message[0] = HaloWebTransportRuntime.RELAY_BATCH_MARKER;
+        var offset = 1;
+        frames.forEach(function(frame) {
+          message[offset] = frame.byteLength >> 8;
+          message[offset + 1] = frame.byteLength & 255;
+          message.set(frame, offset + 2);
+          offset += 2 + frame.byteLength;
+        });
+      }
+      try {
+        socket.send(message);
+      } catch (error) {
+        /* Closing: its close event starts the reconnect and replay. */
+        return;
+      }
+      relay.framesSent += frames.length;
+      relay.messagesSent++;
+      var index = socket === relay.reliable ? 0 : 1;
+      if (socket.bufferedAmount > relay.maxBuffered[index]) relay.maxBuffered[index] = socket.bufferedAmount;
+    },
+
+    relaySyncAll: function() {
+      var runtime = HaloWebTransportRuntime;
+      runtime.relayPeers.forEach(function(record) {
+        var linked = runtime.relayLinked(record);
+        if (linked) record.relayEverLinked = true;
+        if (linked && record.needsResend) {
+          record.needsResend = false;
+          runtime.relayResend(record);
+        }
+        record.needsStateSync = true;
+        runtime.syncPeerState(record);
+      });
+      runtime.schedulePump();
+    },
+
+    /* A peer with no path for the grace period fails, as a dead connection would. */
+    relayCheckGrace: function() {
+      var runtime = HaloWebTransportRuntime;
+      var now = performance.now();
+      Array.from(runtime.relayPeers.values()).forEach(function(record) {
+        if (runtime.relayLinked(record)) {
+          record.awaySince = 0;
+        } else if (!record.awaySince) {
+          record.awaySince = now;
+        } else if (now - record.awaySince > runtime.RELAY_GRACE_MILLISECONDS) {
+          runtime.failPeer(record, new Error(record.relayEverLinked ?
+            'The relay connection could not be restored' :
+            'Could not reach the peer through the relay'));
+        }
+      });
+    },
+
+    relayMessage: function(relay, socket, data) {
+      var runtime = HaloWebTransportRuntime;
+      var channels = runtime.RELAY_CHANNEL;
+      relay.messagesReceived = (relay.messagesReceived || 0) + 1;
+      relay.bytesReceived = (relay.bytesReceived || 0) + (typeof data === 'string' ? data.length : data.byteLength || 0);
+      if (typeof data === 'string') {
+        var message;
+        try { message = JSON.parse(data); } catch (error) { return; }
+        if (message.type === 'ready' && socket === relay.reliable) {
+          relay.ready = true;
+          relay.reconnectAttempt = 0;
+          if (relay.everReady) relay.reconnects++;
+          relay.everReady = true;
+          if (relay.outageStart) {
+            relay.lastOutageMilliseconds = Math.round(performance.now() - relay.outageStart);
+            relay.outageStart = 0;
+          }
+          if (message.colo) relay.colo = message.colo;
+          relay.present = new Set(Array.isArray(message.peers) ? message.peers : []);
+          if (message.names && typeof message.names === 'object') {
+            Object.keys(message.names).forEach(function(id) { relay.names.set(id, String(message.names[id])); });
+          }
+          /* Anything sent before this socket may have died with the old one. */
+          runtime.relayPeers.forEach(function(record) { record.needsResend = true; });
+          runtime.relaySyncAll();
+          relay.present.forEach(function(id) { runtime.relayDiscover(relay, id); });
+          return;
+        }
+        if (message.type === 'peer-up') {
+          relay.present.add(message.id);
+          if (typeof message.name === 'string') relay.names.set(message.id, message.name);
+          /* The peer's previous socket may have taken frames with it. */
+          var returned = runtime.relayPeers.get(message.id);
+          if (returned) returned.needsResend = true;
+          runtime.relaySyncAll();
+          runtime.relayDiscover(relay, message.id);
+        } else if (message.type === 'peer-down') {
+          relay.present.delete(message.id);
+          runtime.relaySyncAll();
+        }
+        return;
+      }
+      if (!(data instanceof ArrayBuffer) || data.byteLength < 1) return;
+      var batch = new Uint8Array(data);
+      if (batch[0] !== runtime.RELAY_BATCH_MARKER) {
+        runtime.relayFrame(relay, socket, data);
+        return;
+      }
+      for (var offset = 1; offset + 2 <= batch.byteLength;) {
+        var length = (batch[offset] << 8) | batch[offset + 1];
+        offset += 2;
+        if (!length || offset + length > batch.byteLength) return;
+        runtime.relayFrame(relay, socket, data.slice(offset, offset + length));
+        offset += length;
+      }
+    },
+
+    /* Room mode: peers come from the relay's membership instead of signaling.
+       Each newly seen counterpart becomes a peer, reported to the page. */
+    relayDiscover: function(relay, id) {
+      var runtime = HaloWebTransportRuntime;
+      if (!relay.options.rooms || runtime.relayPeers.has(id) || relay.discovering.has(id) ||
+          !/^[0-9a-f]{12}$/.test(id)) return;
+      relay.discovering.add(id);
+      var peerId = 'relay-' + id;
+      runtime.addPeer({ peerId: peerId, remoteIdentifier: id, initiator: relay.options.role === 'host' })
+        .then(function() {
+          var callback = runtime.options.onRelayPeer;
+          if (typeof callback === 'function') {
+            callback({ peerId: peerId, identifier: id, name: relay.names.get(id) || null,
+              role: relay.options.role === 'host' ? 'guest' : 'host' });
+          }
+          /* addPeer may already have reported the peer connected, before the
+             callback registered it; report the current state again. */
+          var record = runtime.peersById.get(peerId);
+          if (record) record.lastPublicState = null;
+          runtime.relaySyncAll();
+        })
+        .catch(function(error) { runtime.reportError(null, error); })
+        .finally(function() { relay.discovering.delete(id); });
+    },
+
+    relayFrame: function(relay, socket, data) {
+      var runtime = HaloWebTransportRuntime;
+      var channels = runtime.RELAY_CHANNEL;
+      if (data.byteLength < runtime.RELAY_HEADER_BYTES) return;
+      var bytes = new Uint8Array(data);
+      var channel = bytes[0];
+      var view = new DataView(data);
+      if (channel === channels.ECHO) {
+        if (data.byteLength >= runtime.RELAY_HEADER_BYTES + 8) {
+          relay.echo[socket === relay.reliable ? 0 : 1].push(
+            performance.now() - view.getFloat64(runtime.RELAY_HEADER_BYTES, true));
+        }
+        return;
+      }
+      var record = runtime.relayPeers.get(runtime.identifierText(bytes.subarray(1, 7)));
+      if (!record || record.removed) return;
+      var payload = runtime.RELAY_HEADER_BYTES;
+      if (channel === channels.RELIABLE) {
+        if (data.byteLength < payload + runtime.RELAY_SEQUENCE_BYTES) return;
+        var sequence = view.getUint32(payload);
+        runtime.relayAcknowledged(record, view.getUint32(payload + 4));
+        if (sequence === record.rxSequence + 1) {
+          record.rxSequence = sequence;
+          record.ackOwed++;
+          runtime.receiveChannelMessage(record, true,
+            data.slice(payload + runtime.RELAY_SEQUENCE_BYTES));
+        } else if (sequence <= record.rxSequence) {
+          record.duplicateFrames++;
+          record.ackOwed++;
+        } else {
+          /* A gap: the sender replays from its last acknowledgement. */
+          record.outOfOrderFrames++;
+        }
+        if (record.ackOwed >= runtime.RELAY_ACK_EVERY) runtime.relaySendAck(record);
+      } else if (channel === channels.ACK) {
+        if (data.byteLength >= payload + 4) runtime.relayAcknowledged(record, view.getUint32(payload));
+      } else if (channel === channels.UNRELIABLE) {
+        runtime.receiveChannelMessage(record, false, data.slice(payload));
+      } else if (channel === channels.PING_RELIABLE || channel === channels.PING_UNRELIABLE) {
+        var reply = bytes.slice();
+        reply[0] = channel + 1;
+        runtime.relayQueue(socket, reply);
+      } else if ((channel === channels.PONG_RELIABLE || channel === channels.PONG_UNRELIABLE) &&
+                 record.relayProbes && data.byteLength >= payload + 8) {
+        record.relayProbes[channel === channels.PONG_RELIABLE ? 0 : 1].push(
+          performance.now() - view.getFloat64(payload, true));
+      }
+    },
+
+    relayAcknowledged: function(record, acknowledgement) {
+      var runtime = HaloWebTransportRuntime;
+      if (acknowledgement <= record.txAcknowledged) return;
+      record.txAcknowledged = acknowledgement;
+      while (record.resend.length &&
+             new DataView(record.resend[0].buffer).getUint32(runtime.RELAY_HEADER_BYTES) <= acknowledgement) {
+        record.resendBytes -= record.resend.shift().byteLength;
+      }
+      if (record.relayBlocked) runtime.relayWatch();
+    },
+
+    relaySendAck: function(record) {
+      var runtime = HaloWebTransportRuntime;
+      if (!runtime.relayLinked(record)) return;
+      var frame = new Uint8Array(runtime.RELAY_HEADER_BYTES + 4);
+      frame[0] = runtime.RELAY_CHANNEL.ACK;
+      frame.set(record.identifierBytes, 1);
+      new DataView(frame.buffer).setUint32(runtime.RELAY_HEADER_BYTES, record.rxSequence);
+      runtime.relayQueue(runtime.relay.reliable, frame);
+      record.ackOwed = 0;
+    },
+
+    relayFlushAcks: function() {
+      HaloWebTransportRuntime.relayPeers.forEach(function(record) {
+        if (record.ackOwed) HaloWebTransportRuntime.relaySendAck(record);
+      });
+    },
+
+    /* Replays every unacknowledged reliable frame, oldest first. */
+    relayResend: function(record) {
+      var runtime = HaloWebTransportRuntime;
+      if (!runtime.relayLinked(record)) return;
+      var socket = runtime.relay.reliable;
+      record.resend.forEach(function(frame) {
+        new DataView(frame.buffer).setUint32(runtime.RELAY_HEADER_BYTES + 4, record.rxSequence);
+        runtime.relayQueue(socket, frame);
+      });
+      record.resentFrames += record.resend.length;
+      record.ackOwed = 0;
+    },
+
+    relayProbeFrame: function(channel, identifier) {
+      var frame = new Uint8Array(HaloWebTransportRuntime.RELAY_HEADER_BYTES + 8);
+      frame[0] = channel;
+      if (identifier) frame.set(identifier, 1);
+      new DataView(frame.buffer).setFloat64(7, performance.now(), true);
+      return frame;
+    },
+
+    /* ?netstats=1 only: peer-echoed round trips on each socket, which wait
+       behind queued game frames, and relay-echoed ones for this browser's leg. */
+    relayProbe: function() {
+      var runtime = HaloWebTransportRuntime;
+      var relay = runtime.relay;
+      var channels = runtime.RELAY_CHANNEL;
+      if (!relay || relay.failed || !relay.ready) return;
+      runtime.relayPeers.forEach(function(record) {
+        if (!runtime.relayLinked(record)) return;
+        runtime.relayQueue(relay.reliable, runtime.relayProbeFrame(channels.PING_RELIABLE, record.identifierBytes));
+        runtime.relayQueue(relay.unreliable, runtime.relayProbeFrame(channels.PING_UNRELIABLE, record.identifierBytes));
+      });
+      [relay.reliable, relay.unreliable].forEach(function(socket, index) {
+        if (socket.readyState === 1 && (index === 0 || socket !== relay.reliable)) {
+          runtime.relayQueue(socket, runtime.relayProbeFrame(channels.ECHO, null));
+        }
+      });
+    },
+
+    relaySend: function(record, reliable, pointer, length) {
+      var runtime = HaloWebTransportRuntime;
+      var relay = runtime.relay;
+      var linked = runtime.relayLinked(record);
+      var header = runtime.RELAY_HEADER_BYTES;
+      if (!reliable) {
+        var datagramSocket = linked && relay.unreliable;
+        if (!datagramSocket || datagramSocket.bufferedAmount > runtime.RELAY_DATAGRAM_DROP_BYTES) {
+          record.staleDatagrams++;
+          return 1;
+        }
+        var datagram = new Uint8Array(header + length);
+        datagram[0] = runtime.RELAY_CHANNEL.UNRELIABLE;
+        datagram.set(record.identifierBytes, 1);
+        datagram.set(HEAPU8.subarray(pointer, pointer + length), header);
+        runtime.relayTransmit(record, datagramSocket, datagram, 1);
+        return 1;
+      }
+      var size = header + runtime.RELAY_SEQUENCE_BYTES + length;
+      if (record.resendBytes + size > runtime.RELAY_RESEND_LIMIT ||
+          (linked && relay.reliable.bufferedAmount > runtime.RELIABLE_HIGH_WATER)) {
+        record.relayBlocked = true;
+        record.needsStateSync = true;
+        runtime.schedulePump();
+        runtime.relayWatch();
+        return 0;
+      }
+      var frame = new Uint8Array(size);
+      var view = new DataView(frame.buffer);
+      frame[0] = runtime.RELAY_CHANNEL.RELIABLE;
+      frame.set(record.identifierBytes, 1);
+      view.setUint32(header, ++record.txSequence);
+      view.setUint32(header + 4, record.rxSequence);
+      frame.set(HEAPU8.subarray(pointer, pointer + length), header + runtime.RELAY_SEQUENCE_BYTES);
+      record.resend.push(frame);
+      record.resendBytes += size;
+      /* Without a path the frame waits for the replay after reconnecting. */
+      if (linked) {
+        record.ackOwed = 0;
+        runtime.relayTransmit(record, relay.reliable, frame, 0);
+      }
+      return 1;
+    },
+
+    relayTransmit: function(record, socket, frame) {
+      HaloWebTransportRuntime.relayQueue(socket, frame);
+    },
+
+    /* WebSocket has no bufferedamountlow event: poll while a peer is blocked. */
+    relayWatch: function() {
+      var runtime = HaloWebTransportRuntime;
+      var relay = runtime.relay;
+      if (!relay || relay.watchTimer) return;
+      relay.watchTimer = setTimeout(function() {
+        relay.watchTimer = 0;
+        if (relay !== runtime.relay) return;
+        var blocked = false;
+        runtime.relayPeers.forEach(function(record) {
+          if (!record.relayBlocked) return;
+          if (record.resendBytes <= runtime.RELAY_RESEND_LIMIT / 2 &&
+              (!relay.ready || relay.reliable.bufferedAmount <= runtime.RELIABLE_HIGH_WATER / 2)) {
+            record.relayBlocked = false;
+            record.needsStateSync = true;
+            runtime.syncPeerState(record);
+          } else {
+            blocked = true;
+          }
+        });
+        if (blocked) runtime.relayWatch();
+      }, 10);
+    },
+
+    addRelayPeer: function(options, identifier, address) {
+      var runtime = HaloWebTransportRuntime;
+      var record = {
+        peerId: options.peerId,
+        identifier: runtime.identifierText(identifier),
+        identifierBytes: identifier,
+        address: address,
+        addressText: runtime.addressText(address),
+        relay: true,
+        pc: null,
+        reliable: null,
+        unreliable: null,
+        reliableQueue: [],
+        unreliableQueue: [],
+        reliableQueuedBytes: 0,
+        unreliableQueuedBytes: 0,
+        droppedDatagrams: 0,
+        staleDatagrams: 0,
+        relayBlocked: false,
+        relayEverLinked: false,
+        awaySince: 0,
+        txSequence: 0,
+        txAcknowledged: 0,
+        rxSequence: 0,
+        ackOwed: 0,
+        needsResend: false,
+        resend: [],
+        resendBytes: 0,
+        resentFrames: 0,
+        duplicateFrames: 0,
+        outOfOrderFrames: 0,
+        relayProbes: runtime.netstatsEnabled ? [[], []] : null,
+        netstats: runtime.netstatsEnabled ?
+          [runtime.netstatsChannel(), runtime.netstatsChannel()] : null,
+        needsStateSync: true,
+        lastPublicState: null,
+        removed: false,
+      };
+      runtime.peersById.set(record.peerId, record);
+      runtime.peersByAddress.set(record.address, record);
+      runtime.relayPeers.set(record.identifier, record);
+      try {
+        runtime.openRelay();
+      } catch (error) {
+        runtime.removePeer(record.peerId);
+        throw error;
+      }
+      runtime.emitState(record, 'connecting');
+      runtime.relaySyncAll();
+      return {
+        peerId: record.peerId,
+        address: record.addressText,
+        remoteIdentifier: record.identifier,
+      };
     },
 
     install: function() {
       if (typeof window === 'undefined' || window.HaloWebTransport) return;
       var runtime = HaloWebTransportRuntime;
+      runtime.netstatsUpload = typeof document !== 'undefined' && typeof document.querySelector === 'function' &&
+        !!document.querySelector('meta[name="halo-netstats-upload"]');
+      runtime.netstatsEnabled = runtime.netstatsUpload || (!!window.location &&
+        /[?&]netstats=1(&|$)/.test(window.location.search));
+      if (runtime.netstatsEnabled) runtime.startNetstatsLog();
       window.HaloWebTransport = Object.freeze({
         configure: function(options) {
           options = options || {};
@@ -597,8 +1643,25 @@ addToLibrary({
           if (options.onSignal !== undefined) runtime.options.onSignal = options.onSignal;
           if (options.onStateChange !== undefined) runtime.options.onStateChange = options.onStateChange;
           if (options.onError !== undefined) runtime.options.onError = options.onError;
+          if (options.onRelayPeer !== undefined) runtime.options.onRelayPeer = options.onRelayPeer;
+          if (options.transport !== undefined) {
+            if (options.transport !== 'webrtc' && options.transport !== 'relay') {
+              throw new TypeError('transport must be "webrtc" or "relay"');
+            }
+            runtime.options.transport = options.transport;
+          }
+          if (options.relay !== undefined) {
+            runtime.options.relay = options.relay;
+            if (runtime.relay && (!options.relay ||
+                runtime.relay.key !== runtime.relayKey(options.relay))) {
+              runtime.closeRelay();
+            }
+          }
         },
         getLocalIdentifier: function() { return runtime.localIdentifier(); },
+        /* Room mode: connects to the configured relay room; its members
+           become peers through onRelayPeer. */
+        openRelay: function() { runtime.openRelay(); },
         addPeer: function(options) { return runtime.addPeer(options); },
         handleSignal: function(peerId, signal) { return runtime.handleSignal(peerId, signal); },
         restartIce: function(peerId) { return runtime.restartIce(peerId); },
@@ -607,6 +1670,7 @@ addToLibrary({
           Array.from(runtime.peersById.keys()).forEach(function(peerId) {
             runtime.removePeer(peerId);
           });
+          runtime.closeRelay();
         },
         listPeers: function() {
           return Array.from(runtime.peersById.values()).map(function(record) {
@@ -615,15 +1679,32 @@ addToLibrary({
               address: record.addressText,
               state: record.lastPublicState,
               droppedDatagrams: record.droppedDatagrams,
+              staleDatagrams: record.relay ? record.staleDatagrams : undefined,
             };
           });
         },
         getStats: async function(peerId) {
           var record = runtime.peersById.get(peerId);
           if (!record || record.removed) throw new Error('Unknown peer: ' + peerId);
-          return record.pc.getStats();
+          return record.pc ? record.pc.getStats() : new Map();
         },
-        isSupported: function() { return typeof RTCPeerConnection === 'function'; },
+        /* Only with ?netstats=1: the logged windows, oldest first (an hour). */
+        netStats: function() {
+          if (!runtime.netstatsEnabled) throw new Error('Open the page with ?netstats=1');
+          return runtime.netstatsHistory.slice();
+        },
+        /* Only with ?netstats=1: closes the relay sockets as a network failure
+           would, to exercise reconnecting. */
+        debugDropRelay: function() {
+          if (!runtime.netstatsEnabled) throw new Error('Open the page with ?netstats=1');
+          if (runtime.relay) runtime.relayCloseSockets(runtime.relay, 4999);
+        },
+        /* Whether this browser can run a transport: the configured one, or
+           the one named, so a page can check before configuring. */
+        isSupported: function(transport) {
+          return (transport || runtime.options.transport) === 'relay' ?
+            typeof WebSocket === 'function' : typeof RTCPeerConnection === 'function';
+        },
       });
     },
   },
@@ -633,5 +1714,13 @@ addToLibrary({
   web_transport_send__sig: 'iiiii',
   web_transport_send: function(address, reliable, buffer, length) {
     return HaloWebTransportRuntime.send(address, reliable, buffer, length);
+  },
+
+  /* Once per game frame while a batching transport is open. */
+  web_transport_flush__deps: ['$HaloWebTransportRuntime'],
+  web_transport_flush__proxy: 'sync',
+  web_transport_flush__sig: 'v',
+  web_transport_flush: function() {
+    HaloWebTransportRuntime.relayFlush();
   },
 });

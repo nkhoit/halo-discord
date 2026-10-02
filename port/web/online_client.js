@@ -119,6 +119,9 @@
     wizardStep: "map",
   };
 
+  var RELAY_TOKEN_REFRESH_MILLISECONDS = 5 * 60 * 1000;
+  var relayAuth = { token: null, user: null, expiresAt: 0, refreshTimer: 0 };
+
   function byId(id) {
     return document.getElementById(id);
   }
@@ -237,6 +240,203 @@
     var meta = document.querySelector('meta[name="halo-turnstile-sitekey"]');
     var value = meta && meta.content;
     return value && /^0x[A-Za-z0-9_-]{20,120}$/.test(value) ? value : null;
+  }
+
+  /* Relay mode sends gameplay through the self-hosted WebSocket relay
+     (server/) instead of WebRTC; the relay also owns room membership, so the
+     signaling service is not used. Hosted pages opt in with
+     <meta name="halo-transport" content="relay-rooms">; loopback pages may
+     opt in with ?transport=relay (?relay= overrides the relay URL and
+     ?relaySockets=2 splits reliable and unreliable traffic). On any relay
+     page, ?relayBatch=0 sends every frame as its own message, for
+     measurement. Login is a session cookie on the relay's origin, which must
+     be the page's origin. */
+  function relaySettings() {
+    var page = new URL(global.location.href);
+    var pageIsLoopback = page.hostname === "127.0.0.1" || page.hostname === "localhost";
+    var mode = document.querySelector('meta[name="halo-transport"]');
+    var hosted = !!(mode && mode.content === "relay-rooms");
+    if (!hosted && !(pageIsLoopback && page.searchParams.get("transport") === "relay")) return null;
+    var meta = document.querySelector('meta[name="halo-relay-url"]');
+    var configured = (pageIsLoopback && page.searchParams.get("relay")) ||
+      (meta && meta.content) || new URL(".", page.href).href;
+    var parsed = new URL(configured, global.location.href);
+    if (["http:", "https:", "ws:", "wss:"].indexOf(parsed.protocol) < 0) {
+      throw new Error("The WebSocket relay URL must use HTTP(S) or WS(S).");
+    }
+    return {
+      url: parsed.href.replace(/\/$/, ""),
+      sockets: pageIsLoopback && page.searchParams.get("relaySockets") === "2" ? 2 : 1,
+      batch: page.searchParams.get("relayBatch") !== "0",
+    };
+  }
+
+  function relayEndpoint(path) {
+    var relay = relaySettings();
+    if (!relay) throw new Error("This invite needs the Halo relay; open it on the hosted page.");
+    var url = new URL(path, relay.url + "/");
+    if (url.protocol === "wss:") url.protocol = "https:";
+    else if (url.protocol === "ws:") url.protocol = "http:";
+    return url.href;
+  }
+
+  /* The relay token travels only in the WebSocket's first message, never in a
+     URL. It is renewed from the HttpOnly session cookie, which also
+     authorizes map downloads. Without a session, log in with Discord and
+     come back to the same room. */
+  async function relaySession(returnHash, retried) {
+    if (relayAuth.token && relayAuth.expiresAt - Date.now() > RELAY_TOKEN_REFRESH_MILLISECONDS) {
+      return relayAuth;
+    }
+    var response;
+    try {
+      response = await fetch(relayEndpoint("auth/session"), { credentials: "include", cache: "no-store" });
+    } catch (error) {
+      throw new Error("The Halo relay is unreachable.");
+    }
+    if (response.status === 401 && activity()) {
+      if (retried) throw new Error("Discord sign-in failed. Relaunch the Activity.");
+      await activity().signIn();
+      return relaySession(returnHash, true);
+    }
+    if (response.status === 401) {
+      var back = new URL(global.location.href);
+      back.hash = returnHash || "";
+      global.location.assign(relayEndpoint("auth/login") + "?return=" +
+        encodeURIComponent(back.pathname + back.search + back.hash));
+      var redirecting = new Error("Signing in with Discord…");
+      redirecting.haloCanceled = true;
+      throw redirecting;
+    }
+    if (!response.ok) throw new Error("The Halo relay refused the session.");
+    var body = await response.json();
+    if (!body || typeof body.token !== "string" || typeof body.expiresAt !== "number") {
+      throw new Error("The Halo relay returned an invalid session.");
+    }
+    relayAuth.token = body.token;
+    relayAuth.user = body.user || null;
+    relayAuth.expiresAt = body.expiresAt * 1000;
+    return relayAuth;
+  }
+
+  function scheduleRelayRefresh() {
+    if (relayAuth.refreshTimer) global.clearTimeout(relayAuth.refreshTimer);
+    var delay = Math.max(60000, relayAuth.expiresAt - Date.now() - RELAY_TOKEN_REFRESH_MILLISECONDS + 1000);
+    relayAuth.refreshTimer = global.setTimeout(function() {
+      relayAuth.refreshTimer = 0;
+      if (!session.active || !relaySettings()) return;
+      relaySession(session.room ? "room=" + session.room.id : "")
+        .then(scheduleRelayRefresh)
+        .catch(function() { if (session.active) scheduleRelayRefresh(); });
+    }, delay);
+  }
+
+  function randomRoomId() {
+    var bytes = new Uint8Array(16);
+    global.crypto.getRandomValues(bytes);
+    return btoa(String.fromCharCode.apply(null, bytes))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  async function startRelayRoom(roomId, operation) {
+    await relaySession("room=" + roomId);
+    requireCurrentOperation(operation);
+    session.room = { id: roomId };
+    session.selfPeerId = "relay-" + localIdentifier();
+    updateLocalRoster();
+    configureTransport([]);
+    transport().openRelay();
+    scheduleRelayRefresh();
+  }
+
+  function registerRelayPeer(peer) {
+    if (!session.active || session.closing || !peer || peer.role === session.role) return;
+    session.peerPromises.set(peer.peerId, Promise.resolve(null));
+    session.peerIdentifiers.set(peer.peerId, peer.identifier);
+    session.peerAliases.set(peer.peerId, peer.peerId);
+    session.roster.set(peer.peerId, {
+      peerId: peer.peerId,
+      role: peer.role,
+      profile: { name: peer.name || (peer.role === "host" ? "Host" : "Friend"), style: "sage" },
+    });
+    renderRoster();
+  }
+
+  /* Discord Activity: activity.js signs in through the Discord SDK and sets
+     HaloActivity before the game loads. The room belongs to the Activity
+     instance, so there are no invite links: the lobby polls the room and
+     offers to host when nobody does, or to join the player who hosts. */
+  var ACTIVITY_POLL_MILLISECONDS = 2000;
+  var activityLobby = { timer: 0, view: null, notice: null, named: false };
+
+  function activity() {
+    var value = global.HaloActivity;
+    return value && typeof value.roomId === "string" ? value : null;
+  }
+
+  function stopActivityLobby() {
+    if (activityLobby.timer) global.clearTimeout(activityLobby.timer);
+    activityLobby.timer = 0;
+    activityLobby.view = null;
+  }
+
+  function startActivityLobby() {
+    if (!activity() || session.active || activityLobby.timer || !session.runtimeReady) return;
+    useDiscordName();
+    activityLobby.timer = global.setTimeout(pollActivityLobby, 0);
+  }
+
+  /* The Discord display name, when it fits Halo's rules, replaces a
+     generated "Spartan 123" name. */
+  function useDiscordName() {
+    if (activityLobby.named || !elements.playerName) return;
+    activityLobby.named = true;
+    var user = activity().user;
+    var name = String(user && user.name || "").replace(/[^A-Za-z0-9 ._'-]/g, "").trim()
+      .slice(0, PLAYER_NAME_MAXIMUM_LENGTH).trim();
+    if (!/^Spartan \d{3}$/.test(elements.playerName.value) || !/^[A-Za-z0-9]/.test(name)) return;
+    elements.playerName.value = name;
+    elements.playerName.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  async function pollActivityLobby() {
+    activityLobby.timer = 0;
+    if (!activity() || session.active) return;
+    var summary = null;
+    try {
+      var response = await fetch(relayEndpoint("v1/rooms/" + activity().roomId),
+        { credentials: "include", cache: "no-store" });
+      if (response.status === 401) await activity().signIn();
+      else if (response.ok) summary = await response.json();
+    } catch (error) {
+      /* Try again on the next poll. */
+    }
+    if (session.active) return;
+    if (summary) showActivityLobby(summary);
+    activityLobby.timer = global.setTimeout(pollActivityLobby, ACTIVITY_POLL_MILLISECONDS);
+  }
+
+  function showActivityLobby(summary) {
+    var view = summary.host ? "join:" + summary.host : "host";
+    if (view === activityLobby.view) return;
+    activityLobby.view = view;
+    showDialog();
+    if (summary.host) {
+      showJoinConfirmation("room:" + activity().roomId);
+      elements.description.textContent = "Join the game.";
+      if (elements.joinSummary) elements.joinSummary.textContent = summary.host +
+        " is hosting in this Activity. Choose your name and color, then join.";
+      /* Brings the button into view in a short Activity frame; Enter joins. */
+      if (elements.joinProfile) elements.joinProfile.focus();
+    } else {
+      showSetup();
+      elements.description.textContent =
+        "Nobody is hosting yet. Pick a map and mode to host a game for everyone in this Activity.";
+    }
+    if (activityLobby.notice) {
+      setStatus(activityLobby.notice, "error");
+      activityLobby.notice = null;
+    }
   }
 
   function clearTurnstileTimer() {
@@ -814,7 +1014,8 @@
     elements.invite.hidden = false;
     if (elements.joinConfirm) elements.joinConfirm.hidden = true;
     if (elements.playerSidebar) elements.playerSidebar.hidden = false;
-    elements.inviteLink.value = session.inviteUrl || "";
+    elements.inviteLink.value = activity() ? "Everyone in this Activity can join" : (session.inviteUrl || "");
+    if (elements.copy) elements.copy.hidden = !!activity();
     /* Hosting setup is complete. The invite remains visible beside the game,
        so dismiss the wizard instead of replacing it with a third screen. */
     if (elements.dialog.open) elements.dialog.close();
@@ -841,13 +1042,17 @@
   function parseInvite(value) {
     var text = String(value || "").trim();
     if (!text || text.length > 1024) throw new Error("Paste a valid invite link.");
-    try {
-      var url = new URL(text);
-      var fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
-      text = fragment.get("join") || "";
-    } catch (error) {
-      /* A room code is expected not to be a URL. */
+    if (!/^room:/.test(text)) {
+      try {
+        var url = new URL(text);
+        var fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
+        text = fragment.get("room") ? "room:" + fragment.get("room") : (fragment.get("join") || "");
+      } catch (error) {
+        /* A room code is expected not to be a URL. */
+      }
     }
+    var relayRoom = /^room:([A-Za-z0-9_-]{16,64})$/.exec(text);
+    if (relayRoom) return { code: text, roomId: relayRoom[1], ticket: null, relay: true };
     try {
       text = decodeURIComponent(text);
     } catch (error) {
@@ -868,7 +1073,7 @@
 
   function takeInviteFromLocation() {
     var fragment = new URLSearchParams(global.location.hash.replace(/^#/, ""));
-    var invite = fragment.get("join");
+    var invite = fragment.get("join") || (fragment.get("room") ? "room:" + fragment.get("room") : null);
     if (!invite) return null;
     /* Capabilities in fragments do not reach the server.  Remove it from the
        address bar as soon as this page has copied it into memory. */
@@ -882,7 +1087,7 @@
   function makeInviteUrl(code) {
     var url = new URL(global.location.href);
     url.searchParams.delete("signal");
-    url.hash = "join=" + encodeURIComponent(code);
+    url.hash = /^room:/.test(code) ? "room=" + code.slice(5) : "join=" + encodeURIComponent(code);
     return url.href;
   }
 
@@ -947,9 +1152,13 @@
     wasmFunction("platform_web_online_set_transport_state")(value);
   }
 
+  /* Relay pages (the hosted page, the Discord Activity) need only WebSocket;
+     Discord's Activity frame has no RTCPeerConnection at all. */
   function transport() {
-    if (!global.HaloWebTransport || !global.HaloWebTransport.isSupported()) {
-      throw new Error("This browser does not support WebRTC multiplayer.");
+    var relay = !!relaySettings();
+    if (!global.HaloWebTransport || !global.HaloWebTransport.isSupported(relay ? "relay" : "webrtc")) {
+      throw new Error(relay ? "This browser does not support WebSocket multiplayer." :
+        "This browser does not support WebRTC multiplayer.");
     }
     return global.HaloWebTransport;
   }
@@ -985,8 +1194,23 @@
   }
 
   function configureTransport(iceServers) {
+    var relay = relaySettings();
     transport().configure({
       iceServers: iceServers || [],
+      transport: relay ? "relay" : "webrtc",
+      relay: relay ? {
+        url: relay.url,
+        sockets: relay.sockets,
+        batch: relay.batch,
+        roomId: session.room && session.room.id,
+        role: session.role,
+        rooms: true,
+        auth: {
+          getToken: function() { return relayAuth.token; },
+          build: buildId(),
+        },
+      } : null,
+      onRelayPeer: registerRelayPeer,
       onSignal: function(event) {
         if (!session.active || session.closing || !event ||
             !session.peerPromises.has(event.peerId)) return;
@@ -1137,12 +1361,31 @@
     } else if (event.state === "connecting" && session.role === "guest") {
       setStatus("Connecting directly to your friend…");
     } else if (event.state === "failed" && session.role === "guest") {
-      fail(new Error(event.detail || "Could not connect to the host."));
+      fail(new Error(relaySettings() ? "The host left the game, or the connection to it was lost." :
+        (event.detail || "Could not connect to the host.")));
+    } else if (event.state === "failed" && relaySettings()) {
+      /* A relay guest that stayed away past the resume grace is gone; forget
+         it so the relay can announce it again if it rejoins. */
+      transport().removePeer(event.peerId);
+      session.peerPromises.delete(event.peerId);
+      session.peerIdentifiers.delete(event.peerId);
+      session.peerStates.delete(event.peerId);
+      session.peerAliases.delete(event.peerId);
+      session.roster.delete(event.peerId);
+      updateAggregateTransportState();
+      renderRoster();
     }
   }
 
   async function determineConnectionPath(peerId) {
     try {
+      if (relaySettings()) {
+        session.connectionPath = "relay-ws";
+        syncTelemetryContext();
+        telemetry("transport_connected", session.connectionPath);
+        elements.detail.textContent = "Connected through the WebSocket relay";
+        return;
+      }
       await new Promise(function(resolve) { setTimeout(resolve, 500); });
       var reports = await transport().getStats(peerId);
       var selected = null;
@@ -1461,6 +1704,41 @@
     setBusy(false);
   }
 
+  async function openSignalingRoom(operation, turnstileToken) {
+    var roomRequest = {
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: buildId(),
+      capacity: ROOM_CAPACITY,
+      identifier: localIdentifier(),
+    };
+    if (turnstileToken) roomRequest.turnstileToken = turnstileToken;
+    var result = await fetchJson("/v1/rooms", {
+      method: "POST",
+      body: JSON.stringify(roomRequest),
+    });
+    requireCurrentOperation(operation);
+    var normalized = {
+      v: result.v,
+      room: result.room,
+      session: result.host && result.host.session,
+    };
+    validateRoomResponse(normalized);
+    session.room = result.room;
+    session.roomTicket = result.host.ticket;
+    session.selfPeerId = result.host.session.peerId;
+    updateLocalRoster();
+    session.inviteCode = result.invite && result.invite.code;
+    if (!session.inviteCode) throw new Error("The room did not return an invite.");
+    /* Keep the visible host and path that the player opened. This lets the
+       same signaling service support a staged origin without leaking its
+       canonical production URL into preview invites. */
+    session.inviteUrl = makeInviteUrl(session.inviteCode);
+    showInvite();
+    session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
+    configureTransport(session.iceServers);
+    await openSocket(result.host.session.websocketUrl, operation);
+  }
+
   async function host(value, turnstileToken) {
     if (!session.runtimeReady) throw new Error("Halo is still starting.");
     var settings = normalizeHostSettings(value);
@@ -1482,38 +1760,16 @@
     setStatus("Preparing " + hostSettingsLabel() + "…");
     var recoveredVerification = false;
     try {
-      var roomRequest = {
-        protocolVersion: PROTOCOL_VERSION,
-        buildId: buildId(),
-        capacity: ROOM_CAPACITY,
-        identifier: localIdentifier(),
-      };
-      if (turnstileToken) roomRequest.turnstileToken = turnstileToken;
-      var result = await fetchJson("/v1/rooms", {
-        method: "POST",
-        body: JSON.stringify(roomRequest),
-      });
-      requireCurrentOperation(operation);
-      var normalized = {
-        v: result.v,
-        room: result.room,
-        session: result.host && result.host.session,
-      };
-      validateRoomResponse(normalized);
-      session.room = result.room;
-      session.roomTicket = result.host.ticket;
-      session.selfPeerId = result.host.session.peerId;
-      updateLocalRoster();
-      session.inviteCode = result.invite && result.invite.code;
-      if (!session.inviteCode) throw new Error("The room did not return an invite.");
-      /* Keep the visible host and path that the player opened. This lets the
-         same signaling service support a staged origin without leaking its
-         canonical production URL into preview invites. */
-      session.inviteUrl = makeInviteUrl(session.inviteCode);
-      showInvite();
-      session.iceServers = Array.isArray(result.iceServers) ? result.iceServers : [];
-      configureTransport(session.iceServers);
-      await openSocket(result.host.session.websocketUrl, operation);
+      if (relaySettings()) {
+        stopActivityLobby();
+        var roomId = activity() ? activity().roomId : randomRoomId();
+        await startRelayRoom(roomId, operation);
+        session.inviteCode = "room:" + session.room.id;
+        session.inviteUrl = activity() ? "" : makeInviteUrl(session.inviteCode);
+        showInvite();
+      } else {
+        await openSignalingRoom(operation, turnstileToken);
+      }
       requireCurrentOperation(operation);
       applyPlayerCustomization(profile);
       requestConfiguredHost(settings);
@@ -1568,6 +1824,14 @@
     setHeader("Joining friend…", "waiting");
     setStatus("Opening your friend's private room…");
     try {
+      if (invite.relay) {
+        stopActivityLobby();
+        await startRelayRoom(invite.roomId, operation);
+        requireCurrentOperation(operation);
+        setGameTransportState(TRANSPORT_STATE.CONNECTING);
+        setStatus("Room found. Connecting to your friend through the relay…");
+        return;
+      }
       var result = await createSession(invite.ticket, turnstileToken);
       requireCurrentOperation(operation);
       validateRoomResponse(result);
@@ -1628,7 +1892,8 @@
         setStatus(session.connectedPeerCount ?
           connectedFriendsLabel(session.connectedPeerCount) + ". " + hostSettingsLabel() +
             " is ready — press Start Game in Halo." :
-          hostSettingsLabel() + " is ready — send the invite link to your friends.");
+          hostSettingsLabel() + (activity() ? " is ready — others in this Activity can join now." :
+            " is ready — send the invite link to your friends."));
       } else if (state === GAME_STATE.WAITING) {
         setStatus("Waiting for Halo's main menu…");
       } else if (state === GAME_STATE.HOST_STARTING) {
@@ -1654,7 +1919,28 @@
         if (canvas) canvas.focus();
       }, 700);
     } else if (session.guestWasJoined && state === GAME_STATE.IDLE) {
-      leave(true);
+      /* Halo returns to its menu when the guest quits or when the host is
+         gone; the relay room tells the two apart. */
+      session.guestWasJoined = false;
+      relayRoomHasHost(session.room && session.room.id).then(function(hasHost) {
+        var message = hasHost === false ? "The host left or ended the game." : null;
+        if (message && activity()) activityLobby.notice = message;
+        return leave(true).then(function() {
+          if (message && !activity()) setStatus(message, "error");
+        });
+      });
+    }
+  }
+
+  /* Whether a relay room still has a host; null when unknown. */
+  async function relayRoomHasHost(roomId) {
+    if (!roomId || !relaySettings()) return null;
+    try {
+      var response = await fetch(relayEndpoint("v1/rooms/" + roomId), { credentials: "include", cache: "no-store" });
+      if (!response.ok) return null;
+      return !!(await response.json()).host;
+    } catch (error) {
+      return null;
     }
   }
 
@@ -1685,6 +1971,8 @@
     session.guestWasJoined = false;
     session.pendingInvite = null;
     session.wizardStep = "map";
+    if (relayAuth.refreshTimer) global.clearTimeout(relayAuth.refreshTimer);
+    relayAuth.refreshTimer = 0;
     syncTelemetryContext();
     renderRoster();
   }
@@ -1727,6 +2015,10 @@
         showSetup();
         setBusy(false);
       }
+      if (activity()) {
+        activityLobby.view = null;
+        startActivityLobby();
+      }
     })();
     try {
       await session.leavePromise;
@@ -1740,6 +2032,12 @@
     var message = error && error.message ? error.message : "Online play failed.";
     telemetry("online_error", "online");
     var wasActive = session.active;
+    if (activity()) {
+      /* The Activity lobby reopens after leaving and shows the message. */
+      activityLobby.notice = message;
+      leave(false).then(function() { setBusy(false); });
+      return;
+    }
     leave(false).then(function() {
       showDialog();
       showSetup();
@@ -1897,6 +2195,14 @@
       }
     };
     if (elements.playerName) elements.playerName.addEventListener("input", updateProfilePreview);
+    if (elements.playerName) {
+      elements.playerName.addEventListener("keydown", function(event) {
+        if (event.key !== "Enter" || !elements.dialog || elements.dialog.dataset.view !== "join" ||
+            !elements.joinProfile || elements.joinProfile.disabled) return;
+        event.preventDefault();
+        elements.joinProfile.click();
+      });
+    }
     if (elements.styleOptions) elements.styleOptions.addEventListener("change", updateProfilePreview);
     elements.copy.addEventListener("click", function() {
       copyInvite().catch(function() {
@@ -1924,12 +2230,67 @@
       showDialog();
       showJoinConfirmation(session.pendingInvite);
     }
+    /* A page kept in the back/forward cache would otherwise hold its relay
+       socket open, leaving a host that no longer plays. */
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("pagehide", function() {
+        if (session.active) leave(false);
+      });
+    }
+  }
+
+  /* A measurement switch: render at most 120 or 60 frames a second (the
+     simulation stays at 30 ticks). ?fpsCap=120 sets it on a page; F8 cycles
+     it anywhere, including the Activity, which has no address bar. */
+  var FRAME_CAPS = [0, 120, 60];
+
+  function frameCap() {
+    var get = global.Module && global.Module._platform_web_frame_cap;
+    return typeof get === "function" ? get() : 0;
+  }
+
+  function setFrameCap(cap) {
+    var set = global.Module && global.Module._platform_web_set_frame_cap;
+    if (typeof set !== "function") return;
+    set(cap);
+    if (typeof document.createElement !== "function" || !document.body) return;
+    var notice = byId("frame-cap-notice");
+    if (!notice) {
+      notice = document.createElement("div");
+      notice.id = "frame-cap-notice";
+      notice.setAttribute("role", "status");
+      Object.assign(notice.style, { position: "fixed", top: "1rem", left: "50%", transform: "translateX(-50%)",
+        zIndex: "30", padding: ".4rem .8rem", borderRadius: ".4rem", background: "rgba(0, 0, 0, .75)",
+        color: "#fff", font: "14px system-ui, sans-serif", pointerEvents: "none" });
+      document.body.appendChild(notice);
+    }
+    notice.textContent = cap ? "Frame cap: " + cap + " fps" : "Frame cap: off (display rate)";
+    notice.hidden = false;
+    global.clearTimeout(notice.hideTimer);
+    notice.hideTimer = global.setTimeout(function() { notice.hidden = true; }, 2000);
+  }
+
+  var frameCapInitialized = false;
+
+  function initializeFrameCap() {
+    if (frameCapInitialized) return;
+    frameCapInitialized = true;
+    var requested = Number(new URL(global.location.href).searchParams.get("fpsCap"));
+    if (requested > 0) setFrameCap(requested);
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("keydown", function(event) {
+        if (event.key !== "F8" || event.repeat) return;
+        var index = FRAME_CAPS.indexOf(frameCap());
+        setFrameCap(FRAME_CAPS[(index + 1) % FRAME_CAPS.length]);
+      }, true);
+    }
   }
 
   global.HaloOnline = Object.freeze({
     runtimeReady: function() {
       session.runtimeReady = true;
       setBusy(false);
+      initializeFrameCap();
       try {
         transport();
       } catch (error) {
@@ -1939,6 +2300,7 @@
       if (session.pendingInvite) {
         showJoinConfirmation(session.pendingInvite);
       }
+      startActivityLobby();
     },
     host: host,
     join: join,

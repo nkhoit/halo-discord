@@ -190,11 +190,13 @@ def generate_web_build(n: Writer, sln: Any) -> None:
         semantics_header,
         platform_semantics_header,
     ]
-    objects: List[Path] = []
+    objects: List[str] = []
 
     def add_object(source: Path, cflags: str, prefix: str = "") -> None:
         relative = Path(str(source).lstrip("/"))
-        obj = obj_dir / prefix / relative.with_suffix(".o")
+        # emcc parses response files POSIX-style, so Windows backslashes in
+        # the link's $in_newline would be eaten.
+        obj = (obj_dir / prefix / relative.with_suffix(".o")).as_posix()
         objects.append(obj)
         n.build(
             outputs=obj,

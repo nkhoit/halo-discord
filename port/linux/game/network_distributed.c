@@ -33,6 +33,8 @@ Players are named by their absolute index, which is the same on every
 machine (their datum identifiers need not be).
 */
 
+#include <math.h>
+
 #include "cseries.h"
 #include "game/game.h"
 #include "game/players.h"
@@ -190,6 +192,45 @@ static struct
 	long received;
 	long corrections;
 } distributed_statistics;
+
+#ifdef HALO_WEB
+/* for the browser's local network statistics (?netstats=1,
+port/web/src/web_platform.c): the ticks sent, how often and how far the host
+put a client's own units back, and the predictions the host refused */
+static struct
+{
+	long ticks;
+	long own_corrections;
+	real own_correction_maximum_squared;
+	long rejected_predictions;
+	/* own corrections that also turned the unit more than
+	OWN_AIM_CORRECTION_DEGREES, and the most it turned */
+	long own_aim_corrections;
+	real own_aim_correction_maximum_degrees;
+	/* the host put this machine's own player in (or out of) a seat */
+	long own_seat_corrections;
+} distributed_web_statistics;
+
+#define OWN_AIM_CORRECTION_DEGREES 5.0f
+
+void network_distributed_web_statistics(
+	long *ticks,
+	long *own_corrections,
+	real *own_correction_maximum_squared,
+	long *rejected_predictions,
+	long *own_aim_corrections,
+	real *own_aim_correction_maximum_degrees,
+	long *own_seat_corrections)
+{
+	*ticks = distributed_web_statistics.ticks;
+	*own_corrections = distributed_web_statistics.own_corrections;
+	*own_correction_maximum_squared = distributed_web_statistics.own_correction_maximum_squared;
+	*rejected_predictions = distributed_web_statistics.rejected_predictions;
+	*own_aim_corrections = distributed_web_statistics.own_aim_corrections;
+	*own_aim_correction_maximum_degrees = distributed_web_statistics.own_aim_correction_maximum_degrees;
+	*own_seat_corrections = distributed_web_statistics.own_seat_corrections;
+}
+#endif
 
 /* ---------- shared (network_distributed.h) */
 
@@ -464,6 +505,10 @@ static void distributed_handle_predictions(
 
 			if (dx * dx + dy * dy + dz * dz <= HOST_ACCEPT_TOLERANCE * HOST_ACCEPT_TOLERANCE)
 				distributed_apply_state(unit_index, state, 0.0f);
+#ifdef HALO_WEB
+			else
+				distributed_web_statistics.rejected_predictions++;
+#endif
 		}
 	}
 }
@@ -542,6 +587,10 @@ static void distributed_handle_unit_states(
 				*disagreement = 0;
 			else if (!local || ++*disagreement > SEAT_DISAGREEMENT_TICKS)
 			{
+#ifdef HALO_WEB
+				if (local)
+					distributed_web_statistics.own_seat_corrections++;
+#endif
 				network_objects_set_seat(unit_index, state->vehicle_index, state->seat_index);
 				*disagreement = 0;
 			}
@@ -574,6 +623,34 @@ static void distributed_handle_unit_states(
 		if (TEST_FLAG(state->flags, _distributed_unit_placed_bit) &&
 			object_get(unit_index)->object.parent_object_index == NONE)
 		{
+#ifdef HALO_WEB
+			if (local)
+			{
+				struct object_datum *object = object_get(unit_index);
+				real dx = state->position.x - object->object.position.x;
+				real dy = state->position.y - object->object.position.y;
+				real dz = state->position.z - object->object.position.z;
+				real distance_squared = dx * dx + dy * dy + dz * dz;
+
+				if (distance_squared > LOCAL_CORRECTION_TOLERANCE * LOCAL_CORRECTION_TOLERANCE)
+				{
+					real_vector3d const *forward = &object->object.forward;
+					real dot = forward->i * state->forward.i + forward->j * state->forward.j +
+						forward->k * state->forward.k;
+					real degrees = (real)(acos(dot < -1.0f ? -1.0f : dot > 1.0f ? 1.0f : dot) * 180.0 / 3.14159265358979);
+
+					distributed_web_statistics.own_corrections++;
+					if (distance_squared > distributed_web_statistics.own_correction_maximum_squared)
+						distributed_web_statistics.own_correction_maximum_squared = distance_squared;
+					if (degrees > OWN_AIM_CORRECTION_DEGREES)
+					{
+						distributed_web_statistics.own_aim_corrections++;
+						if (degrees > distributed_web_statistics.own_aim_correction_maximum_degrees)
+							distributed_web_statistics.own_aim_correction_maximum_degrees = degrees;
+					}
+				}
+			}
+#endif
 			distributed_apply_state(unit_index, state, local ? LOCAL_CORRECTION_TOLERANCE : REMOTE_CORRECTION_TOLERANCE);
 		}
 	}
@@ -788,6 +865,9 @@ void network_distributed_tick(
 
 	if (!network_game_distributed() || game_time_get() == distributed_last_sent_time)
 		return;
+#ifdef HALO_WEB
+	distributed_web_statistics.ticks++;
+#endif
 	distributed_last_sent_time = game_time_get();
 	if (connection == _game_connection_network_server)
 	{

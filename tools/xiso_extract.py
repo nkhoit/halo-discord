@@ -235,7 +235,11 @@ def _copy_entry(image: Image, entry: Entry, destination: Path) -> None:
     source_offset = _validate_extent(image, entry.sector, entry.size, f"maps/{entry.name}")
     remaining = entry.size
     image.file.seek(source_offset)
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    descriptor = os.open(
+        destination,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+        0o644,
+    )
     try:
         while remaining:
             chunk = image.file.read(min(COPY_BUFFER_SIZE, remaining))
@@ -256,6 +260,10 @@ def _copy_entry(image: Image, entry: Entry, destination: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
+    # Windows cannot open a directory as a file descriptor; NTFS journals the
+    # rename itself.
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -269,6 +277,16 @@ def _lexists(path: Path) -> bool:
 
 def _atomic_rename_noreplace(source: Path, destination: Path) -> None:
     """Atomically rename a directory, failing if destination already exists."""
+    if os.name == "nt":
+        # MoveFileEx without MOVEFILE_REPLACE_EXISTING never replaces.
+        try:
+            os.rename(source, destination)
+        except FileExistsError as error:
+            raise XisoError(
+                f"destination already exists; refusing to replace it: {destination}"
+            ) from error
+        return
+
     libc = ctypes.CDLL(None, use_errno=True)
     source_bytes = os.fsencode(source)
     destination_bytes = os.fsencode(destination)

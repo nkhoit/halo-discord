@@ -22,7 +22,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: services/signaling/package-lock.json
+          cache-dependency-path: |
+            services/signaling/package-lock.json
+            server/package-lock.json
       - name: Enforce source-only repository
         run: node .github/scripts/verify-source-only.mjs
       - name: Install signaling dependencies
@@ -31,6 +33,12 @@ jobs:
       - name: Check signaling Worker
         run: npm run check
         working-directory: services/signaling
+      - name: Install relay server dependencies
+        run: npm ci
+        working-directory: server
+      - name: Check relay server
+        run: npm run check
+        working-directory: server
       - name: Test browser JavaScript
         run: node --test port/web/tests/*.js
       - name: Validate hosting Worker syntax

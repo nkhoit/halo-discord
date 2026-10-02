@@ -23,10 +23,12 @@ ordering; the unreliable channel preserves one UDP datagram per message. */
 #define EMSCRIPTEN_KEEPALIVE
 extern int web_transport_send(unsigned long address, int reliable,
 	const void *buffer, int length);
+extern void web_transport_flush(void);
 #elif defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
 extern int web_transport_send(unsigned long address, int reliable,
 	const void *buffer, int length);
+extern void web_transport_flush(void);
 #else
 #define EMSCRIPTEN_KEEPALIVE
 static int web_transport_send(unsigned long address, int reliable,
@@ -37,6 +39,10 @@ static int web_transport_send(unsigned long address, int reliable,
 	(void)buffer;
 	(void)length;
 	return 0;
+}
+
+static void web_transport_flush(void)
+{
 }
 #endif
 
@@ -1749,6 +1755,21 @@ EMSCRIPTEN_KEEPALIVE int web_net_remote_set_peer_state(unsigned long address,
 EMSCRIPTEN_KEEPALIVE const void *web_net_remote_local_identifier(void)
 {
 	return p2p_identifier();
+}
+
+/* Set by the WebSocket relay transport, which queues frames until the end
+of each game frame and sends them as one message per socket. */
+static volatile int web_transport_batching;
+
+EMSCRIPTEN_KEEPALIVE void web_net_remote_set_batching(int enabled)
+{
+	web_transport_batching = !!enabled;
+}
+
+void web_net_end_frame(void)
+{
+	if (web_transport_batching)
+		web_transport_flush();
 }
 
 EMSCRIPTEN_KEEPALIVE void *web_net_remote_ingress_buffer(void)
