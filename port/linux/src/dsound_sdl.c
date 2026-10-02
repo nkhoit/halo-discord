@@ -134,6 +134,14 @@ void platform_audio_set_muted(BOOL muted)
 	pthread_mutex_unlock(&mixer_lock);
 }
 
+void platform_audio_set_volume(float volume)
+{
+	pthread_mutex_lock(&mixer_lock);
+	configured_master_volume = volume < 0.0f ? 0.0f : volume > 1.0f ? 1.0f : volume;
+	master_volume = master_muted ? 0.0f : configured_master_volume;
+	pthread_mutex_unlock(&mixer_lock);
+}
+
 static float gain_from_millibels(LONG millibels)
 {
 	if (millibels <= DSBVOLUME_MIN)

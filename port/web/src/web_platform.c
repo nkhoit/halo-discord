@@ -33,6 +33,11 @@ EMSCRIPTEN_KEEPALIVE void platform_web_set_muted(int muted)
 	platform_audio_set_muted(muted ? TRUE : FALSE);
 }
 
+EMSCRIPTEN_KEEPALIVE void platform_web_set_volume(double volume)
+{
+	platform_audio_set_volume((float)volume);
+}
+
 EMSCRIPTEN_KEEPALIVE double platform_web_profile_memory_bytes(void)
 {
 	return (double)emscripten_get_heap_size();

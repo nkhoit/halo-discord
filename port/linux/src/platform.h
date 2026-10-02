@@ -43,6 +43,9 @@ void platform_unimplemented(const char *name);
 /* Change the software mixer's master mute state without stopping its clock. */
 void platform_audio_set_muted(BOOL muted);
 
+/* The software mixer's master volume, 0 to 1. */
+void platform_audio_set_volume(float volume);
+
 /* ---------- errors */
 
 /* translate errno into a Win32 error code and store it as GetLastError() */

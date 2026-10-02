@@ -38,6 +38,9 @@ drive the controller.
 
 #include <SDL3/SDL.h>
 #include <math.h>
+#ifdef HALO_WEB
+#include <emscripten.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -150,6 +153,18 @@ static BYTE analog(BOOL down)
 	return down ? 0xff : 0x00;
 }
 
+#ifdef HALO_WEB
+/* (the hosted page) Start and A pressed for a moment by its own buttons:
+the page keeps Escape for itself, and starts the host's match */
+static volatile double web_press_until[2];
+
+EMSCRIPTEN_KEEPALIVE void platform_web_press_button(int button)
+{
+	if (button >= 0 && button < 2)
+		web_press_until[button] = emscripten_get_now() + 150.0;
+}
+#endif
+
 static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GAMEPAD *pad)
 {
 	const unsigned char *k = input->keys;
@@ -177,6 +192,12 @@ static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GA
 	if (k[SDL_SCANCODE_ESCAPE]) pad->wButtons |= XINPUT_GAMEPAD_START;
 	if (k[SDL_SCANCODE_F1]) pad->wButtons |= XINPUT_GAMEPAD_BACK;
 #ifdef HALO_WEB
+	{
+		double now = emscripten_get_now();
+
+		if (now < web_press_until[0]) pad->wButtons |= XINPUT_GAMEPAD_START;
+		if (now < web_press_until[1]) pad->bAnalogButtons[XINPUT_GAMEPAD_A] = 0xff;
+	}
 	/* Control plus a movement key is a browser shortcut (Ctrl+W closes the
 	 * tab, Ctrl+S opens Save, and Ctrl+D bookmarks). Keep web crouch on C so
 	 * ordinary tab play cannot accidentally leave the game. */
