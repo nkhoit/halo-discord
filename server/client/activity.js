@@ -8,6 +8,52 @@ import { DiscordSDK } from "@discord/embedded-app-sdk";
 
 const SCOPES = ["identify", "guilds"];
 
+/* The SDK copies every console line to Discord (captureLog) unless told not
+   to, and Discord rejects some (an over-long message: "child \"message\"
+   fails because ..."); the rejection went unhandled and the shell showed it
+   as a fatal start-up error. Halo's console is not Discord's business. */
+const SDK_CONFIGURATION = { disableConsoleLogOverride: true };
+
+/* Errors go to the server's log (POST /v1/client-errors), so a failure in
+   someone's Discord client can be diagnosed. */
+function reportError(kind, error) {
+  try {
+    const message = error && error.message ? String(error.message) : String(error);
+    const stack = error && error.stack ? String(error.stack).slice(0, 2000) : null;
+    fetch("v1/client-errors", {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, message: message.slice(0, 1000), stack, at: new Date().toISOString() }),
+    }).catch(() => {});
+  } catch {
+    /* best effort */
+  }
+}
+
+/* A failed Discord command rejects with the RPC error, a plain
+   { code, message } object; none of them is fatal to the game. Registered
+   before the shell's own handler, which treats every unhandled rejection as
+   a failed start. */
+function isDiscordCommandError(reason) {
+  return Boolean(reason) && typeof reason === "object" && !(reason instanceof Error) &&
+    typeof reason.code === "number" && typeof reason.message === "string";
+}
+
+window.addEventListener("unhandledrejection", (event) => {
+  if (isDiscordCommandError(event.reason)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    reportError("discord-command", event.reason);
+    return;
+  }
+  reportError("unhandledrejection", event.reason);
+});
+window.addEventListener("error", (event) => {
+  reportError("error", event.error || event.message);
+});
+
 function meta(name) {
   const element = document.querySelector(`meta[name="${name}"]`);
   return element ? element.content : null;
@@ -57,19 +103,40 @@ async function panel(title, text, actions) {
 }
 
 /* Stands in for the SDK on local test pages (only offered under DEV_LOGIN),
-   and makes the frame look like Discord's: no WebRTC at all. */
-function developmentSdk(user, instanceId) {
+   and makes the frame look like Discord's: no WebRTC at all, and, unless
+   configured off as with the real SDK, every console line sent through a
+   captureLog that rejects what Discord rejects (an empty or over-long
+   message; the limit is an assumption, Discord's is not documented). */
+const DEVELOPMENT_CAPTURE_LOG_LIMIT = 1000;
+
+function developmentSdk(user, instanceId, configuration = {}) {
   for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
       "RTCSessionDescription", "RTCIceCandidate"]) {
     delete window[name];
     if (name in window) window[name] = undefined;
   }
+  const commands = {
+    authorize: async () => ({ code: `dev:${user}` }),
+    openExternalLink: async ({ url }) => ({ opened: Boolean(window.open(url, "_blank", "noopener")) }),
+    captureLog: async ({ message }) => {
+      if (!message || message.length > DEVELOPMENT_CAPTURE_LOG_LIMIT) {
+        throw { code: 4000, message: `child "message" fails because ["message" length must be less than or equal to ${DEVELOPMENT_CAPTURE_LOG_LIMIT} characters long]` };
+      }
+      return null;
+    },
+  };
   return {
     instanceId,
-    ready: async () => {},
-    commands: {
-      authorize: async () => ({ code: `dev:${user}` }),
-      openExternalLink: async ({ url }) => ({ opened: Boolean(window.open(url, "_blank", "noopener")) }),
+    commands,
+    ready: async () => {
+      if (configuration.disableConsoleLogOverride) return;
+      for (const level of ["log", "warn", "debug", "info", "error"]) {
+        const original = console[level];
+        console[level] = function (...args) {
+          commands.captureLog({ level, message: "" + args.join(" ") });
+          original.apply(console, args);
+        };
+      }
     },
   };
 }
@@ -104,8 +171,8 @@ async function main() {
   const parameters = new URLSearchParams(location.search);
   const developmentUser = meta("halo-activity-dev") ? parameters.get("dev_user") : null;
   const sdk = developmentUser ?
-    developmentSdk(developmentUser, parameters.get("instance_id") || "dev-instance") :
-    new DiscordSDK(clientId);
+    developmentSdk(developmentUser, parameters.get("instance_id") || "dev-instance", SDK_CONFIGURATION) :
+    new DiscordSDK(clientId, SDK_CONFIGURATION);
 
   await status("Connecting to Discord…");
   await sdk.ready();
@@ -157,6 +224,7 @@ function startGame() {
 
 main().catch(async (error) => {
   console.error("Halo Activity start-up failed:", error);
+  reportError("startup", error);
   await panel("Halo could not start", error && error.message ? error.message : String(error),
     [{ label: "Try again", run: () => location.reload() }]);
 });

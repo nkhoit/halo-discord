@@ -11,7 +11,7 @@ import type { Duplex } from "node:stream";
 
 import { WebSocketServer, type WebSocket } from "ws";
 
-import { Auth, requestSession } from "./auth.ts";
+import { Auth, clientAddress, requestSession } from "./auth.ts";
 import type { Config } from "./config.ts";
 import type { DiscordApi } from "./discord.ts";
 import {
@@ -69,6 +69,24 @@ function splitContext(url: URL): { context: Context; path: string } {
 const JAVASCRIPT = "text/javascript; charset=utf-8";
 const NETSTATS_INTERVAL_MILLISECONDS = 2000;
 const MAXIMUM_NETSTATS_BYTES = 16 * 1024;
+const CLIENT_ERROR_INTERVAL_MILLISECONDS = 1000;
+const MAXIMUM_CLIENT_ERRORS_PER_MINUTE = 60;
+const MAXIMUM_CLIENT_ERROR_BYTES = 2048;
+
+async function readSmallJson(request: IncomingMessage, limit: number): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += (chunk as Buffer).length;
+    if (size > limit) return "too large";
+    chunks.push(chunk as Buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return null;
+  }
+}
 const ICON_DIRECTORY = fileURLToPath(new URL("../icons/", import.meta.url));
 
 function sendBody(request: IncomingMessage, response: ServerResponse, headers: Record<string, string>,
@@ -155,6 +173,31 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     reply(204);
   }
 
+  /* A page's errors (activity.js reportError), logged for diagnosing failures
+     in players' Discord clients. Also before sign-in, so keyed by the user or
+     else the address; small JSON objects only, and a global cap. */
+  const clientErrorLast = new Map<string, number>();
+  const clientErrorMinute = { start: 0, count: 0 };
+  async function receiveClientError(request: IncomingMessage, response: ServerResponse,
+      headers: Record<string, string>): Promise<void> {
+    const reply = (status: number) => response.writeHead(status, headers).end();
+    const session = requestSession(config, request);
+    const key = session?.sub ?? clientAddress(config, request);
+    const now = Date.now();
+    if (now - clientErrorMinute.start >= 60_000) Object.assign(clientErrorMinute, { start: now, count: 0 });
+    if (now - (clientErrorLast.get(key) ?? 0) < CLIENT_ERROR_INTERVAL_MILLISECONDS ||
+        ++clientErrorMinute.count > MAXIMUM_CLIENT_ERRORS_PER_MINUTE) {
+      return void reply(429);
+    }
+    clientErrorLast.set(key, now);
+    if (clientErrorLast.size > 10_000) clientErrorLast.clear();
+    const body = await readSmallJson(request, MAXIMUM_CLIENT_ERROR_BYTES);
+    if (body === "too large") return void reply(413);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return void reply(400);
+    log({ event: "client-error", user: session?.sub ?? null, error: body });
+    reply(204);
+  }
+
   async function versions(): Promise<AssetVersions> {
     return { app: await appVersion(), activity: contentVersion(await activityBundle()), icons: iconVersions };
   }
@@ -174,6 +217,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       }
       if (await auth.handle(request, response, new URL(path + url.search, url))) return;
       if (path === "/v1/netstats" && request.method === "POST") return receiveNetstats(request, response, headers);
+      if (path === "/v1/client-errors" && request.method === "POST") return receiveClientError(request, response, headers);
       if (request.method !== "GET" && request.method !== "HEAD") {
         response.writeHead(405, { Allow: "GET, HEAD", "Cache-Control": NO_STORE }).end();
         return;

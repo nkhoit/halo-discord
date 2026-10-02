@@ -403,3 +403,20 @@ describe("measurement uploads", () => {
     expect(JSON.stringify(server.logs)).not.toContain(token("42", "Chief"));
   });
 });
+
+describe("client error reports", () => {
+  const post = (body: string, cookie?: string) => fetch(`${server.base}/v1/client-errors`, {
+    method: "POST", body, headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
+  });
+
+  it("log small JSON reports with the player's ID when there is one, a few at a time", async () => {
+    const report = { kind: "startup", message: "boom" };
+    expect((await post(JSON.stringify(report), `halo_session=${token("42")}`)).status).toBe(204);
+    expect(server.logs.find((entry) => entry.event === "client-error")).toEqual({ event: "client-error", user: "42", error: report });
+    expect((await post(JSON.stringify(report), `halo_session=${token("42")}`)).status).toBe(429);
+    expect((await post(JSON.stringify(report))).status).toBe(204);
+    expect(server.logs.filter((entry) => entry.event === "client-error").at(-1)).toMatchObject({ user: null });
+    expect((await post("[]", `halo_session=${token("43")}`)).status).toBe(400);
+    expect((await post(JSON.stringify({ message: "x".repeat(3000) }), `halo_session=${token("44")}`)).status).toBe(413);
+  });
+});

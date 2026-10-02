@@ -1260,6 +1260,9 @@
       .loading-orbit::before { animation-duration: 2.5s; }
     }
 
+    /* A failed start's message is shown whole, not cut to one line. */
+    #loading[aria-busy="false"] #loading-label { white-space: normal; overflow-wrap: anywhere; }
+
     /* Short screens, such as a Discord Activity docked beside a call: the
        Spartan preview must not push the join and host buttons out of view. */
     @media (max-height: 760px) {

@@ -556,8 +556,10 @@ addToLibrary({
           if (runtime.netstatsHistory.length > runtime.NETSTATS_HISTORY_WINDOWS) {
             runtime.netstatsHistory.shift();
           }
-          console.info('[netstats] ' + JSON.stringify(stats));
+          /* (uploaded windows stay out of the console: several kilobytes
+             every five seconds, which an embedding page may forward) */
           if (runtime.netstatsUpload) runtime.netstatsSend(stats);
+          else console.info('[netstats] ' + JSON.stringify(stats));
         });
       }, runtime.NETSTATS_LOG_MILLISECONDS);
     },
