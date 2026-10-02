@@ -185,7 +185,8 @@ Expectations and limits:
 - `?netstats=1` cannot be added inside Discord; measure in the browser.
 
 Testing locally without Discord: with `DEV_LOGIN=1` the Activity page
-accepts a `dev_user` query parameter that replaces the SDK, and
+accepts a `dev_user` query parameter that replaces the SDK (and, like Discord's
+frame, removes WebRTC from the page: relay pages must never need it), and
 `POST /auth/activity` accepts `dev:<name>` codes. Run the server with
 `PUBLIC_ORIGIN=http://localhost:8090` (browsers accept Secure, partitioned
 cookies from `http://localhost`) and embed
