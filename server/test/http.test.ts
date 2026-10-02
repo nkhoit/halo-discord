@@ -155,9 +155,50 @@ describe("Discord login", () => {
     const session = cookies(response).halo_session!;
     expect(response.headers.getSetCookie().find((line) => line.startsWith("halo_session"))).toMatch(/HttpOnly/);
     expect(server.discord.exchanges[0]).toEqual({ code: "ok", redirectUri: "http://127.0.0.1:9/auth/callback" });
+    expect(server.logs.find((entry) => entry.event === "login"))
+      .toMatchObject({ via: "browser", user: "4242", guild: "0" });
+    expect(server.discord.membershipChecks).toEqual([{ code: "ok", guildIds: ["0"] }]);
     const renewed = await get("/auth/session", { Cookie: `halo_session=${session}` });
     expect(renewed.status).toBe(200);
     expect(await renewed.json()).toMatchObject({ user: { id: "4242", name: "Master Chief" } });
+  });
+
+  it("accepts a browser login matched only by a later allowed guild", async () => {
+    await server.close();
+    server = await start({ discord: { clientId: "123", clientSecret: "shh", guildIds: ["101", "202"] } });
+    server.discord.users.set("second", { id: "2020", username: "member", globalName: null });
+    server.discord.memberGuilds.set("second", ["202"]);
+    server.discord.users.set("outside-allowlist", { id: "3030", username: "other", globalName: null });
+    server.discord.memberGuilds.set("outside-allowlist", ["303"]);
+    const response = await login("second");
+    expect(response.status).toBe(302);
+    expect(cookies(response).halo_session).toBeTruthy();
+    expect((await login("outside-allowlist")).status).toBe(403);
+    expect(server.discord.membershipChecks).toEqual([
+      { code: "second", guildIds: ["101", "202"] },
+      { code: "outside-allowlist", guildIds: ["101", "202"] },
+    ]);
+    expect(server.logs.find((entry) => entry.event === "login"))
+      .toMatchObject({ via: "browser", user: "2020", guild: "202" });
+    expect(server.logs.filter((entry) => entry.event === "login")).toHaveLength(1);
+    expect(JSON.stringify(server.logs)).not.toContain("access-second");
+  });
+
+  it("fails closed on Discord guild lookup errors", async () => {
+    await server.close();
+    server = await start({ discord: { clientId: "123", clientSecret: "shh", guildIds: ["101", "202"] } });
+    server.discord.users.set("lookup-failure", { id: "3030", username: "member", globalName: null });
+    server.discord.membershipFailures.add("lookup-failure");
+    const browser = await login("lookup-failure");
+    expect(browser.status).toBe(502);
+    expect(cookies(browser).halo_session).toBeUndefined();
+    const activity = await fetch(`${server.base}/auth/activity`, {
+      method: "POST", body: JSON.stringify({ code: "lookup-failure" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    expect(activity.status).toBe(502);
+    expect(cookies(activity).halo_activity).toBeUndefined();
+    expect(server.logs.filter((entry) => entry.event === "login")).toEqual([]);
   });
 
   it("refuses non-members, forged state and off-site returns", async () => {
@@ -283,7 +324,9 @@ describe("the Discord Activity", () => {
     expect(server.discord.exchanges.at(-1)).toEqual({ code: "sdk", redirectUri: undefined });
     expect(cookies(response).halo_activity).toBe(body.token);
     expect(server.logs.find((entry) => entry.event === "login"))
-      .toMatchObject({ via: "activity", user: "77", room: String(activityRoomId(SECRET, "i-1-gc-2-3")).slice(0, 8) });
+      .toMatchObject({ via: "activity", user: "77", guild: "0",
+        room: String(activityRoomId(SECRET, "i-1-gc-2-3")).slice(0, 8) });
+    expect(server.discord.membershipChecks).toEqual([{ code: "sdk", guildIds: ["0"] }]);
     expect(JSON.stringify(server.logs)).not.toContain(String(body.token));
     expect(JSON.stringify(server.logs)).not.toContain("access-sdk");
     expect((await activity({})).status).toBe(400);
@@ -291,6 +334,20 @@ describe("the Discord Activity", () => {
     server.discord.users.set("out", { id: "1", username: "stranger", globalName: null });
     server.discord.outsiders.add("out");
     expect((await activity({ code: "out" })).status).toBe(403);
+  });
+
+  it("accepts an Activity user matched only by a later allowed guild", async () => {
+    await server.close();
+    server = await start({ discord: { clientId: "123", clientSecret: "shh", guildIds: ["101", "202"] } });
+    server.discord.users.set("activity-second", { id: "2020", username: "member", globalName: null });
+    server.discord.memberGuilds.set("activity-second", ["202"]);
+    const response = await activity({ code: "activity-second", instanceId: "i-1-gc-2-3" });
+    expect(response.status).toBe(200);
+    expect(server.discord.membershipChecks).toEqual([{ code: "activity-second", guildIds: ["101", "202"] }]);
+    expect(server.logs.find((entry) => entry.event === "login"))
+      .toMatchObject({ via: "activity", user: "2020", guild: "202",
+        room: String(activityRoomId(SECRET, "i-1-gc-2-3")).slice(0, 8) });
+    expect(JSON.stringify(server.logs)).not.toContain("access-activity-second");
   });
 
   it("maps an instance to one room derived with the server secret", async () => {

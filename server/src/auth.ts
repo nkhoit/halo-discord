@@ -199,11 +199,12 @@ export class Auth {
     }
     const accessToken = await this.discord.exchangeCode(code, this.redirectUri());
     const user = await this.discord.getUser(accessToken);
-    if (!await this.discord.isGuildMember(accessToken, this.config.discord.guildId)) {
+    const guildId = await this.discord.findGuildMembership(accessToken, this.config.discord.guildIds);
+    if (!guildId) {
       return page(response, 403, "This game is only open to members of its Discord server.");
     }
     const { token } = this.issue(user);
-    this.log({ event: "login", via: "browser", user: user.id });
+    this.log({ event: "login", via: "browser", user: user.id, guild: guildId });
     response.writeHead(302, {
       Location: safeReturnPath(Buffer.from(returnPath ?? "", "base64url").toString("utf8")),
       "Set-Cookie": [
@@ -248,6 +249,7 @@ export class Auth {
       return json(response, 400, { error: "invalid instance" });
     }
     let issued: { token: string; session: Session };
+    let matchedGuildId: string | null = null;
     if (this.config.devLogin && code.startsWith("dev:")) {
       const name = sanitizeName(code.slice(4));
       issued = issueToken(this.config.tokenSecret, `dev:${name}`, name, this.config.tokenTtlSeconds);
@@ -255,14 +257,14 @@ export class Auth {
       if (!this.config.discord || !this.discord) return json(response, 404, { error: "not configured" });
       const accessToken = await this.discord.exchangeCode(code);
       const user = await this.discord.getUser(accessToken);
-      if (!await this.discord.isGuildMember(accessToken, this.config.discord.guildId)) {
-        return json(response, 403, { error: "not a member of the server" });
-      }
+      matchedGuildId = await this.discord.findGuildMembership(accessToken, this.config.discord.guildIds);
+      if (!matchedGuildId) return json(response, 403, { error: "not a member of the server" });
       issued = this.issue(user);
     }
     const { token, session } = issued;
     const roomId = instanceId ? activityRoomId(this.config.tokenSecret, instanceId) : null;
-    this.log({ event: "login", via: "activity", user: session.sub, room: roomId?.slice(0, 8) ?? null });
+    this.log({ event: "login", via: "activity", user: session.sub,
+      ...(matchedGuildId ? { guild: matchedGuildId } : {}), room: roomId?.slice(0, 8) ?? null });
     json(response, 200, {
       token,
       user: { id: session.sub, name: session.name },

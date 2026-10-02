@@ -26,6 +26,9 @@ export const PAGE = '<!doctypehtml><html lang=en><head><meta charset=utf-8>' +
 export class FakeDiscord implements DiscordApi {
   readonly users = new Map<string, DiscordUser>();
   readonly outsiders = new Set<string>();
+  readonly memberGuilds = new Map<string, string[]>();
+  readonly membershipFailures = new Set<string>();
+  readonly membershipChecks: { code: string; guildIds: string[] }[] = [];
   readonly exchanges: { code: string; redirectUri?: string }[] = [];
 
   async exchangeCode(code: string, redirectUri?: string): Promise<string> {
@@ -38,8 +41,13 @@ export class FakeDiscord implements DiscordApi {
     return this.users.get(accessToken.replace(/^access-/, ""))!;
   }
 
-  async isGuildMember(accessToken: string): Promise<boolean> {
-    return !this.outsiders.has(accessToken.replace(/^access-/, ""));
+  async findGuildMembership(accessToken: string, guildIds: readonly string[]): Promise<string | null> {
+    const code = accessToken.replace(/^access-/, "");
+    this.membershipChecks.push({ code, guildIds: [...guildIds] });
+    if (this.membershipFailures.has(code)) throw new Error("guild membership lookup failed");
+    if (this.outsiders.has(code)) return null;
+    const memberships = this.memberGuilds.get(code) ?? [guildIds[0]!];
+    return guildIds.find((guildId) => memberships.includes(guildId)) ?? null;
   }
 }
 
@@ -73,7 +81,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     publicOrigin: ORIGIN,
     extraOrigins: [],
     ...fixtures(),
-    discord: { clientId: "123", clientSecret: "shh", guildId: "guild" },
+    discord: { clientId: "123", clientSecret: "shh", guildIds: ["0"] },
     tokenSecret: SECRET,
     tokenTtlSeconds: 3600,
     devLogin: false,

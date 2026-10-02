@@ -8,9 +8,9 @@ one origin:
   byte ranges), which need a session;
 - the lobby's images (each multiplayer map's preview and each game type's
   icon, extracted from your own `ui.map`), which need a session;
-- Discord login (OAuth2 `identify guilds`, membership of one Discord server
-  checked at login) issuing a short-lived HMAC-signed session bound to the
-  Discord user ID;
+- Discord login (OAuth2 `identify guilds`; membership of one of the configured
+  Discord servers checked at login) issuing a short-lived HMAC-signed session
+  bound to the Discord user ID;
 - the WebSocket relay with room membership (host/guest roles, peer list,
   build pin, display names from Discord), reconnect/resume and per-frame
   batching.
@@ -34,10 +34,11 @@ in [websocket-relay-spike.md](websocket-relay-spike.md).
 - The hosted page starts the game only after `/auth/session` succeeds (the
   game's first request is a map). Without a session it goes to
   `/auth/login?return=<path#room=...>` and comes back to the same invite.
-- Discord server membership is checked at login only, and each
-  `/auth/session` call extends the session. Someone removed from the Discord
-  server keeps access until they stay away longer than `TOKEN_TTL_SECONDS`
-  (1 h), or until `TOKEN_SECRET` is rotated.
+- Discord server membership (any server in `DISCORD_GUILD_IDS`, or the legacy
+  `DISCORD_GUILD_ID` fallback) is checked at login only, and each
+  `/auth/session` call extends the session. Someone removed from every
+  allowed Discord server keeps access until they stay away longer than
+  `TOKEN_TTL_SECONDS` (1 h), or until `TOKEN_SECRET` is rotated.
 - The Discord Activity signs in through the Embedded App SDK instead (see
   [Discord Activity](#discord-activity)) and keeps its session in a separate
   `halo_activity` cookie: HttpOnly, SameSite=None, Secure and Partitioned,
@@ -167,9 +168,12 @@ Reuse the probe application (1555066217545605222) or create a new one at
    (`PUBLIC_ORIGIN` + `/auth/callback`, exactly).
 2. OAuth2 > Client information: copy the Client ID; Reset Secret and copy
    it. Put them in `.env` as `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`.
-3. The Discord server whose members may play: Discord > User Settings >
-   Advanced > Developer Mode on, then right-click the server icon > Copy
-   Server ID, into `DISCORD_GUILD_ID`.
+3. The Discord servers whose members may play: Discord > User Settings >
+   Advanced > Developer Mode on, then right-click each server icon > Copy
+   Server ID. Set `DISCORD_GUILD_IDS` to those decimal IDs, comma-separated;
+   whitespace is trimmed and duplicates are ignored. If that variable is
+   unset, the legacy `DISCORD_GUILD_ID` accepts one server. A set-but-empty or
+   malformed `DISCORD_GUILD_IDS` is an error and does not fall back.
 4. Installation: install the app to the Discord server (guild install), not
    to users. A user-installed app fails in servers with more than 25 members
    with "User-installed Apps require verification to use activities in
@@ -210,8 +214,9 @@ with `frame_id`, `instance_id` and friends in the query; that document gets:
   `guilds`, `prompt: none`), posts the code with the instance id to
   `POST /auth/activity`, and only then loads the game. The server exchanges
   the code without a redirect URI, as Discord's Activity examples do, checks
-  membership of `DISCORD_GUILD_ID`, and keeps Discord's access token to
-  itself; `authenticate` is not called because nothing needs it.
+  membership of `DISCORD_GUILD_IDS` (or the legacy `DISCORD_GUILD_ID` fallback),
+  and keeps Discord's access token to itself; `authenticate` is not called
+  because nothing needs it.
 - One room per Activity instance: `POST /auth/activity` returns the room id,
   an HMAC of the instance id under `TOKEN_SECRET`, so a room id cannot be
   chosen to land in someone's instance. The in-game lobby polls

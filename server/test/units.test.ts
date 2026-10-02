@@ -1,8 +1,9 @@
 import vm from "node:vm";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { loadConfig } from "../src/config.ts";
+import { HttpDiscordApi } from "../src/discord.ts";
 import { joinBatch, sanitizeName, splitBatch } from "../src/protocol.ts";
 import { buildFile, contentVersion, gameImage,
   hostedPage, LOGIN_SCRIPT, mapFile, parseRange } from "../src/static.ts";
@@ -157,9 +158,33 @@ describe("configuration", () => {
     DISCORD_CLIENT_ID: "1", DISCORD_CLIENT_SECRET: "2", DISCORD_GUILD_ID: "3",
   };
 
-  it("loads a production configuration", () => {
+  it("loads a production configuration with the legacy single-guild setting", () => {
     expect(loadConfig(base)).toMatchObject({ host: "127.0.0.1", port: 8090, devLogin: false,
-      discord: { clientId: "1", guildId: "3" } });
+      discord: { clientId: "1", guildIds: ["3"] } });
+  });
+
+  it("loads a plural-only allowlist and gives it precedence over the legacy setting", () => {
+    expect(loadConfig({ ...base, DISCORD_GUILD_ID: undefined, DISCORD_GUILD_IDS: "4" }).discord)
+      .toMatchObject({ guildIds: ["4"] });
+    expect(loadConfig({ ...base, DISCORD_GUILD_IDS: "4,5" }).discord)
+      .toMatchObject({ guildIds: ["4", "5"] });
+  });
+
+  it("trims and deduplicates plural guild IDs while preserving first-seen order", () => {
+    expect(loadConfig({ ...base, DISCORD_GUILD_IDS: " 4 , 5,4, 5 " }).discord)
+      .toMatchObject({ guildIds: ["4", "5"] });
+    expect(loadConfig({ ...base, DISCORD_GUILD_IDS: "0" }).discord)
+      .toMatchObject({ guildIds: ["0"] });
+  });
+
+  it("rejects missing, empty, or malformed guild settings rather than falling back", () => {
+    expect(() => loadConfig({ ...base, DISCORD_GUILD_ID: undefined })).toThrow(/DISCORD_GUILD_ID/);
+    expect(() => loadConfig({ ...base, DISCORD_GUILD_IDS: "" })).toThrow(/DISCORD_GUILD_IDS/);
+    expect(() => loadConfig({ ...base, DISCORD_GUILD_IDS: "   ", DISCORD_GUILD_ID: "3" }))
+      .toThrow(/DISCORD_GUILD_IDS/);
+    expect(() => loadConfig({ ...base, DISCORD_GUILD_IDS: "4,,5" })).toThrow(/DISCORD_GUILD_IDS/);
+    expect(() => loadConfig({ ...base, DISCORD_GUILD_IDS: "not-a-guild" })).toThrow(/DISCORD_GUILD_IDS/);
+    expect(() => loadConfig({ ...base, DISCORD_GUILD_ID: "not-a-guild" })).toThrow(/DISCORD_GUILD_ID/);
   });
 
   it("allows the development login only in development on loopback", () => {
@@ -169,6 +194,38 @@ describe("configuration", () => {
     expect(() => loadConfig({ ...dev, HOST: "0.0.0.0" })).toThrow(/DEV_LOGIN/);
     expect(() => loadConfig({ ...base, TOKEN_SECRET: "short" })).toThrow(/TOKEN_SECRET/);
     expect(() => loadConfig({ ...base, DISCORD_CLIENT_ID: "" })).toThrow(/DISCORD_CLIENT_ID/);
+  });
+});
+
+describe("Discord API guild lookup", () => {
+  it("checks every allowed guild with one guild-list request and returns the actual match", async () => {
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("https://discord.com/api/v10/users/@me/guilds");
+      expect(init?.headers).toEqual({ Authorization: "Bearer access-token" });
+      return new Response(JSON.stringify([{ id: "unrelated" }, { id: "second" }]), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const api = new HttpDiscordApi("client", "secret");
+      await expect(api.findGuildMembership("access-token", ["first", "second", "third"]))
+        .resolves.toBe("second");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects failed guild-list requests so auth can fail closed", async () => {
+    const fetchMock = vi.fn(async () => new Response("unavailable", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const api = new HttpDiscordApi("client", "secret");
+      await expect(api.findGuildMembership("access-token", ["first", "second"]))
+        .rejects.toThrow(/failed \(503\)/);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
