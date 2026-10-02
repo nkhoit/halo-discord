@@ -549,3 +549,77 @@ Consequences:
   loss is recovered on a short leg. This favours the relay, but it is an
   inference: it has not been measured through Discord's proxy.
 - Loss above 1% remains a problem for any TCP relay; only datagrams fix that.
+## Own-player rubber-banding (2026-10-02)
+
+Players reported their own character snapping back "a step" and the view
+jumping to another angle, in the Discord Activity and in Chrome alike.
+
+### What the netcode does
+
+A client's own position is its own (port/linux/NETCODE.md): it sends where
+its unit is every tick, the host accepts that within 3.5 world units, and the
+client is put where the host has it only beyond 3.0 world units, several
+metres in Halo CE. A client drives its own player from local input only; the
+host's relayed inputs move remote players. So ordinary latency cannot snap a
+player back a step. A correction would be a large jump, and when one happens
+it also sets the unit's facing from the host.
+
+### Telemetry
+
+With `NETSTATS_UPLOAD=1` (diagnostic mode, on for forge now) every page posts
+its 5-second netstats window to `POST /v1/netstats`, logged with the player's
+Discord ID. The game section counts own-unit corrections (and those that also
+turned the unit), refused predictions, own seat corrections, the host's
+client inputs per tick, frames that ran several ticks to catch up and the most
+ticks in one frame, frame gaps and hitches, and (to attribute long frames)
+the longest tick run and frame callback, shader compiles and links, texture
+uploads, content hashing and idle drops. The server also logs every map read.
+
+### First real session (Chrome on two PCs at home, 01:29-01:32 UTC)
+
+- Own corrections, own aim corrections, refused predictions: 0 in every
+  window for both players. Netcode corrections are not the cause.
+- The reported stutters match client frame stalls: the worst, at 01:30:38,
+  was a 591 ms frame gap and 17 ticks run in one frame on the guest, with a
+  154 ms gap on the host at the same moment; others were 283 ms (8-9 ticks).
+  Network gaps were normal then. A stall followed by catch-up ticks shows as a
+  jump, and the mouse motion gathered during the stall turns the view at once.
+- One separate transport stall (01:31:19-24, ~210 ms per-tick gaps on both,
+  no frame hitch).
+- Relay echo p50 40-49 ms although both PCs and forge share a LAN: the path
+  hairpins through the Cloudflare edge (SEA) and the tunnel. Peer round trip
+  87-92 ms. A known cost of the tunnel; not acted on.
+
+### Ruled out or explained
+
+- Host inputs per tick, mostly 2: by design. A client sends its input when at
+  least 16 ms have passed (the original Xbox interval, network_game_globals.c),
+  about 60 a second; the host takes the latest each tick and keeps every
+  button pressed in between.
+- Map reads during play: each multiplayer map fits FetchFS's first 32 MiB
+  chunk and is fetched whole at load. The map log is there to confirm it.
+- The SwiftShader lab on forge (headless Chromium, 12-18 fps) runs several
+  ticks every frame by itself and then shows own corrections (~20-27 a minute)
+  and refused predictions even without impairment. That is not the regime of
+  real play (0 of both), so it is not used for this.
+
+### Open suspect
+
+The web texture cache drops textures unused for 1800 frames (checked every
+600 frames). At 60 fps that is 30 s; at the 240 fps these PCs render it is
+7.5 s. Whatever was off screen that long (the other side of the map, weapons,
+effects) is decoded and uploaded again on the frame it returns, often many at
+once after a respawn or a turn, on both clients at the same game moment.
+Unchanged textures are also re-hashed every eight frames or less. The
+attribution counters decide it; a time-based expiry would be the fix.
+
+### Activity start-up crash found on the way
+
+The Embedded App SDK copies every console line to Discord (`captureLog`)
+without handling the result. Once netstats windows were logged to the console,
+Discord rejected one as too long, the rejection went unhandled, and the shell
+showed it as a fatal start-up error on the guest. The SDK now starts with
+`disableConsoleLogOverride`, failed Discord commands are never fatal, uploaded
+windows stay out of the console, failure text wraps, and the Activity reports
+errors to `POST /v1/client-errors`. A test runs the built `activity.js`
+against an SDK stand-in that mimics the capture and Discord's validation.
