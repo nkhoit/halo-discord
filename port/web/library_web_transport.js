@@ -447,6 +447,15 @@ addToLibrary({
         game.programWaitMaxMs = Math.round(HEAPF64[index + 47]);
         game.rafIntervalMaxMs = +HEAPF64[index + 48].toFixed(1);
         game.rafLateMaxMs = +HEAPF64[index + 49].toFixed(1);
+        var feel = function(offset) { return +HEAPF64[index + 50 + offset].toFixed(2); };
+        game.feel = {
+          shots: feel(0), fireP50Ms: feel(1), fireP99Ms: feel(2), fireMaxMs: feel(3),
+          unansweredPresses: feel(4),
+          hitConfirms: feel(5), hitConfirmP50Ms: feel(6), hitConfirmP99Ms: feel(7), hitConfirmMaxMs: feel(8),
+          remoteCorrections: feel(9), remoteErrorP50: feel(10), remoteErrorP99: feel(11),
+          remoteErrorMax: feel(12), remoteSnaps: feel(13),
+          relayedHeldTicks: feel(14), relayedHeldRunMax: feel(15), relayedBunchedTicks: feel(16),
+        };
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
@@ -614,6 +623,11 @@ addToLibrary({
           textureHashMsMax: game.textureHashMsMax,
           textureDrops: delta('textureDrops'),
         },
+        /* shooting and the other players this window: fire button to shot
+           (ms), hit reported to the host's damage back (ms), how far the
+           host's word moved other players each tick (world units; snaps over
+           1), and ticks run on the others' last input for want of a newer */
+        feel: game.feel || null,
         peers: peers,
         relay: relaySummary,
         mainThread: main,

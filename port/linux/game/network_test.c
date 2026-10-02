@@ -442,8 +442,19 @@ void network_test_update(
 {
 	if (!network_test.checked)
 		network_test_read_settings();
+	/* (scripted hits also in games the menus made, for measuring) */
 	if (network_test.mode == _network_test_off)
+	{
+		if (network_test.shoot_interval > 0.0f && game_in_progress() && !main_menu_loaded &&
+			game_connection() != _game_connection_local &&
+			game_time_get() - network_test.logged_time >= TICKS_PER_SECOND)
+		{
+			network_test.logged_time = game_time_get();
+			if (game_time_get() % (long)(network_test.shoot_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)
+				network_test_shoot();
+		}
 		return;
+	}
 
 	/* the game running: report */
 	if (game_in_progress() && !main_menu_loaded && game_time_get() - network_test.logged_time >= TICKS_PER_SECOND)

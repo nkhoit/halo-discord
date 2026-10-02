@@ -769,6 +769,10 @@ void network_damage_handle_events(
 		if (!distributed_damage_to_data(&event->damage, &damage))
 			continue;
 		damage_replayed_events++;
+#ifdef HALO_WEB
+		if (event->kind != _damage_event_player_effect)
+			network_web_hit_confirmed(event->object_index);
+#endif
 		switch (event->kind)
 		{
 		case _damage_event_player_effect:
@@ -824,6 +828,9 @@ void network_damage_client_tick(
 	damage_sent_reports += damage_report_count;
 	for (index = 0; index < damage_report_count; index++)
 	{
+#ifdef HALO_WEB
+		network_web_hit_reported(damage_reports[index].object_index);
+#endif
 		message.reports[count++] = damage_reports[index];
 		if (count == limit)
 		{
