@@ -284,7 +284,7 @@
      URL. It is renewed from the HttpOnly session cookie, which also
      authorizes map downloads. Without a session, log in with Discord and
      come back to the same room. */
-  async function relaySession(returnHash) {
+  async function relaySession(returnHash, retried) {
     if (relayAuth.token && relayAuth.expiresAt - Date.now() > RELAY_TOKEN_REFRESH_MILLISECONDS) {
       return relayAuth;
     }
@@ -293,6 +293,11 @@
       response = await fetch(relayEndpoint("auth/session"), { credentials: "include", cache: "no-store" });
     } catch (error) {
       throw new Error("The Halo relay is unreachable.");
+    }
+    if (response.status === 401 && activity()) {
+      if (retried) throw new Error("Discord sign-in failed. Relaunch the Activity.");
+      await activity().signIn();
+      return relaySession(returnHash, true);
     }
     if (response.status === 401) {
       var back = new URL(global.location.href);
@@ -355,6 +360,81 @@
       profile: { name: peer.name || (peer.role === "host" ? "Host" : "Friend"), style: "sage" },
     });
     renderRoster();
+  }
+
+  /* Discord Activity: activity.js signs in through the Discord SDK and sets
+     HaloActivity before the game loads. The room belongs to the Activity
+     instance, so there are no invite links: the lobby polls the room and
+     offers to host when nobody does, or to join the player who hosts. */
+  var ACTIVITY_POLL_MILLISECONDS = 2000;
+  var activityLobby = { timer: 0, view: null, notice: null, named: false };
+
+  function activity() {
+    var value = global.HaloActivity;
+    return value && typeof value.roomId === "string" ? value : null;
+  }
+
+  function stopActivityLobby() {
+    if (activityLobby.timer) global.clearTimeout(activityLobby.timer);
+    activityLobby.timer = 0;
+    activityLobby.view = null;
+  }
+
+  function startActivityLobby() {
+    if (!activity() || session.active || activityLobby.timer || !session.runtimeReady) return;
+    useDiscordName();
+    activityLobby.timer = global.setTimeout(pollActivityLobby, 0);
+  }
+
+  /* The Discord display name, when it fits Halo's rules, replaces a
+     generated "Spartan 123" name. */
+  function useDiscordName() {
+    if (activityLobby.named || !elements.playerName) return;
+    activityLobby.named = true;
+    var user = activity().user;
+    var name = String(user && user.name || "").replace(/[^A-Za-z0-9 ._'-]/g, "").trim()
+      .slice(0, PLAYER_NAME_MAXIMUM_LENGTH).trim();
+    if (!/^Spartan \d{3}$/.test(elements.playerName.value) || !/^[A-Za-z0-9]/.test(name)) return;
+    elements.playerName.value = name;
+    elements.playerName.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  async function pollActivityLobby() {
+    activityLobby.timer = 0;
+    if (!activity() || session.active) return;
+    var summary = null;
+    try {
+      var response = await fetch(relayEndpoint("v1/rooms/" + activity().roomId),
+        { credentials: "include", cache: "no-store" });
+      if (response.status === 401) await activity().signIn();
+      else if (response.ok) summary = await response.json();
+    } catch (error) {
+      /* Try again on the next poll. */
+    }
+    if (session.active) return;
+    if (summary) showActivityLobby(summary);
+    activityLobby.timer = global.setTimeout(pollActivityLobby, ACTIVITY_POLL_MILLISECONDS);
+  }
+
+  function showActivityLobby(summary) {
+    var view = summary.host ? "join:" + summary.host : "host";
+    if (view === activityLobby.view) return;
+    activityLobby.view = view;
+    showDialog();
+    if (summary.host) {
+      showJoinConfirmation("room:" + activity().roomId);
+      elements.description.textContent = "Join the game.";
+      if (elements.joinSummary) elements.joinSummary.textContent = summary.host +
+        " is hosting in this Activity. Choose your name and color, then join.";
+    } else {
+      showSetup();
+      elements.description.textContent =
+        "Nobody is hosting yet. Pick a map and mode to host a game for everyone in this Activity.";
+    }
+    if (activityLobby.notice) {
+      setStatus(activityLobby.notice, "error");
+      activityLobby.notice = null;
+    }
   }
 
   function clearTurnstileTimer() {
@@ -1274,7 +1354,8 @@
     } else if (event.state === "connecting" && session.role === "guest") {
       setStatus("Connecting directly to your friend…");
     } else if (event.state === "failed" && session.role === "guest") {
-      fail(new Error(event.detail || "Could not connect to the host."));
+      fail(new Error(relaySettings() ? "The host left the game, or the connection to it was lost." :
+        (event.detail || "Could not connect to the host.")));
     } else if (event.state === "failed" && relaySettings()) {
       /* A relay guest that stayed away past the resume grace is gone; forget
          it so the relay can announce it again if it rejoins. */
@@ -1673,10 +1754,16 @@
     var recoveredVerification = false;
     try {
       if (relaySettings()) {
-        await startRelayRoom(randomRoomId(), operation);
+        stopActivityLobby();
+        var roomId = activity() ? activity().roomId : randomRoomId();
+        await startRelayRoom(roomId, operation);
         session.inviteCode = "room:" + session.room.id;
-        session.inviteUrl = makeInviteUrl(session.inviteCode);
+        session.inviteUrl = activity() ? "" : makeInviteUrl(session.inviteCode);
         showInvite();
+        if (activity()) {
+          elements.inviteLink.value = "Everyone in this Activity can join";
+          if (elements.copy) elements.copy.hidden = true;
+        }
       } else {
         await openSignalingRoom(operation, turnstileToken);
       }
@@ -1735,6 +1822,7 @@
     setStatus("Opening your friend's private room…");
     try {
       if (invite.relay) {
+        stopActivityLobby();
         await startRelayRoom(invite.roomId, operation);
         requireCurrentOperation(operation);
         setGameTransportState(TRANSPORT_STATE.CONNECTING);
@@ -1902,6 +1990,11 @@
         showSetup();
         setBusy(false);
       }
+      if (activity()) {
+        if (elements.copy) elements.copy.hidden = false;
+        activityLobby.view = null;
+        startActivityLobby();
+      }
     })();
     try {
       await session.leavePromise;
@@ -1915,6 +2008,12 @@
     var message = error && error.message ? error.message : "Online play failed.";
     telemetry("online_error", "online");
     var wasActive = session.active;
+    if (activity()) {
+      /* The Activity lobby reopens after leaving and shows the message. */
+      activityLobby.notice = message;
+      leave(false).then(function() { setBusy(false); });
+      return;
+    }
     leave(false).then(function() {
       showDialog();
       showSetup();
@@ -2114,6 +2213,7 @@
       if (session.pendingInvite) {
         showJoinConfirmation(session.pendingInvite);
       }
+      startActivityLobby();
     },
     host: host,
     join: join,
