@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Duplex } from "node:stream";
 
 import { WebSocketServer, type WebSocket } from "ws";
@@ -27,6 +28,7 @@ import {
   type Context,
   HANDLERS_SCRIPT,
   hostedPage,
+  ICONS,
   isolationHeaders,
   LOGIN_SCRIPT,
   mapFile,
@@ -58,6 +60,7 @@ function splitContext(url: URL): { context: Context; path: string } {
 }
 
 const JAVASCRIPT = "text/javascript; charset=utf-8";
+const ICON_DIRECTORY = fileURLToPath(new URL("../icons/", import.meta.url));
 
 function sendBody(request: IncomingMessage, response: ServerResponse, headers: Record<string, string>,
     type: string, body: string): void {
@@ -120,6 +123,11 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       if (relative === "halo-login.js") return sendBody(request, response, headers, JAVASCRIPT, LOGIN_SCRIPT);
       if (relative === "halo-handlers.js") return sendBody(request, response, headers, JAVASCRIPT, HANDLERS_SCRIPT);
       if (relative === "activity.js") return sendBody(request, response, headers, JAVASCRIPT, await activityBundle());
+      if (Object.hasOwn(ICONS, relative)) {
+        await serveFile(request, response, ICON_DIRECTORY, relative, ICONS[relative]!,
+          { ...headers, "Cache-Control": "public, max-age=86400" }, false);
+        return;
+      }
       const shell = /^halo-shell-(\d{1,2})\.js$/.exec(relative);
       if (shell) {
         const page = await source();

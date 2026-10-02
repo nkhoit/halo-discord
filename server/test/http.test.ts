@@ -185,6 +185,25 @@ describe("the Discord Activity", () => {
     expect(script.headers.get("cross-origin-resource-policy")).toBe("same-origin");
   });
 
+  it("serves the site icon publicly with CORP, and links it from both pages", async () => {
+    for (const [path, type] of [["/favicon.ico", "image/x-icon"], ["/icon-64.png", "image/png"],
+        ["/apple-touch-icon.png", "image/png"]] as const) {
+      const response = await get(path);
+      expect(response.status, path).toBe(200);
+      expect(response.headers.get("content-type"), path).toBe(type);
+      expect(response.headers.get("cross-origin-resource-policy"), path).toBe("same-origin");
+      expect((await response.arrayBuffer()).byteLength, path).toBeGreaterThan(100);
+    }
+    const ico = new Uint8Array(await (await get("/favicon.ico")).arrayBuffer());
+    expect([...ico.slice(0, 6)]).toEqual([0, 0, 1, 0, 2, 0]);
+    for (const page of ["/", launch]) {
+      const html = await (await get(page)).text();
+      expect(html, page).toContain('<link rel="icon" href="favicon.ico" sizes="32x32 64x64">');
+      expect(html, page).toContain('<link rel="apple-touch-icon" href="apple-touch-icon.png">');
+    }
+    expect((await get("/icons/favicon.ico")).status).toBe(404);
+  });
+
   it("serves the page's former inline scripts and handlers as same-origin files", async () => {
     expect(await (await get("/halo-shell-0.js")).text()).toBe("window.shellRan = true;");
     expect((await get("/halo-shell-1.js")).status).toBe(404);

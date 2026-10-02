@@ -9,6 +9,8 @@ const allowedBinaryAssets = new Set([
   "port/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png",
   "port/android/art/android-icon.png",
   "port/android/gradle/wrapper/gradle-wrapper.jar",
+  "server/icons/apple-touch-icon.png",
+  "server/icons/icon-64.png",
 ]);
 const assetExtension = /\.(?:a|apk|bin|data|dll|dylib|exe|gif|iso|jar|jpe?g|map|mp3|o|obj|ogg|pak|png|profdata|so|wasm|wav|webp|xiso|zip)$/iu;
 const prohibitedProductName = ["spell", "book"].join("");

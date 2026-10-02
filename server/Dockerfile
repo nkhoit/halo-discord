@@ -6,6 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY client ./client
+COPY icons ./icons
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8090 BUILD_DIR=/data/build MAPS_DIR=/data/maps
 USER node
 EXPOSE 8090

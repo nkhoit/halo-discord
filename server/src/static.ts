@@ -72,6 +72,17 @@ export function mapFile(path: string): string | null {
   return match && MAPS.has(match[1]!) ? match[1]! : null;
 }
 
+/* The site icon (tools/icon/ring_icon.py), public like the page itself. */
+export const ICONS: Record<string, string> = {
+  "favicon.ico": "image/x-icon",
+  "icon-64.png": "image/png",
+  "apple-touch-icon.png": "image/png",
+};
+
+const ICON_LINKS = `<link rel="icon" href="favicon.ico" sizes="32x32 64x64">` +
+  `<link rel="icon" type="image/png" sizes="64x64" href="icon-64.png">` +
+  `<link rel="apple-touch-icon" href="apple-touch-icon.png">`;
+
 function metaPattern(name: string): RegExp {
   return new RegExp(`<meta\\b(?=[^>]*\\bname=(?:["']${name}["']|${name})(?=[\\s>]))[^>]*>`, "g");
 }
@@ -143,7 +154,7 @@ export function hostedPage(page: string, activity: ActivityPageOptions | null = 
     (activity.dev ? `<meta name="halo-activity-dev" content="1">` : "") +
     `<script src="activity.js"></script>` :
     `<meta name="halo-transport" content="relay-rooms"><script src="halo-login.js"></script>`;
-  page = page.replace(game, loader);
+  page = page.replace(game, ICON_LINKS + loader);
   if (handlers) page += `<script src="halo-handlers.js"></script>`;
   return { html: page, scripts };
 }
