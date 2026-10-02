@@ -104,7 +104,7 @@ assert.match(connectedGamepads[0], /first pad shares port 0 with the keyboard/);
 assert.doesNotMatch(connectedGamepads[0], /HALO_WEB/,
   'web must not shift the first physical controller away from player one');
 assert.match(xinput,
-  /if \(count > 0\)\s+sdl_gamepad_state\(gamepads\[0\], &state->Gamepad\);/,
+  /if \(count > 0\)\s*\{\s*look_gamepad = gamepads\[0\];\s*sdl_gamepad_state\(look_gamepad, &state->Gamepad\);\s*\}/,
   'the first physical controller must merge into Halo player one');
 assert.match(xinput,
   /#ifdef HALO_WEB[\s\S]*?if \(k\[SDL_SCANCODE_C\]\) pad->wButtons \|= XINPUT_GAMEPAD_LEFT_THUMB;[\s\S]*?#else[\s\S]*?SDL_SCANCODE_LCTRL/,

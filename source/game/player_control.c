@@ -214,7 +214,6 @@ symbols in this file:
 #ifdef HALO_LINUX
 #include "halo_aim_device.h"
 extern int halo_linux_camera_assist_enabled(short gamepad_index);
-extern void halo_linux_update_look_device(short gamepad_index);
 #endif
 
 /* ---------- constants */
@@ -1115,9 +1114,6 @@ static void get_local_player_input_blob(
 					real pitch_spin_scale;
 					real_euler_angles2d look_delta;
 
-#ifdef HALO_LINUX
-					halo_linux_update_look_device(gamepad_index);
-#endif
 					if (input_state->buttons[_button_scope_zoom] &&
 						controls_enable_doubled_spin)
 					{

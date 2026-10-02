@@ -88,8 +88,6 @@ keyboard/mouse with gamepad 0, so its no-input default is mouse look. */
 static struct halo_aim_look_state aim_look_states[PORT_COUNT];
 static SDL_JoystickID aim_gamepad_ids[PORT_COUNT];
 static BOOL aim_gamepad_identity_known[PORT_COUNT];
-static SHORT aim_right_stick_x[PORT_COUNT];
-static SHORT aim_right_stick_y[PORT_COUNT];
 static BOOL aim_look_states_initialized = FALSE;
 
 static void aim_look_states_initialize_locked(void)
@@ -112,8 +110,6 @@ static void aim_look_reset_port_locked(int port)
 	halo_aim_look_state_reset(
 		&aim_look_states[port],
 		port == 0 ? _halo_aim_look_device_mouse : _halo_aim_look_device_controller);
-	aim_right_stick_x[port] = 0;
-	aim_right_stick_y[port] = 0;
 }
 
 static void aim_look_update_gamepad_locked(
@@ -128,10 +124,13 @@ static void aim_look_update_gamepad_locked(
 	{
 		aim_gamepad_ids[port] = id;
 		aim_gamepad_identity_known[port] = TRUE;
-		aim_look_reset_port_locked(port);
+		/* Hotplug is not look input: preserve ownership, discard old samples. */
+		halo_aim_look_clear_controller_sample(&aim_look_states[port]);
 	}
-	aim_right_stick_x[port] = gamepad ? state->sThumbRX : 0;
-	aim_right_stick_y[port] = gamepad ? state->sThumbRY : 0;
+	halo_aim_look_note_controller_sample(
+		&aim_look_states[port],
+		gamepad ? state->sThumbRX : 0,
+		gamepad ? state->sThumbRY : 0, SDL_GetTicks());
 }
 
 static float mouse_sensitivity(void)
@@ -160,29 +159,6 @@ int halo_linux_camera_assist_enabled(short gamepad_index)
 	return enabled;
 }
 
-/* Called only while player camera control is active. The input thread stores
-physical stick samples; this function updates per-player ownership and checks
-for captured relative mouse motion without consuming it. */
-void halo_linux_update_look_device(short gamepad_index)
-{
-	int mouse_motion;
-
-	if (gamepad_index < 0 || gamepad_index >= PORT_COUNT)
-		return;
-	pthread_mutex_lock(&mouse_lock);
-	aim_look_states_initialize_locked();
-	halo_aim_look_note_controller_sample(
-		&aim_look_states[gamepad_index],
-		aim_right_stick_x[gamepad_index],
-		aim_right_stick_y[gamepad_index],
-		SDL_GetTicks());
-	mouse_motion = mouse_pending_x != 0.0f || mouse_pending_y != 0.0f;
-	halo_aim_look_note_mouse_motion(
-		&aim_look_states[gamepad_index],
-		gamepad_index == 0 && mouse_motion);
-	pthread_mutex_unlock(&mouse_lock);
-}
-
 /* radians of yaw and pitch for the mouse motion since the last call; the
 game adds these to the facing change of the player on gamepad 0 */
 int halo_linux_mouse_look(short gamepad_index, float *yaw, float *pitch)
@@ -205,9 +181,6 @@ int halo_linux_mouse_look(short gamepad_index, float *yaw, float *pitch)
 	mouse_pending_x = 0.0f;
 	mouse_pending_y = 0.0f;
 	mouse_polls_unconsumed = 0;
-	halo_aim_look_note_mouse_motion(
-		&aim_look_states[gamepad_index],
-		x != 0.0f || y != 0.0f);
 	pthread_mutex_unlock(&mouse_lock);
 	if (x == 0.0f && y == 0.0f)
 		return FALSE;
@@ -227,7 +200,7 @@ static void mouse_poll(const struct platform_input_state *input)
 		mouse_pending_x = 0.0f;
 		mouse_pending_y = 0.0f;
 	}
-	if (!input->mouse_released)
+	if (!input->mouse_released && !input->ui_pointer)
 	{
 		mouse_pending_x += input->mouse_dx;
 		mouse_pending_y += input->mouse_dy;
@@ -651,6 +624,10 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		}
 		pthread_mutex_lock(&mouse_lock);
 		aim_look_update_gamepad_locked(port, look_gamepad, &state->Gamepad);
+		/* Same-poll ties favor captured mouse; later polls keep their ordering. */
+		halo_aim_look_note_mouse_motion(&aim_look_states[0],
+			!input.mouse_released && !input.ui_pointer &&
+			(input.mouse_dx != 0.0f || input.mouse_dy != 0.0f));
 		pthread_mutex_unlock(&mouse_lock);
 		/* Do not let synthetic network-test input change the physical device. */
 		test_input_gamepad(&state->Gamepad);
