@@ -41,6 +41,8 @@ jobs:
         working-directory: server
       - name: Test camera aim ownership (native C, no game assets)
         run: node --test port/linux/tests/halo_aim_device_test.js
+      - name: Test keyboard crouch movement (native C, no game assets)
+        run: node --test port/linux/tests/halo_crouch_movement_test.js
       - name: Test browser JavaScript
         run: node --test port/web/tests/*.js
       - name: Validate hosting Worker syntax

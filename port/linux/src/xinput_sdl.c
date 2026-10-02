@@ -36,6 +36,7 @@ drive the controller.
 #include "sdl_platform.h"
 #include "port_config.h"
 #include "halo_aim_device.h"
+#include "halo_movement_source.h"
 
 #include <SDL3/SDL.h>
 #include <math.h>
@@ -89,6 +90,20 @@ static struct halo_aim_look_state aim_look_states[PORT_COUNT];
 static SDL_JoystickID aim_gamepad_ids[PORT_COUNT];
 static BOOL aim_gamepad_identity_known[PORT_COUNT];
 static BOOL aim_look_states_initialized = FALSE;
+/* Winning keyboard axes from this poll, never the last look device. */
+static unsigned keyboard_movement_axes[PORT_COUNT];
+
+unsigned halo_linux_keyboard_movement_axes(short gamepad_index)
+{
+	unsigned axes;
+
+	if (gamepad_index < 0 || gamepad_index >= PORT_COUNT)
+		return 0;
+	pthread_mutex_lock(&mouse_lock);
+	axes = keyboard_movement_axes[gamepad_index];
+	pthread_mutex_unlock(&mouse_lock);
+	return axes;
+}
 
 static void aim_look_states_initialize_locked(void)
 {
@@ -315,7 +330,7 @@ void test_input_hold_action(int hold)
 	test_input_holding_action = hold;
 }
 
-static void test_input_gamepad(XINPUT_GAMEPAD *pad)
+static int test_input_gamepad(XINPUT_GAMEPAD *pad)
 {
 	static int checked;
 	static int seed = -1;
@@ -332,13 +347,13 @@ static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 			seed = 0;
 	}
 	if (seed < 0)
-		return;
+		return FALSE;
 	if (test_input_holding_action)
 	{
 		/* (standing still, the button held from a second on) */
 		if (SDL_GetTicks() - test_input_holding_action_since >= 1000)
 			pad->bAnalogButtons[XINPUT_GAMEPAD_X] = 255;
-		return;
+		return FALSE;
 	}
 	t = (double)SDL_GetTicks() / 1000.0 + seed * 1.7;
 	pad->sThumbLY = (SHORT)(sin(t * 0.9) * 32000.0);
@@ -348,6 +363,7 @@ static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 		pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = 255;
 	if (fmod(t, 5.0) < 0.1)
 		pad->bAnalogButtons[XINPUT_GAMEPAD_A] = 255;
+	return TRUE; /* Synthetic movement replaces both physical left axes. */
 }
 
 static void wheel_update(void)
@@ -548,6 +564,7 @@ HANDLE WINAPI XInputOpen(PXPP_DEVICE_TYPE device_type, DWORD port, DWORD slot,
 		aim_look_states_initialize_locked();
 		aim_look_reset_port_locked((int)port);
 		aim_gamepad_identity_known[port] = FALSE;
+		keyboard_movement_axes[port] = 0;
 		pthread_mutex_unlock(&mouse_lock);
 		memset(&controllers[port], 0, sizeof(controllers[port]));
 		controllers[port].open = TRUE;
@@ -577,6 +594,7 @@ VOID WINAPI XInputClose(HANDLE device)
 			aim_look_states_initialize_locked();
 			aim_look_reset_port_locked(port);
 			aim_gamepad_identity_known[port] = FALSE;
+			keyboard_movement_axes[port] = 0;
 			pthread_mutex_unlock(&mouse_lock);
 			break;
 		}
@@ -602,6 +620,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 	int gamepad_index;
 	int count;
 	SDL_Gamepad *look_gamepad = NULL;
+	unsigned movement_axes = 0;
 
 	memset(state, 0, sizeof(*state));
 	if (port < 0)
@@ -611,12 +630,14 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 	if (port == 0)
 	{
 		struct platform_input_state input;
+		XINPUT_GAMEPAD keyboard = {0};
 
 		platform_input_read(&input, TRUE);
 		mouse_poll(&input);
 		wheel_update();
 		if (!console_is_active())
 			keyboard_gamepad(&input, &state->Gamepad);
+		keyboard = state->Gamepad;
 		if (count > 0)
 		{
 			look_gamepad = gamepads[0];
@@ -630,7 +651,15 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 			(input.mouse_dx != 0.0f || input.mouse_dy != 0.0f));
 		pthread_mutex_unlock(&mouse_lock);
 		/* Do not let synthetic network-test input change the physical device. */
-		test_input_gamepad(&state->Gamepad);
+		if (!test_input_gamepad(&state->Gamepad) && !input.ui_pointer)
+		{
+			/* The existing per-axis merge favors keyboard on equal magnitude.
+			 * Opposing keys, console input, and overridden axes contribute zero. */
+			if (keyboard.sThumbLX && keyboard.sThumbLX == state->Gamepad.sThumbLX)
+				movement_axes |= HALO_KEYBOARD_MOVEMENT_X;
+			if (keyboard.sThumbLY && keyboard.sThumbLY == state->Gamepad.sThumbLY)
+				movement_axes |= HALO_KEYBOARD_MOVEMENT_Y;
+		}
 	}
 	else
 	{
@@ -645,6 +674,9 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		pthread_mutex_unlock(&mouse_lock);
 	}
 
+	pthread_mutex_lock(&mouse_lock);
+	keyboard_movement_axes[port] = movement_axes;
+	pthread_mutex_unlock(&mouse_lock);
 	if (memcmp(&state->Gamepad, &controllers[port].previous, sizeof(state->Gamepad)))
 	{
 		controllers[port].packet_number++;
