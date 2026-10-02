@@ -4,7 +4,60 @@ Is Halo still fun when every multiplayer packet goes through a WebSocket relay
 instead of WebRTC? This note records the test setup, measurements and the
 GO/NO-GO.
 
-## Resume here (2026-10-01 evening)
+## Resume here (2026-10-02, Discord Activity)
+
+Branch `nkhoit-discord-activity` (from the spike branch) makes the hosted
+game run as a Discord Activity; [halo-server.md](halo-server.md#discord-activity)
+describes how. Deployed on forge (`halo-server` container rebuilt by name,
+same `.env`); the browser flow is unchanged for players. Verified locally in
+a Discord stand-in (a cross-site page embedding the Activity, Discord's CSP
+mirrored, the SDK replaced under `DEV_LOGIN`): cross-origin isolated,
+signed in, maps streamed with the partitioned cookie, two players in one
+instance played a match at 30 ticks/s, host leaving reported to the guest,
+fallback panel when isolation is unavailable, no CSP violations. Publicly:
+the launch document gets DIP plus the CSP, `activity.js` carries the SDK,
+maps and room status need a session, and relay sockets from
+`https://1555066217545605222.discordsays.com` are accepted (others 403).
+Not yet tried inside Discord itself; that needs the URL mapping change below.
+
+Activity decisions (coordinating chat, on the user's behalf):
+
+8. Launch detection by `frame_id` in the document's query, so the root
+   mapping can point at the site root and one build serves both.
+9. DIP only for the Activity document. COOP/COEP next to DIP was harmless in
+   a Chrome 154 cross-site iframe test (DIP alone and DIP+COOP/COEP isolated;
+   COOP/COEP alone did not), but Discord's Electron 148 was only proven with
+   DIP, so the Activity keeps exactly that.
+10. Inline scripts and handlers become same-origin files for both contexts
+    (Discord's CSP forbids inline scripts; one code path).
+11. The SDK is bundled by the server at start-up with esbuild, so no
+    generated file is committed and no CDN is needed.
+12. A separate partitioned `halo_activity` cookie rather than one cookie for
+    both contexts, so renewing either session never changes the other's
+    SameSite policy. Discord's access token stays on the server and
+    `authenticate` is not called.
+13. Room = HMAC(instance id) with the server secret; the lobby polls room
+    status (no invites), first host wins.
+14. `pagehide` leaves the room: a page parked in the back/forward cache
+    otherwise kept its socket and showed others a host that no longer played.
+
+Known gaps: the shell's UI images (`assets/ui/**`: map and mode cards,
+Spartan previews, controller art) are not in this repository, so every
+hosted page shows them broken; the game itself is unaffected. Behind Discord's
+proxy all players may share one address for the auth rate limit.
+
+Pending, needing the user: the Activity URL mapping (root `/` to
+`halo.runtimeexception.net`), Supported Platforms (Web and Desktop), then
+the in-Discord test with a second guild member. Earlier pending items: a
+subjective play check and the friends test; optional clumsy cross-check.
+
+Local Activity stand-in (session files `activity-harness/parent.mjs`):
+start the server with `PUBLIC_ORIGIN=http://localhost:8090` (and the
+development `.env`), run the stand-in on `127.0.0.1:8096`, open
+`http://127.0.0.1:8096/?user=Alice&instance=inst-1` and
+`...?user=Bob&instance=inst-1` in two Chrome profiles.
+
+### State before the Activity work (2026-10-01 evening)
 
 The runtime no longer uses Cloudflare. `server/` is one Node process that
 serves the page, the multiplayer maps, Discord login and the relay with room
@@ -20,8 +73,7 @@ Public hostname: `https://halo.runtimeexception.net`. On forge,
 (`58bb6d7a-2b1b-43bb-9abb-7a5eadcac383`, config `~/.cloudflared/halo.yml`)
 runs as `halo-cloudflared.service` and forwards to `http://127.0.0.1:8090`;
 the Discord OAuth redirect `https://halo.runtimeexception.net/auth/callback`
-is registered on the probe app. The Activity root URL mapping still points at
-the probe Worker.
+is registered on the probe app.
 
 Decisions taken by the coordinating chat on the user's behalf, with reasons:
 
@@ -44,23 +96,8 @@ Decisions taken by the coordinating chat on the user's behalf, with reasons:
    about 2 ms per hop. Kept on; `?relayBatch=0` turns it off.
 6. The server pings every socket every 30 s, because Cloudflare closes
    WebSockets idle for 100 s and a host alone in a lobby sends nothing.
-7. The page is served at `/` without redirects, because behind the Discord
-   Activity proxy the browser's path lacks the server's `/activity` prefix.
-
-Pending, needing the user:
-
-- `DISCORD_CLIENT_SECRET` and `DISCORD_GUILD_ID` in forge's
-  `~/halo-discord/server/.env` (placeholders now), then start the
-  `halo-server` container (command in the runbook) and smoke-test
-  `https://halo.runtimeexception.net/`.
-- Optional: repeat P1 with clumsy against the Node relay (needs UAC) to
-  cross-check the netem rig; netem already reproduced the Cloudflare numbers
-  on an equivalent path.
-- A subjective play check by a person, then the friends test.
-- Discord Activity client wiring (Embedded App SDK authorize, then
-  `POST /auth/activity`) and the URL mapping to
-  `halo.runtimeexception.net/activity`; the server side exists, the page does
-  not use it yet.
+7. The page is served at `/` without redirects, so every URL in it stays
+   relative behind any proxy mapping.
 
 Restart the local setup (PowerShell, repository root):
 
@@ -84,8 +121,9 @@ an empty `port\web\assets` directory, `server\.env`, and
 
 Forge (`ssh forge@forge.story-nessie.ts.net`): `~/halo-discord/{build,maps,server}`,
 image `halo-server`, network `halo-net`, netem script
-`~/halo-discord/halo-netem.sh` (container netns only). The test container is
-stopped; the user's production container will use the real `.env`.
+`~/halo-discord/halo-netem.sh` (container netns only). The production
+container `halo-server` runs with `~/halo-discord/server/.env` (command in
+the runbook).
 
 Superseded Cloudflare history follows; the measurement sections stay as
 recorded.

@@ -36,11 +36,11 @@ in [websocket-relay-spike.md](websocket-relay-spike.md).
   `/auth/session` call extends the session. Someone removed from the Discord
   server keeps access until they stay away longer than `TOKEN_TTL_SECONDS`
   (1 h), or until `TOKEN_SECRET` is rotated.
-- Discord Activity (not wired in the client yet): `POST /auth/activity` with
-  the Embedded App SDK's authorization code returns the Discord access token
-  plus a session, and sets a partitioned SameSite=None cookie; the Activity is
-  served under `/activity/` with `Document-Isolation-Policy` instead of
-  COOP/COEP.
+- The Discord Activity signs in through the Embedded App SDK instead (see
+  [Discord Activity](#discord-activity)) and keeps its session in a separate
+  `halo_activity` cookie: HttpOnly, SameSite=None, Secure and Partitioned,
+  as a cross-site iframe needs. `/auth/session` renews whichever cookie it
+  was given, so the browser and Activity sessions never overwrite each other.
 
 ## Inputs
 
@@ -118,16 +118,77 @@ Reuse the probe application (1555066217545605222) or create a new one at
 3. The Discord server whose members may play: Discord > User Settings >
    Advanced > Developer Mode on, then right-click the server icon > Copy
    Server ID, into `DISCORD_GUILD_ID`.
-4. Later, for the Activity: Activities > URL Mappings, prefix `/` to target
-   `halo.runtimeexception.net/activity`, and add
-   `EXTRA_ORIGINS=https://<application id>.discordsays.com` to `.env`.
-   (The probe app's root mapping still points at the probe Worker; changing
-   it retires the probe Activity.)
+4. Installation: install the app to the Discord server (guild install), not
+   to users. A user-installed app fails in servers with more than 25 members
+   with "User-installed Apps require verification to use activities in
+   servers with more than 25 members". The probe app is guild-installed to
+   server 657604704875970560.
+5. For the Activity: Activities > URL Mappings, root prefix `/` to target
+   `halo.runtimeexception.net` (the site root; Activity launches are told
+   apart by their `frame_id` query). The server allows the relay origin
+   `https://<DISCORD_CLIENT_ID>.discordsays.com` by itself.
 
 Production `.env` additions: `NODE_ENV=production`, `DEV_LOGIN=0`,
 `PUBLIC_ORIGIN=https://halo.runtimeexception.net`, a fresh `TOKEN_SECRET`
 (`openssl rand -base64 48`), and `TRUST_PROXY` to match the front end. On
 forge this file is `~/halo-discord/server/.env` (mode 600).
+
+## Discord Activity
+
+The same server and page run as an Activity. Discord loads the mapped root
+with `frame_id`, `instance_id` and friends in the query; that document gets:
+
+- `Document-Isolation-Policy: isolate-and-require-corp` and no COOP/COEP:
+  Discord's page is not isolated, so only DIP makes the frame
+  cross-origin isolated (threaded WebAssembly needs it). Every response is
+  CORP same-origin, which DIP requires of subresources and workers. In Chrome
+  154, adding COOP/COEP next to DIP in a cross-site iframe was harmless, but
+  the Activity keeps the set proven inside Discord's Electron client.
+- A Content-Security-Policy mirroring the one Discord's proxy enforces
+  (same-origin scripts, `'unsafe-eval'`, same-origin connections and
+  workers, no inline scripts), so a page that runs locally under it also runs
+  in Discord. The server serves the build's inline script and inline event
+  handlers as same-origin files (`halo-shell-0.js`, `halo-handlers.js`) for
+  both the Activity and the browser page.
+- `activity.js` instead of the browser login: the Embedded App SDK, bundled
+  by the server at start-up with its license (Discord's policy allows no
+  CDN). It completes the SDK handshake before anything heavy loads, checks
+  `crossOriginIsolated` (otherwise it explains and offers "Open Halo in the
+  browser" through `openExternalLink`), calls `authorize` (`identify`,
+  `guilds`, `prompt: none`), posts the code with the instance id to
+  `POST /auth/activity`, and only then loads the game. The server exchanges
+  the code without a redirect URI, as Discord's Activity examples do, checks
+  membership of `DISCORD_GUILD_ID`, and keeps Discord's access token to
+  itself; `authenticate` is not called because nothing needs it.
+- One room per Activity instance: `POST /auth/activity` returns the room id,
+  an HMAC of the instance id under `TOKEN_SECRET`, so a room id cannot be
+  chosen to land in someone's instance. The in-game lobby polls
+  `GET /v1/rooms/<id>` and offers to host when nobody does, or to join the
+  host; the first player to host wins (a second one is refused and returns to
+  the lobby). There are no invite links. When the host leaves, guests are
+  told "The host left or ended the game." and return to the lobby.
+
+Expectations and limits:
+
+- Works in the Discord desktop app and Discord in Chrome or Edge. Discord in
+  Firefox or Safari shows the fallback panel. Set Activities > Settings >
+  Supported Platforms to Web and Desktop only; the mobile clients are
+  untested and the game expects keyboard and mouse or a gamepad.
+- The first launch for a player shows Discord's consent prompt for
+  `identify` and `guilds`; later launches pass silently.
+- Behind Discord's proxy every player may reach the server from the same
+  address, so the auth rate limit (30 a minute per address) is shared;
+  raise `AUTH_RATE_LIMIT_PER_MINUTE` if launches start failing with 429.
+- `?netstats=1` cannot be added inside Discord; measure in the browser.
+
+Testing locally without Discord: with `DEV_LOGIN=1` the Activity page
+accepts a `dev_user` query parameter that replaces the SDK, and
+`POST /auth/activity` accepts `dev:<name>` codes. Run the server with
+`PUBLIC_ORIGIN=http://localhost:8090` (browsers accept Secure, partitioned
+cookies from `http://localhost`) and embed
+`http://localhost:8090/?frame_id=x&instance_id=<id>&dev_user=<name>` in an
+iframe on another site (for example a page on `http://127.0.0.1`). Two
+browser profiles with the same `instance_id` play one match.
 
 ## Expose it: Cloudflare Tunnel (named, locally managed)
 
