@@ -44,11 +44,15 @@ elements['online-mode'] = element({ options: [{ value: '0', textContent: 'Slayer
 const byId = id => elements[id] || (elements[id] = element());
 
 let roomHost = null;
+let gameState = 2;
+const intervals = [];
 let sessionStatus = [401, 200];
 let signIns = 0;
 const fetches = [];
 const configured = [];
 let relayOpened = 0;
+let disconnects = 0;
+const windowListeners = {};
 const timers = [];
 
 const settle = async () => { for (let index = 0; index < 10; index++) await new Promise(resolve => setImmediate(resolve)); };
@@ -93,7 +97,7 @@ const context = {
   },
   HaloWebTransport: {
     configure(options) { configured.push(options); },
-    disconnectAll() {},
+    disconnectAll() { disconnects++; },
     getLocalIdentifier: () => '020000000001',
     isSupported: () => true,
     openRelay() { relayOpened++; },
@@ -104,7 +108,7 @@ const context = {
   location: new URL(`https://123.discordsays.com/?frame_id=f1&instance_id=i-1`),
   Module: {
     _platform_web_online_get_error: () => 0,
-    _platform_web_online_get_state: () => 2,
+    _platform_web_online_get_state: () => gameState,
     _platform_web_online_host_configured: () => 1,
     _platform_web_online_request: () => 1,
     _platform_web_online_set_player_customization: () => 1,
@@ -116,9 +120,10 @@ const context = {
   btoa,
   crypto: globalThis.crypto,
   WebSocket: class {},
+  addEventListener(type, listener) { windowListeners[type] = listener; },
   clearInterval() {},
   clearTimeout() {},
-  setInterval: () => 1,
+  setInterval: callback => intervals.push(callback),
   setTimeout: (callback, milliseconds) => { if (!milliseconds || milliseconds <= 2000) timers.push(callback); return timers.length; },
 };
 context.window = context;
@@ -155,10 +160,17 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'online_client.js'), 
   assert.equal(guest.relay.auth.getToken(), 'session-token');
   assert(!fetches.some(url => /auth\/login/.test(url)), 'no OAuth redirect inside the Activity');
 
-  await context.HaloOnline.leave();
+  guest.onRelayPeer({ peerId: 'relay-020000000002', identifier: '020000000002', name: 'Alice', role: 'host' });
+  guest.onStateChange({ peerId: 'relay-020000000002', state: 'connected' });
+  gameState = 6;
+  intervals.forEach(callback => callback());
   roomHost = null;
+  gameState = 0;
+  intervals.forEach(callback => callback());
+  await settle();
   await tick();
   assert.equal(elements['online-dialog'].dataset.view, 'setup', 'leaving returns to the lobby');
+  assert.equal(elements['online-status'].textContent, 'The host left or ended the game.');
 
   timers.length = 0;
   await context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
@@ -168,6 +180,11 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'online_client.js'), 
   assert.equal(elements['invite-link'].value, 'Everyone in this Activity can join');
   assert.equal(elements['invite-copy'].hidden, true);
   assert.equal(timers.length, 0, 'the lobby stops polling while hosting');
+
+  const before = disconnects;
+  windowListeners.pagehide();
+  await settle();
+  assert(disconnects > before, 'leaving the page (or entering the back/forward cache) closes the room');
 
   console.log('online_client Activity lobby tests passed');
 })().catch(error => {

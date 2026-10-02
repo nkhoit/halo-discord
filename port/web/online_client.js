@@ -1012,7 +1012,8 @@
     elements.invite.hidden = false;
     if (elements.joinConfirm) elements.joinConfirm.hidden = true;
     if (elements.playerSidebar) elements.playerSidebar.hidden = false;
-    elements.inviteLink.value = session.inviteUrl || "";
+    elements.inviteLink.value = activity() ? "Everyone in this Activity can join" : (session.inviteUrl || "");
+    if (elements.copy) elements.copy.hidden = !!activity();
     /* Hosting setup is complete. The invite remains visible beside the game,
        so dismiss the wizard instead of replacing it with a third screen. */
     if (elements.dialog.open) elements.dialog.close();
@@ -1760,10 +1761,6 @@
         session.inviteCode = "room:" + session.room.id;
         session.inviteUrl = activity() ? "" : makeInviteUrl(session.inviteCode);
         showInvite();
-        if (activity()) {
-          elements.inviteLink.value = "Everyone in this Activity can join";
-          if (elements.copy) elements.copy.hidden = true;
-        }
       } else {
         await openSignalingRoom(operation, turnstileToken);
       }
@@ -1915,7 +1912,28 @@
         if (canvas) canvas.focus();
       }, 700);
     } else if (session.guestWasJoined && state === GAME_STATE.IDLE) {
-      leave(true);
+      /* Halo returns to its menu when the guest quits or when the host is
+         gone; the relay room tells the two apart. */
+      session.guestWasJoined = false;
+      relayRoomHasHost(session.room && session.room.id).then(function(hasHost) {
+        var message = hasHost === false ? "The host left or ended the game." : null;
+        if (message && activity()) activityLobby.notice = message;
+        return leave(true).then(function() {
+          if (message && !activity()) setStatus(message, "error");
+        });
+      });
+    }
+  }
+
+  /* Whether a relay room still has a host; null when unknown. */
+  async function relayRoomHasHost(roomId) {
+    if (!roomId || !relaySettings()) return null;
+    try {
+      var response = await fetch(relayEndpoint("v1/rooms/" + roomId), { credentials: "include", cache: "no-store" });
+      if (!response.ok) return null;
+      return !!(await response.json()).host;
+    } catch (error) {
+      return null;
     }
   }
 
@@ -1991,7 +2009,6 @@
         setBusy(false);
       }
       if (activity()) {
-        if (elements.copy) elements.copy.hidden = false;
         activityLobby.view = null;
         startActivityLobby();
       }
@@ -2197,6 +2214,13 @@
     if (session.pendingInvite) {
       showDialog();
       showJoinConfirmation(session.pendingInvite);
+    }
+    /* A page kept in the back/forward cache would otherwise hold its relay
+       socket open, leaving a host that no longer plays. */
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("pagehide", function() {
+        if (session.active) leave(false);
+      });
     }
   }
 
