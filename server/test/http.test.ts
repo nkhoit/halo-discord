@@ -59,6 +59,41 @@ describe("the page", () => {
   });
 });
 
+describe("the hosted page's UI", () => {
+  it("serves hosted.js and hosted.css, versioned, to both contexts", async () => {
+    for (const prefix of ["", "/activity"]) {
+      const page = await (await get(prefix + "/halo.html")).text();
+      const script = /src="hosted\.js\?v=([0-9a-f]{16})"/.exec(page);
+      const style = /href="hosted\.css\?v=([0-9a-f]{16})"/.exec(page);
+      expect(script, prefix).not.toBeNull();
+      expect(style, prefix).not.toBeNull();
+      expect(page).toContain('class="halo-hosted"');
+      const js = await get(`${prefix}/hosted.js?v=${script![1]}`);
+      expect(js.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(js.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(await js.text()).toContain("HaloHostedUI");
+      const css = await get(`${prefix}/hosted.css?v=${style![1]}`);
+      expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
+      expect(css.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+    }
+  });
+
+  it("serves the lobby's images to sessions only, privately", async () => {
+    expect((await get("/game-ui/maps/blood-gulch.png")).status).toBe(401);
+    const cookie = { Cookie: `halo_session=${token("1")}` };
+    const image = await get("/game-ui/maps/blood-gulch.png", cookie);
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/png");
+    expect(image.headers.get("cache-control")).toMatch(/^private/);
+    expect(await image.text()).toBe("map png");
+    expect((await get("/activity/game-ui/modes/slayer.png", cookie)).status).toBe(200);
+    expect((await get("/game-ui/maps/wizard.png", cookie)).status).toBe(404);
+    for (const path of ["/game-ui/secret.png", "/game-ui/maps/%2e%2e/secret.png", "/game-ui/maps/a10.png"]) {
+      expect([400, 404], path).toContain((await get(path, cookie)).status);
+    }
+  });
+});
+
 describe("maps", () => {
   it("need a session", async () => {
     expect((await get("/assets/maps/bloodgulch.map")).status).toBe(401);
@@ -306,9 +341,9 @@ describe("the Discord Activity", () => {
     const room = "room-status-0001";
     expect((await get(`/v1/rooms/${room}`)).status).toBe(401);
     const signedIn = { Cookie: `halo_session=${token("9")}` };
-    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: null, players: 0 });
+    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: null, players: 0, inMatch: false });
     const host = await join(server.base, room, "host", "user-h", "020000000001", { name: "Host Person" });
-    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: "Host Person", players: 1 });
+    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: "Host Person", players: 1, inMatch: false });
     host.socket.close();
     expect((await get("/v1/rooms/bad", signedIn)).status).toBe(404);
   });

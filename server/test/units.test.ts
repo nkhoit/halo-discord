@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import { loadConfig } from "../src/config.ts";
 import { joinBatch, sanitizeName, splitBatch } from "../src/protocol.ts";
-import { buildFile, contentVersion, hostedPage, LOGIN_SCRIPT, mapFile, parseRange } from "../src/static.ts";
+import { buildFile, contentVersion, gameImage,
+  hostedPage, LOGIN_SCRIPT, mapFile, parseRange } from "../src/static.ts";
 import { issueToken, verifyToken } from "../src/tokens.ts";
 import { PAGE } from "./harness.ts";
 
@@ -41,8 +42,10 @@ describe("the hosted page", () => {
     expect(html).toContain('<script src="activity.js"></script>');
     expect(html).not.toContain("halo-login.js");
     const pinned = hostedPage(PAGE, { clientId: "1555", publicOrigin: "https://halo.example", dev: false },
-      { app: "aaaa", activity: "bbbb", icons: { "favicon.ico": "cccc" } }).html;
+      { app: "aaaa", activity: "bbbb", icons: { "favicon.ico": "cccc" }, hostedScript: "dddd", hostedStyle: "eeee" }).html;
     expect(pinned).toContain('<meta name="halo-asset-version" content="aaaa">');
+    expect(pinned).toContain('<link rel="stylesheet" href="hosted.css?v=eeee"><script src="hosted.js?v=dddd"></script>');
+    expect(pinned.indexOf("hosted.js")).toBeLessThan(pinned.indexOf("activity.js"));
     expect(pinned).toContain('<script src="activity.js?v=bbbb"></script>');
     expect(pinned).toContain('href="favicon.ico?v=cccc"');
     expect(html).not.toContain("halo-activity-dev");
@@ -51,9 +54,28 @@ describe("the hosted page", () => {
     expect(quoted).toContain('<meta name="halo-activity-dev" content="1">');
   });
 
+  it("takes the hosted page's own UI in both contexts", () => {
+    for (const activity of [null, { clientId: "1555", publicOrigin: "https://halo.example", dev: false }]) {
+      const { html } = hostedPage("<!doctype html><html lang=en><body><script src=halo.js></script></body></html>", activity);
+      expect(html).toContain('<html lang=en class="halo-hosted">');
+      expect(html).toMatch(/<link rel="stylesheet" href="hosted\.css"><script src="hosted\.js"><\/script>/);
+    }
+  });
+
   it("refuses a page that does not load the game exactly once", () => {
     expect(() => hostedPage("<title>Halo</title>")).toThrow(/halo\.js/);
     expect(() => hostedPage('<script src=halo.js></script><script src="halo.js"></script>')).toThrow(/halo\.js/);
+  });
+});
+
+describe("the lobby's images", () => {
+  it("allows only the listed map previews and game type icons", () => {
+    expect(gameImage("game-ui/maps/blood-gulch.png")).toBe("maps/blood-gulch.png");
+    expect(gameImage("game-ui/modes/king-of-the-hill.png")).toBe("modes/king-of-the-hill.png");
+    for (const path of ["game-ui/maps/a10.png", "game-ui/modes/blood-gulch.png", "game-ui/maps/../secret.png",
+        "game-ui/maps/blood-gulch.jpg", "game-ui/secret.png", "game-ui/maps/Blood-Gulch.png", "game-ui/maps//wizard.png"]) {
+      expect(gameImage(path), path).toBeNull();
+    }
   });
 });
 
@@ -164,7 +186,7 @@ describe("the game loader", () => {
         addEventListener: (type: string, listener: () => void) => { listeners[type] = listener; },
       },
       location: { pathname: "/", search: "", hash: "", replace() {} },
-      fetch: async () => ({ status: 200, ok: true }),
+      fetch: async () => ({ status: 200, ok: true, json: async () => ({ user: { id: "7", name: "Chief" } }) }),
       console,
     };
     context.window = context;
@@ -181,6 +203,7 @@ describe("the game loader", () => {
     const module = (waiting.context.Module as { locateFile: (path: string, directory: string) => string });
     expect(module.locateFile("halo.wasm", "https://halo.example/")).toBe("https://halo.example/halo.wasm?v=abc123");
     expect(module.locateFile("other.data", "https://halo.example/")).toBe("https://halo.example/other.data");
+    expect(waiting.context.HaloHostedUser).toEqual({ id: "7", name: "Chief" });
     const ready = await run("complete");
     expect(ready.appended.map((element) => element.src)).toEqual(["halo.js?v=abc123"]);
   });

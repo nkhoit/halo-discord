@@ -1,6 +1,7 @@
 /* Configuration from the environment (see .env.example). */
 
 import { isIP } from "node:net";
+import { join } from "node:path";
 
 export interface Config {
   port: number;
@@ -11,6 +12,9 @@ export interface Config {
   extraOrigins: string[];
   buildDir: string;
   mapsDir: string;
+  /* Images the lobby shows, extracted from the player's own ui.map
+     (tools/web/extract-ui-images.mjs): maps/<slug>.png and modes/<slug>.png. */
+  uiDir: string;
   discord: { clientId: string; clientSecret: string; guildId: string } | null;
   tokenSecret: string;
   tokenTtlSeconds: number;
@@ -66,6 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .map((value) => new URL(value).origin),
     buildDir: required(env, "BUILD_DIR"),
     mapsDir: required(env, "MAPS_DIR"),
+    uiDir: env.UI_DIR?.trim() || join(required(env, "MAPS_DIR"), "ui"),
     discord,
     tokenSecret,
     tokenTtlSeconds: Number(env.TOKEN_TTL_SECONDS ?? 3600),
