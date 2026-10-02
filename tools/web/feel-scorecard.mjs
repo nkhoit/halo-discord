@@ -5,7 +5,8 @@
 //   freezes            frames over 33 / 50 / 100 ms per minute, and the longest frame gap (ms)
 //   fire               shots answering a press: p50 and worst-window p99 / max press-to-shot (ms),
 //                      presses no shot answered within a second
-//   hitConfirm         hits reported (clients): p50 and worst-window p99 / max report-to-host-damage (ms)
+//   hitConfirm         hits reported (clients): p50 and worst-window p99 / max report-to-host-damage (ms),
+//                      reports the host did not answer within a second
 //   remote             other players' per-tick correction distance p50 / worst-window p99 / max (world
 //                      units) and snaps over 1 unit per minute
 //   relayedInput       % of ticks run on the others' last input (no newer one), the longest run, % after
@@ -41,7 +42,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   let p = players.get(entry.user);
   if (!p) players.set(entry.user, p = { playing: false, startUntil: "", starts: 0, loadMax: 0, startMax: 0,
     startOver100: 0, seconds: 0, over: [0, 0, 0], freeze: 0, fire: [], fireP99: 0, fireMax: 0,
-    shots: 0, unanswered: 0, hit: [], hitP99: 0, hitMax: 0, hits: 0, remote: [], remoteP99: 0, remoteMax: 0,
+    shots: 0, unanswered: 0, unconfirmed: 0, hit: [], hitP99: 0, hitMax: 0, hits: 0, remote: [], remoteP99: 0, remoteMax: 0,
     remoteCorrections: 0, snaps: 0, ticks: 0, held: 0, heldRun: 0, bunched: 0, own: 0, ownMax: 0, aim: 0, seat: 0,
     rtt: [] });
   const seconds = stats.windowSeconds ?? 5;
@@ -75,6 +76,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     p.fireP99 = Math.max(p.fireP99, feel.fireP99Ms); p.fireMax = Math.max(p.fireMax, feel.fireMaxMs);
   }
   p.unanswered += feel.unansweredPresses ?? 0;
+  p.unconfirmed += feel.unconfirmedHits ?? 0;
   if (feel.hitConfirms) {
     p.hits += feel.hitConfirms; p.hit.push([feel.hitConfirmP50Ms, feel.hitConfirms]);
     p.hitP99 = Math.max(p.hitP99, feel.hitConfirmP99Ms); p.hitMax = Math.max(p.hitMax, feel.hitConfirmMaxMs);
@@ -101,7 +103,8 @@ for (const [user, p] of players) {
       over100PerMin: perMinute(p.over[2]), maxMs: round(p.freeze) },
     fire: { shots: p.shots, p50Ms: round(median(p.fire)), p99Ms: round(p.fireP99), maxMs: round(p.fireMax),
       unanswered: p.unanswered },
-    hitConfirm: { hits: p.hits, p50Ms: round(median(p.hit)), p99Ms: round(p.hitP99), maxMs: round(p.hitMax) },
+    hitConfirm: { hits: p.hits, p50Ms: round(median(p.hit)), p99Ms: round(p.hitP99), maxMs: round(p.hitMax),
+      unconfirmed: p.unconfirmed },
     remote: { corrections: p.remoteCorrections, p50: round(median(p.remote), 3), p99: round(p.remoteP99, 3),
       max: round(p.remoteMax, 2), snapsPerMin: perMinute(p.snaps) },
     relayedInput: clientTicks ? { heldPct: round(100 * p.held / clientTicks), longestRun: p.heldRun,

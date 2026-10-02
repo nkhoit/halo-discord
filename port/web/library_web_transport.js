@@ -455,6 +455,7 @@ addToLibrary({
           remoteCorrections: feel(9), remoteErrorP50: feel(10), remoteErrorP99: feel(11),
           remoteErrorMax: feel(12), remoteSnaps: feel(13),
           relayedHeldTicks: feel(14), relayedHeldRunMax: feel(15), relayedBunchedTicks: feel(16),
+          unconfirmedHits: feel(17),
         };
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {

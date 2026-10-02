@@ -241,6 +241,7 @@ static struct
 	} hits[WEB_FEEL_PENDING_HITS];
 	double hit_samples[WEB_FEEL_SAMPLES];
 	short hit_count;
+	long unconfirmed_hits;
 	double remote_samples[WEB_FEEL_SAMPLES];
 	short remote_count;
 	long remote_snaps;
@@ -310,6 +311,23 @@ void network_web_weapon_fired(
 	web_feel.press_time = 0.0;
 }
 
+/* reports the host did not answer within a second: refused, or dealt to
+nothing this machine has */
+static void web_feel_expire_hits(
+	double now)
+{
+	short index;
+
+	for (index = 0; index < WEB_FEEL_PENDING_HITS; index++)
+	{
+		if (web_feel.hits[index].time > 0.0 && now - web_feel.hits[index].time > 1000.0)
+		{
+			web_feel.unconfirmed_hits++;
+			web_feel.hits[index].time = 0.0;
+		}
+	}
+}
+
 /* (network_damage.c, a client) a hit on the object reported to the host */
 void network_web_hit_reported(
 	long object_index)
@@ -317,6 +335,7 @@ void network_web_hit_reported(
 	short index;
 	short free_index = NONE;
 
+	web_feel_expire_hits(emscripten_get_now());
 	for (index = 0; index < WEB_FEEL_PENDING_HITS; index++)
 	{
 		if (web_feel.hits[index].time > 0.0 && web_feel.hits[index].object_index == object_index)
@@ -331,24 +350,20 @@ void network_web_hit_reported(
 	}
 }
 
-/* (network_damage.c, a client) the host's damage to the object arrived */
+/* (network_damage.c, a client) the host's damage by this machine's player
+to the object arrived */
 void network_web_hit_confirmed(
 	long object_index)
 {
 	double now = emscripten_get_now();
 	short index;
 
+	web_feel_expire_hits(now);
 	for (index = 0; index < WEB_FEEL_PENDING_HITS; index++)
 	{
 		if (web_feel.hits[index].time > 0.0 && web_feel.hits[index].object_index == object_index)
 		{
 			web_feel_sample(web_feel.hit_samples, &web_feel.hit_count, now - web_feel.hits[index].time);
-			web_feel.hits[index].time = 0.0;
-		}
-		/* (a report the host did not deal, or dealt to nothing this machine
-		has: forgotten) */
-		else if (web_feel.hits[index].time > 0.0 && now - web_feel.hits[index].time > 2000.0)
-		{
 			web_feel.hits[index].time = 0.0;
 		}
 	}
@@ -385,10 +400,14 @@ press to shot p50, p99, max (ms), [4] presses no shot answered within a
 second; [5] hits confirmed, [6..8] report to the host's damage p50, p99,
 max (ms); [9] other players' corrections, [10..12] their distance p50, p99,
 max (world units), [13] those over a world unit; [14] ticks with no newer
-relayed input, [15] the longest run of them, [16] ticks after two or more */
+relayed input, [15] the longest run of them, [16] ticks after two or more,
+[17] hits reported that the host did not answer within a second */
 void network_distributed_web_feel(
-	double values[17])
+	double values[18])
 {
+	web_feel_expire_hits(emscripten_get_now());
+	values[17] = (double)web_feel.unconfirmed_hits;
+	web_feel.unconfirmed_hits = 0;
 	values[0] = web_feel.fire_count;
 	web_feel_take(web_feel.fire_samples, &web_feel.fire_count, &values[1]);
 	values[4] = (double)web_feel.unanswered_presses;

@@ -71,7 +71,7 @@ extern double platform_web_profile_take_callback_maximum(void);
 extern const double *platform_web_profile_take_frame_times(void);
 extern void xgpu_web_frame_statistics(double values[6]);
 /* (port/linux/game/network_distributed.c) */
-extern void network_distributed_web_feel(double values[17]);
+extern void network_distributed_web_feel(double values[18]);
 
 /* Local network statistics for ?netstats=1 (library_web_transport.js):
  * [0] ticks sent, [1] own units put back by the host, [2] the farthest of
@@ -97,14 +97,14 @@ extern void network_distributed_web_feel(double values[17]);
  * compiled in the background, [46] programs compiled so, [47] the longest
  * wait for one, [48] the longest interval between the worker's animation
  * frames, [49] the longest delay from one's timestamp to the game frame,
- * [50..66] shooting and the other players since the last read
+ * [50..67] shooting and the other players since the last read
  * (network_distributed_web_feel).
  * [28..38], [40] and [41] are since the last read; other counts
  * are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
 	static double first_draws_total;
-	static double values[67];
+	static double values[68];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;

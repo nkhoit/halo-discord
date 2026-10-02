@@ -770,7 +770,7 @@ void network_damage_handle_events(
 			continue;
 		damage_replayed_events++;
 #ifdef HALO_WEB
-		if (event->kind != _damage_event_player_effect)
+		if (event->kind != _damage_event_player_effect && distributed_player_is_local(damage.owner_player_index))
 			network_web_hit_confirmed(event->object_index);
 #endif
 		switch (event->kind)
