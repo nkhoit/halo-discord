@@ -2301,23 +2301,26 @@
     notice.hideTimer = global.setTimeout(function() { notice.hidden = true; }, 2000);
   }
 
-  /* the display's refresh rate from the median of 60 animation frames, then
-     the default cap unless one was chosen */
+  /* the display's refresh rate from 120 animation frames, then the default
+     cap unless one was chosen. A busy page misses frames, which only
+     lengthens intervals (the game loading at start-up made most of them
+     two frames long), so the rate is the 10th percentile's, and the faster
+     of this and any earlier estimate. */
   function estimateFrameCap() {
     if (typeof global.requestAnimationFrame !== "function") return;
     var times = [];
     var sample = function(time) {
       times.push(time);
-      if (times.length < 61) {
+      if (times.length < 121) {
         global.requestAnimationFrame(sample);
         return;
       }
       var intervals = [];
       for (var i = 1; i < times.length; i++) intervals.push(times[i] - times[i - 1]);
       intervals.sort(function(x, y) { return x - y; });
-      var middle = intervals[intervals.length >> 1];
-      if (!(middle > 0)) return;
-      frameCapAuto.refresh = 1000 / middle;
+      var short = intervals[Math.floor(intervals.length / 10)];
+      if (!(short > 0)) return;
+      frameCapAuto.refresh = Math.max(frameCapAuto.refresh, 1000 / short);
       if (storedFrameCap() === null && (frameCapAuto.active || frameCap() === 0)) {
         setFrameCap(defaultFrameCap(frameCapAuto.refresh), "auto");
       }
@@ -2334,7 +2337,11 @@
     var stored = storedFrameCap();
     if (requested > 0) setFrameCap(requested, "page");
     else if (stored !== null) setFrameCap(stored, "stored");
-    else estimateFrameCap();
+    else {
+      estimateFrameCap();
+      /* (again once start-up's work is done) */
+      global.setTimeout(estimateFrameCap, 15000);
+    }
     if (typeof global.addEventListener === "function") {
       global.addEventListener("keydown", function(event) {
         if (event.key !== "F8" || event.repeat) return;

@@ -21,7 +21,7 @@ function element() {
   };
 }
 
-function load({ refreshHz, stored, search = '' }) {
+function load({ refreshHz, stored, search = '', interval }) {
   const elements = {};
   const storage = new Map(stored === undefined ? [] : [['halo-frame-cap', String(stored)]]);
   const listeners = {};
@@ -68,8 +68,12 @@ function load({ refreshHz, stored, search = '' }) {
   } catch (error) {
     /* (the rest of the lobby needs a fuller page; the cap is set up first) */
   }
-  /* 61 animation frames at the display's rate */
-  for (let i = 0; i <= 60 && frames.length; i++) frames.shift()(i * 1000 / refreshHz);
+  /* animation frames at the display's rate (or the given intervals) */
+  let time = 0;
+  for (let i = 0; i <= 120 && frames.length; i++) {
+    frames.shift()(time);
+    time += interval ? interval(i) : 1000 / refreshHz;
+  }
   return { context, storage, caps, listeners, cap: () => cap };
 }
 
@@ -86,6 +90,10 @@ assert.equal(defaultFrameCap(200), 100);
 let page = load({ refreshHz: 240 });
 assert.equal(page.cap(), 120);
 assert.equal(page.storage.has('halo-frame-cap'), false);
+
+/* a busy start-up that missed most frames still finds 240 Hz */
+page = load({ refreshHz: 240, interval: i => (i % 5 ? 2 : 1) * 1000 / 240 });
+assert.equal(page.cap(), 120);
 
 /* F8 cycles from there and keeps the choice */
 page.listeners.keydown({ key: 'F8', repeat: false });
