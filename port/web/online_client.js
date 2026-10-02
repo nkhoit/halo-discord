@@ -426,6 +426,8 @@
       elements.description.textContent = "Join the game.";
       if (elements.joinSummary) elements.joinSummary.textContent = summary.host +
         " is hosting in this Activity. Choose your name and color, then join.";
+      /* Brings the button into view in a short Activity frame; Enter joins. */
+      if (elements.joinProfile) elements.joinProfile.focus();
     } else {
       showSetup();
       elements.description.textContent =
@@ -2193,6 +2195,14 @@
       }
     };
     if (elements.playerName) elements.playerName.addEventListener("input", updateProfilePreview);
+    if (elements.playerName) {
+      elements.playerName.addEventListener("keydown", function(event) {
+        if (event.key !== "Enter" || !elements.dialog || elements.dialog.dataset.view !== "join" ||
+            !elements.joinProfile || elements.joinProfile.disabled) return;
+        event.preventDefault();
+        elements.joinProfile.click();
+      });
+    }
     if (elements.styleOptions) elements.styleOptions.addEventListener("change", updateProfilePreview);
     elements.copy.addEventListener("click", function() {
       copyInvite().catch(function() {

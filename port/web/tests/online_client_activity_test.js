@@ -24,7 +24,8 @@ function element(overrides) {
     addEventListener(type, listener) { listeners[type] = listener; },
     dispatchEvent(event) { if (listeners[event.type]) listeners[event.type](event); },
     close() { this.open = false; },
-    focus() {},
+    focus() { this.focused = true; },
+    click() { if (listeners.click) listeners.click(); },
     removeAttribute(name) { delete this[name]; },
     select() {},
     setAttribute(name, value) { this[name] = String(value); },
@@ -149,8 +150,10 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'online_client.js'), 
   assert.equal(elements['online-dialog'].dataset.view, 'join', 'a host appeared, so offer joining');
   assert.match(elements['online-join-summary'].textContent, /^Alice is hosting/);
 
+  assert.equal(elements['online-join-profile'].focused, true, 'the join button is focused, so it is in view and Enter works');
+
   timers.length = 0;
-  elements['online-join-profile'].listeners.click();
+  elements['online-player-name'].listeners.keydown({ key: 'Enter', preventDefault() {} });
   await settle();
   assert.equal(signIns, 1, 'a 401 signs in again through the Discord SDK');
   assert.equal(relayOpened, 1);

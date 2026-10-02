@@ -1259,6 +1259,15 @@
     @media (prefers-reduced-motion: reduce) {
       .loading-orbit::before { animation-duration: 2.5s; }
     }
+
+    /* Short screens, such as a Discord Activity docked beside a call: the
+       Spartan preview must not push the join and host buttons out of view. */
+    @media (max-height: 760px) {
+      .spartan-preview { height: 8rem; }
+    }
+    @media (max-height: 600px) {
+      .spartan-preview { display: none; }
+    }
     @media (max-width: 860px) {
       #game-frame {
         left: 50%;
