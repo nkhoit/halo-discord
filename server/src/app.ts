@@ -2,7 +2,7 @@
    on one origin. */
 
 import { readFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 
@@ -20,7 +20,18 @@ import {
   parseSocketQuery,
 } from "./protocol.ts";
 import { consoleLog, type Log, Relay } from "./relay.ts";
-import { buildFile, type Context, hostedPage, isolationHeaders, mapFile, serveFile } from "./static.ts";
+import { activityBundle } from "./bundle.ts";
+import {
+  ACTIVITY_CSP,
+  buildFile,
+  type Context,
+  HANDLERS_SCRIPT,
+  hostedPage,
+  isolationHeaders,
+  LOGIN_SCRIPT,
+  mapFile,
+  serveFile,
+} from "./static.ts";
 import { verifyToken } from "./tokens.ts";
 
 export const AUTH_DEADLINE_MILLISECONDS = 5000;
@@ -32,12 +43,28 @@ export interface App {
   sockets: WebSocketServer;
 }
 
-/* "/activity/..." serves the same site for the Discord Activity's proxy. */
-function splitContext(pathname: string): { context: Context; path: string } {
+/* The Activity context: Discord launches an Activity by loading the mapped
+   root with frame_id, instance_id and so on in the query; a URL mapping may
+   also target the /activity prefix. */
+function splitContext(url: URL): { context: Context; path: string } {
+  const { pathname } = url;
   if (pathname === "/activity" || pathname.startsWith("/activity/")) {
     return { context: "activity", path: pathname.slice("/activity".length) || "/" };
   }
+  if ((pathname === "/" || pathname === "/halo.html") && url.searchParams.has("frame_id")) {
+    return { context: "activity", path: pathname };
+  }
   return { context: "page", path: pathname };
+}
+
+const JAVASCRIPT = "text/javascript; charset=utf-8";
+
+function sendBody(request: IncomingMessage, response: ServerResponse, headers: Record<string, string>,
+    type: string, body: string): void {
+  const bytes = Buffer.from(body);
+  response.writeHead(200, { ...headers, "Content-Type": type, "Cache-Control": "no-cache",
+    "Content-Length": String(bytes.length) });
+  response.end(request.method === "HEAD" ? undefined : bytes);
 }
 
 export function createApp(config: Config, discord: DiscordApi | null, log: Log = consoleLog,
@@ -45,11 +72,27 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
   const auth = new Auth(config, discord);
   const relay = new Relay(config.maxRooms, log);
   const origins = new Set([config.publicOrigin, ...config.extraOrigins]);
+  /* Discord's proxy origin for this application's Activity. */
+  if (config.discord) origins.add(`https://${config.discord.clientId}.discordsays.com`);
+  const activityPage = {
+    clientId: config.discord?.clientId ?? "development",
+    publicOrigin: config.publicOrigin,
+    dev: config.devLogin,
+  };
+
+  async function source(): Promise<string | null> {
+    try {
+      return await readFile(join(config.buildDir, "halo.html"), "utf8");
+    } catch {
+      return null;
+    }
+  }
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://relay.invalid");
-    const { context, path } = splitContext(url.pathname);
+    const { context, path } = splitContext(url);
     const headers = isolationHeaders(context);
+    const notFound = () => response.writeHead(404, { ...headers, "Content-Type": "text/plain" }).end("not found");
     try {
       if (path === "/healthz") {
         response.writeHead(200, { "Content-Type": "text/plain" }).end("ok");
@@ -60,10 +103,30 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         response.writeHead(405, { Allow: "GET, HEAD" }).end();
         return;
       }
-      /* "/" serves the page itself rather than redirecting: behind the Discord
-         Activity proxy the browser's path differs from this server's (the
-         proxy adds /activity), so only relative URLs are correct in both. */
+      const room = /^\/v1\/rooms\/([^/]+)$/.exec(path);
+      if (room) {
+        if (!ROOM_ID_PATTERN.test(room[1]!)) return notFound();
+        if (!requestSession(config, request)) {
+          response.writeHead(401, { ...headers, "Content-Type": "text/plain" }).end("login required");
+          return;
+        }
+        response.writeHead(200, { ...headers, "Content-Type": "application/json", "Cache-Control": "no-store" })
+          .end(JSON.stringify(relay.summary(room[1]!)));
+        return;
+      }
+      /* "/" serves the page itself rather than redirecting, so every URL in
+         it stays relative and works behind any proxy mapping. */
       const relative = path === "/" ? "halo.html" : decodeURIComponent(path.slice(1));
+      if (relative === "halo-login.js") return sendBody(request, response, headers, JAVASCRIPT, LOGIN_SCRIPT);
+      if (relative === "halo-handlers.js") return sendBody(request, response, headers, JAVASCRIPT, HANDLERS_SCRIPT);
+      if (relative === "activity.js") return sendBody(request, response, headers, JAVASCRIPT, await activityBundle());
+      const shell = /^halo-shell-(\d{1,2})\.js$/.exec(relative);
+      if (shell) {
+        const page = await source();
+        const script = page === null ? undefined : hostedPage(page).scripts[Number(shell[1])];
+        if (script === undefined) return notFound();
+        return sendBody(request, response, headers, JAVASCRIPT, script);
+      }
       const map = mapFile(relative);
       if (map) {
         if (!requestSession(config, request)) {
@@ -76,18 +139,12 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       }
       const build = buildFile(relative);
       if (build?.file === "halo.html") {
-        let source: string;
-        try {
-          source = await readFile(join(config.buildDir, build.file), "utf8");
-        } catch {
-          response.writeHead(404, { ...headers, "Content-Type": "text/plain" }).end("not found");
-          return;
-        }
-        const page = Buffer.from(hostedPage(source));
-        response.writeHead(200, { ...headers, "Content-Type": build.type, "Cache-Control": "no-cache",
-          "Content-Length": String(page.length) });
-        response.end(request.method === "HEAD" ? undefined : page);
-        return;
+        const page = await source();
+        if (page === null) return notFound();
+        const activity = context === "activity";
+        const { html } = hostedPage(page, activity ? activityPage : null);
+        return sendBody(request, response,
+          activity ? { ...headers, "Content-Security-Policy": ACTIVITY_CSP } : headers, build.type, html);
       }
       if (build) {
         await serveFile(request, response, config.buildDir, build.file, build.type,
@@ -108,7 +165,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       stream.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
     const url = new URL(request.url ?? "/", "http://relay.invalid");
-    const match = /^\/v1\/rooms\/([^/]+)\/ws$/.exec(splitContext(url.pathname).path);
+    const match = /^\/v1\/rooms\/([^/]+)\/ws$/.exec(splitContext(url).path);
     if (!match) return reject(404, "Not Found");
     const roomId = match[1]!;
     const query = parseSocketQuery(url);

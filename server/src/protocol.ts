@@ -53,6 +53,8 @@ const SOCKET_KINDS: Record<string, SocketKind> = { both: "both", r: "reliable", 
 export const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 export const IDENTIFIER_PATTERN = /^[0-9a-f]{12}$/;
 export const BUILD_PATTERN = /^[A-Za-z0-9._-]{1,96}$/;
+/* A Discord Activity instance id, e.g. i-<snowflake>-gc-<guild>-<channel>. */
+export const INSTANCE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function parseSocketQuery(url: URL): { role: Role; kind: SocketKind } | null {
   const role = url.searchParams.get("role");

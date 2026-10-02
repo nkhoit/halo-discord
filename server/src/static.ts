@@ -27,7 +27,9 @@ const UI_TYPES: Record<string, string> = {
 };
 
 /* "page": a normal top-level page, isolated with COOP/COEP. "activity": the
-   Discord Activity iframe, where only Document-Isolation-Policy works. */
+   Discord Activity iframe, where only Document-Isolation-Policy works (the
+   embedding Discord page is not isolated). Every response is
+   CORP same-origin, which both require of subresources and workers. */
 export type Context = "page" | "activity";
 
 export function isolationHeaders(context: Context): Record<string, string> {
@@ -40,6 +42,22 @@ export function isolationHeaders(context: Context): Record<string, string> {
     { ...common, "Document-Isolation-Policy": "isolate-and-require-corp" } :
     { ...common, "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" };
 }
+
+/* The Activity page's own policy, mirroring what Discord's proxy enforces
+   (no inline scripts, same-origin connections and workers), so a page that
+   runs locally under it also runs inside Discord. */
+export const ACTIVITY_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-eval' blob:",
+  "style-src 'self' 'unsafe-inline' blob:",
+  "img-src 'self' blob: data:",
+  "font-src 'self' data:",
+  "connect-src 'self' data: blob:",
+  "media-src 'self' blob: data:",
+  "worker-src 'self' blob:",
+  "child-src 'self' blob:",
+  "frame-src 'self'",
+].join("; ");
 
 /* The build file for a request path relative to the site root, or null. */
 export function buildFile(path: string): { file: string; type: string } | null {
@@ -64,25 +82,70 @@ function scriptPattern(source: string): RegExp {
 
 /* Gameplay and rooms go through this server, so the hosted page drops the
    signaling, relay and Turnstile settings and the service-worker isolation
-   shim (this server sends the isolation headers). The game's first request
-   is a map, so it starts only once a session exists; otherwise the visitor
-   logs in and returns to the same address, invite fragment included. */
-const LOADER = `<meta name="halo-transport" content="relay-rooms"><script>` +
+   shim (this server sends the isolation headers). Inline scripts and inline
+   event handlers move into same-origin files, because Discord's policy for
+   Activities allows neither. The game's first request is a map, so it starts
+   only once a session exists: a browser checks its session and otherwise
+   logs in and returns to the same address, invite fragment included; the
+   Activity signs in through the Discord SDK first (activity.js). */
+export const LOGIN_SCRIPT =
   `fetch("auth/session",{credentials:"same-origin",cache:"no-store"}).then(function(r){` +
   `if(r.status===401){location.replace("auth/login?return="+encodeURIComponent(location.pathname+location.search+location.hash));return}` +
   `if(!r.ok)throw new Error("session "+r.status);` +
   `var s=document.createElement("script");s.src="halo.js";document.head.appendChild(s)})` +
-  `.catch(function(e){console.error("Halo could not start:",e)})</script>`;
+  `.catch(function(e){console.error("Halo could not start:",e)});\n`;
 
-export function hostedPage(page: string): string {
-  for (const name of ["halo-signaling-url", "halo-relay-url", "halo-turnstile-sitekey", "halo-transport"]) {
+/* Binds handlers that were inline attributes (data-halo-on<event>). */
+export const HANDLERS_SCRIPT =
+  `document.querySelectorAll("*").forEach(function(e){Array.prototype.slice.call(e.attributes).forEach(function(a){` +
+  `if(a.name.indexOf("data-halo-on")===0)e.addEventListener(a.name.slice(12),new Function("event",a.value))})});\n`;
+
+export interface HostedPage {
+  html: string;
+  /* Former inline scripts, served as halo-shell-<index>.js. */
+  scripts: string[];
+}
+
+export interface ActivityPageOptions {
+  clientId: string;
+  publicOrigin: string;
+  /* A local test page may stand in for the Discord SDK (DEV_LOGIN only). */
+  dev: boolean;
+}
+
+function attribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+export function hostedPage(page: string, activity: ActivityPageOptions | null = null): HostedPage {
+  for (const name of ["halo-signaling-url", "halo-relay-url", "halo-turnstile-sitekey", "halo-transport",
+      "halo-activity", "halo-activity-dev", "halo-public-origin"]) {
     page = page.replace(metaPattern(name), "");
   }
   page = page.replace(scriptPattern("coi-serviceworker\\.js"), "");
   page = page.replace(scriptPattern("https://challenges\\.cloudflare\\.com/"), "");
   const game = scriptPattern("halo\\.js(?=[\"'\\s>])");
   if ((page.match(game) ?? []).length !== 1) throw new Error("halo.html does not load halo.js exactly once");
-  return page.replace(game, LOADER);
+  const scripts: string[] = [];
+  page = page.replace(/<script>([\s\S]*?)<\/script>/g, (_, content: string) => {
+    scripts.push(content);
+    return `<script src="halo-shell-${scripts.length - 1}.js"></script>`;
+  });
+  let handlers = 0;
+  page = page.replace(/<[a-zA-Z][^>]*>/g, (tag) => tag.replace(/(\s)on([a-z]+)=/g, (_, space: string, event: string) => {
+    handlers++;
+    return `${space}data-halo-on${event}=`;
+  }));
+  const loader = activity ?
+    `<meta name="halo-transport" content="relay-rooms">` +
+    `<meta name="halo-activity" content="${attribute(activity.clientId)}">` +
+    `<meta name="halo-public-origin" content="${attribute(activity.publicOrigin)}">` +
+    (activity.dev ? `<meta name="halo-activity-dev" content="1">` : "") +
+    `<script src="activity.js"></script>` :
+    `<meta name="halo-transport" content="relay-rooms"><script src="halo-login.js"></script>`;
+  page = page.replace(game, loader);
+  if (handlers) page += `<script src="halo-handlers.js"></script>`;
+  return { html: page, scripts };
 }
 
 export function parseRange(header: string | undefined, size: number):

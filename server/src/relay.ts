@@ -153,6 +153,21 @@ export class Relay {
     if (carries(member.kind, true)) this.announce(room, member, "peer-up", socket);
   }
 
+  /* Who is in a room, for a lobby that has to choose between hosting and
+     joining: the host's display name, if any, and the number of players. */
+  summary(roomId: string): { host: string | null; players: number } {
+    const room = this.rooms.get(roomId);
+    if (!room) return { host: null, players: 0 };
+    let host: string | null = null;
+    const players = new Set<string>();
+    for (const member of room.members.values()) {
+      if (!carries(member.kind, true)) continue;
+      players.add(member.id);
+      if (member.role === "host") host = member.name;
+    }
+    return { host, players: players.size };
+  }
+
   private refuse(socket: WebSocket, roomId: string, joining: Omit<Member, "since">, reason: string): void {
     this.log({ event: "refuse", room: roomId.slice(0, 8), user: joining.user, id: joining.id, reason });
     close(socket, CloseCode.Refused, reason);

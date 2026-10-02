@@ -12,6 +12,8 @@
     "check": "tsc --noEmit && vitest run"
   },
   "dependencies": {
+    "@discord/embedded-app-sdk": "2.5.0",
+    "esbuild": "0.28.2",
     "ws": "8.18.3"
   },
   "devDependencies": {

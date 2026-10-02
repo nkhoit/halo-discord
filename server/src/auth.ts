@@ -1,20 +1,23 @@
 /* Discord login. A browser signs in with OAuth2 (redirect flow); the Discord
-   Activity will exchange an Embedded App SDK code instead. Either way the
+   Activity exchanges an Embedded App SDK code instead. Either way the
    server checks guild membership and issues a short-lived session token,
    which also travels as an HttpOnly cookie so the game's map requests (made
-   from pthread workers) carry it without the token ever entering a URL. */
+   from pthread workers) carry it without the token ever entering a URL. The
+   Activity runs in a cross-site iframe, so its session uses its own cookie,
+   partitioned and SameSite=None; a top-level page keeps a SameSite=Lax one. */
 
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Config } from "./config.ts";
 import type { DiscordApi, DiscordUser } from "./discord.ts";
-import { sanitizeName } from "./protocol.ts";
+import { INSTANCE_ID_PATTERN, sanitizeName } from "./protocol.ts";
 import { issueToken, type Session, verifyToken } from "./tokens.ts";
 
 export const SESSION_COOKIE = "halo_session";
+export const ACTIVITY_COOKIE = "halo_activity";
 const STATE_COOKIE = "halo_oauth";
-const DEFAULT_RETURN = "/halo.html";
+const DEFAULT_RETURN = "/";
 
 export function parseCookies(header: string | undefined): Record<string, string> {
   const cookies: Record<string, string> = {};
@@ -25,10 +28,29 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return cookies;
 }
 
-/* The session from the cookie or an Authorization: Bearer header. */
-export function requestSession(config: Config, request: IncomingMessage): Session | null {
+/* The session from an Authorization header or either cookie, and whether it
+   came from the Activity's cookie. */
+function findSession(config: Config, request: IncomingMessage): { session: Session; activity: boolean } | null {
   const bearer = /^Bearer (\S+)$/.exec(request.headers.authorization ?? "")?.[1];
-  return verifyToken(config.tokenSecret, bearer ?? parseCookies(request.headers.cookie)[SESSION_COOKIE]);
+  if (bearer) {
+    const session = verifyToken(config.tokenSecret, bearer);
+    return session ? { session, activity: false } : null;
+  }
+  const cookies = parseCookies(request.headers.cookie);
+  const activity = verifyToken(config.tokenSecret, cookies[ACTIVITY_COOKIE]);
+  if (activity) return { session: activity, activity: true };
+  const page = verifyToken(config.tokenSecret, cookies[SESSION_COOKIE]);
+  return page ? { session: page, activity: false } : null;
+}
+
+export function requestSession(config: Config, request: IncomingMessage): Session | null {
+  return findSession(config, request)?.session ?? null;
+}
+
+/* The relay room of a Discord Activity instance, derived with the server's
+   secret so nobody can pick a room id that lands in someone's instance. */
+export function activityRoomId(secret: string, instanceId: string): string {
+  return createHmac("sha256", secret).update(`halo-activity-room\0${instanceId}`).digest("base64url").slice(0, 22);
 }
 
 /* Only a same-site path, so a login cannot redirect anywhere else. */
@@ -42,16 +64,22 @@ export function safeReturnPath(value: string | null | undefined): string {
 function cookie(config: Config, name: string, value: string, options: {
   maxAge: number; path?: string; partitioned?: boolean;
 }): string {
-  const secure = config.publicOrigin.startsWith("https:");
+  const origin = new URL(config.publicOrigin);
+  const https = origin.protocol === "https:";
   const parts = [`${name}=${value}`, `Path=${options.path ?? "/"}`, `Max-Age=${options.maxAge}`, "HttpOnly"];
   /* The Activity runs in a cross-site iframe: its cookie must be
-     SameSite=None and partitioned to that embedding. */
-  if (options.partitioned && secure) parts.push("SameSite=None", "Secure", "Partitioned");
-  else parts.push("SameSite=Lax", ...(secure ? ["Secure"] : []));
+     SameSite=None, Secure and partitioned to that embedding. Browsers accept
+     Secure cookies from http://localhost, which local Activity tests use. */
+  if (options.partitioned && (https || origin.hostname === "localhost")) {
+    parts.push("SameSite=None", "Secure", "Partitioned");
+  } else {
+    parts.push("SameSite=Lax", ...(https ? ["Secure"] : []));
+  }
   return parts.join("; ");
 }
 
-function json(response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+function json(response: ServerResponse, status: number, body: unknown,
+    headers: Record<string, string | string[]> = {}): void {
   response.writeHead(status, { ...headers, "Content-Type": "application/json", "Cache-Control": "no-store" })
     .end(JSON.stringify(body));
 }
@@ -182,43 +210,60 @@ export class Auth {
     }).end();
   }
 
-  /* Renews a valid session: the page keeps its token fresh for relay
-     reconnects, and gets a 401 when it has to log in. */
+  /* Renews a valid session in the cookie it came from: the page keeps its
+     token fresh for relay reconnects, and gets a 401 when it has to log in. */
   private session(request: IncomingMessage, response: ServerResponse): void {
-    const current = requestSession(this.config, request);
+    const current = findSession(this.config, request);
     if (!current) return json(response, 401, { error: "login required", loginUrl: "/auth/login" });
-    const { token, session } = issueToken(this.config.tokenSecret, current.sub, current.name,
+    const { token, session } = issueToken(this.config.tokenSecret, current.session.sub, current.session.name,
       this.config.tokenTtlSeconds);
     json(response, 200, { token, user: { id: session.sub, name: session.name }, expiresAt: session.exp }, {
-      "Set-Cookie": cookie(this.config, SESSION_COOKIE, token, { maxAge: this.config.tokenTtlSeconds }),
+      "Set-Cookie": cookie(this.config, current.activity ? ACTIVITY_COOKIE : SESSION_COOKIE, token,
+        { maxAge: this.config.tokenTtlSeconds, partitioned: current.activity }),
     });
   }
 
   private logout(response: ServerResponse): void {
-    json(response, 200, {}, { "Set-Cookie": cookie(this.config, SESSION_COOKIE, "", { maxAge: 0 }) });
+    json(response, 200, {}, { "Set-Cookie": [
+      cookie(this.config, SESSION_COOKIE, "", { maxAge: 0 }),
+      cookie(this.config, ACTIVITY_COOKIE, "", { maxAge: 0, partitioned: true }),
+    ] });
   }
 
-  /* The Discord Activity: the Embedded App SDK's authorize() gives a code;
-     the Activity needs Discord's access token for authenticate() and ours
-     for the relay and maps. */
+  /* The Discord Activity: the Embedded App SDK's authorize() gives a code,
+     exchanged here like Discord's Activity examples (no redirect URI). The
+     Discord access token stays on the server; the Activity gets our session
+     and, given its instance id, the instance's relay room. Under DEV_LOGIN a
+     "dev:<name>" code signs in without Discord, for local tests. */
   private async activity(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (!this.config.discord || !this.discord) return json(response, 404, { error: "not configured" });
     const body = await readJson(request);
-    const code = body && typeof body === "object" ? (body as { code?: unknown }).code : undefined;
+    const fields = body && typeof body === "object" ? body as { code?: unknown; instanceId?: unknown } : {};
+    const { code, instanceId } = fields;
     if (typeof code !== "string" || !code || code.length > 512) return json(response, 400, { error: "code required" });
-    const accessToken = await this.discord.exchangeCode(code);
-    const user = await this.discord.getUser(accessToken);
-    if (!await this.discord.isGuildMember(accessToken, this.config.discord.guildId)) {
-      return json(response, 403, { error: "not a member of the server" });
+    if (instanceId !== undefined && (typeof instanceId !== "string" || !INSTANCE_ID_PATTERN.test(instanceId))) {
+      return json(response, 400, { error: "invalid instance" });
     }
-    const { token, session } = this.issue(user);
+    let issued: { token: string; session: Session };
+    if (this.config.devLogin && code.startsWith("dev:")) {
+      const name = sanitizeName(code.slice(4));
+      issued = issueToken(this.config.tokenSecret, `dev:${name}`, name, this.config.tokenTtlSeconds);
+    } else {
+      if (!this.config.discord || !this.discord) return json(response, 404, { error: "not configured" });
+      const accessToken = await this.discord.exchangeCode(code);
+      const user = await this.discord.getUser(accessToken);
+      if (!await this.discord.isGuildMember(accessToken, this.config.discord.guildId)) {
+        return json(response, 403, { error: "not a member of the server" });
+      }
+      issued = this.issue(user);
+    }
+    const { token, session } = issued;
     json(response, 200, {
-      access_token: accessToken,
       token,
       user: { id: session.sub, name: session.name },
       expiresAt: session.exp,
+      ...(instanceId ? { roomId: activityRoomId(this.config.tokenSecret, instanceId) } : {}),
     }, {
-      "Set-Cookie": cookie(this.config, SESSION_COOKIE, token,
+      "Set-Cookie": cookie(this.config, ACTIVITY_COOKIE, token,
         { maxAge: this.config.tokenTtlSeconds, partitioned: true }),
     });
   }

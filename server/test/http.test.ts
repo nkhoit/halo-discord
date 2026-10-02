@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { type Running, start, token } from "./harness.ts";
+import { activityRoomId } from "../src/auth.ts";
+import { join, open, type Running, SECRET, start, token } from "./harness.ts";
 
 let server: Running;
 beforeEach(async () => { server = await start(); });
@@ -118,7 +119,7 @@ describe("Discord login", () => {
     expect((await get("/auth/callback?code=out&state=x")).status).toBe(400);
     server.discord.users.set("ok", { id: "2", username: "friend", globalName: null });
     for (const target of ["//evil.example/", "https://evil.example/", "/\\evil.example", "evil"]) {
-      expect((await login("ok", target)).headers.get("location"), target).toBe("/halo.html");
+      expect((await login("ok", target)).headers.get("location"), target).toBe("/");
     }
   });
 
@@ -126,18 +127,6 @@ describe("Discord login", () => {
     const response = await get("/auth/session");
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ loginUrl: "/auth/login" });
-  });
-
-  it("exchanges an Embedded App SDK code for the Activity", async () => {
-    server.discord.users.set("sdk", { id: "77", username: "arbiter", globalName: null });
-    const response = await fetch(`${server.base}/auth/activity`, {
-      method: "POST", body: JSON.stringify({ code: "sdk" }), headers: { "Content-Type": "application/json" },
-    });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ access_token: "access-sdk", user: { id: "77", name: "arbiter" } });
-    expect(server.discord.exchanges.at(-1)).toEqual({ code: "sdk", redirectUri: undefined });
-    const bad = await fetch(`${server.base}/auth/activity`, { method: "POST", body: "{}" });
-    expect(bad.status).toBe(400);
   });
 
   it("has no development login unless configured", async () => {
@@ -166,5 +155,133 @@ describe("development login", () => {
     expect(await session.json()).toMatchObject({ user: { id: "dev:Alice", name: "Alice" } });
     const login = await get("/activity/auth/login?return=%2Factivity%2Fhalo.html%23room%3Dabc");
     expect(login.headers.get("location")).toBe("dev-login?return=%2Factivity%2Fhalo.html%23room%3Dabc");
+  });
+});
+
+describe("the Discord Activity", () => {
+  const launch = "/?frame_id=f1&instance_id=i-1-gc-2-3&platform=desktop";
+  const activity = (body: unknown) => fetch(`${server.base}/auth/activity`, {
+    method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" },
+  });
+
+  it("gets Document-Isolation-Policy and Discord's script rules only on the launch document", async () => {
+    const page = await get(launch);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("document-isolation-policy")).toBe("isolate-and-require-corp");
+    expect(page.headers.get("cross-origin-opener-policy")).toBeNull();
+    expect(page.headers.get("cross-origin-embedder-policy")).toBeNull();
+    expect(page.headers.get("content-security-policy")).toMatch(/script-src 'self' 'unsafe-eval' blob:/);
+    const html = await page.text();
+    expect(html).toContain('<meta name="halo-activity" content="123">');
+    expect(html).toContain('<script src="activity.js"></script>');
+    expect(html).not.toContain("halo-activity-dev");
+    expect(html).not.toMatch(/<script>/);
+    expect(html).not.toMatch(/\son[a-z]+=/);
+    const plain = await get("/");
+    expect(plain.headers.get("content-security-policy")).toBeNull();
+    expect(plain.headers.get("cross-origin-embedder-policy")).toBe("require-corp");
+    expect(await plain.text()).toContain('<script src="halo-login.js"></script>');
+    const script = await get("/halo.js?frame_id=f1");
+    expect(script.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+  });
+
+  it("serves the page's former inline scripts and handlers as same-origin files", async () => {
+    expect(await (await get("/halo-shell-0.js")).text()).toBe("window.shellRan = true;");
+    expect((await get("/halo-shell-1.js")).status).toBe(404);
+    expect(await (await get("/halo-handlers.js")).text()).toContain("data-halo-on");
+    expect(await (await get("/halo-login.js")).text()).toContain('fetch("auth/session"');
+    expect(await (await get(launch)).text()).toContain("data-halo-oncontextmenu=event.preventDefault()");
+  });
+
+  it("bundles the Discord SDK into activity.js with its license", async () => {
+    const response = await get("/activity.js");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/javascript/);
+    const text = await response.text();
+    expect(text).toMatch(/@discord\/embedded-app-sdk@\d/);
+    expect(text).toContain("auth/activity");
+  }, 20_000);
+
+  it("exchanges an SDK code without a redirect URI, keeping Discord's token on the server", async () => {
+    server.discord.users.set("sdk", { id: "77", username: "arbiter", globalName: null });
+    const response = await activity({ code: "sdk", instanceId: "i-1-gc-2-3" });
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ user: { id: "77", name: "arbiter" } });
+    expect(body).not.toHaveProperty("access_token");
+    expect(JSON.stringify(body)).not.toContain("access-sdk");
+    expect(server.discord.exchanges.at(-1)).toEqual({ code: "sdk", redirectUri: undefined });
+    expect(cookies(response).halo_activity).toBe(body.token);
+    expect((await activity({})).status).toBe(400);
+    expect((await activity({ code: "sdk", instanceId: "../x" })).status).toBe(400);
+    server.discord.users.set("out", { id: "1", username: "stranger", globalName: null });
+    server.discord.outsiders.add("out");
+    expect((await activity({ code: "out" })).status).toBe(403);
+  });
+
+  it("maps an instance to one room derived with the server secret", async () => {
+    server.discord.users.set("a", { id: "1", username: "a", globalName: null });
+    server.discord.users.set("b", { id: "2", username: "b", globalName: null });
+    const roomOf = async (code: string, instanceId: string) =>
+      ((await (await activity({ code, instanceId })).json()) as { roomId: string }).roomId;
+    const first = await roomOf("a", "i-1-gc-2-3");
+    expect(first).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(await roomOf("b", "i-1-gc-2-3")).toBe(first);
+    expect(await roomOf("a", "i-9-gc-2-3")).not.toBe(first);
+    expect(first).toBe(activityRoomId(SECRET, "i-1-gc-2-3"));
+    expect(activityRoomId("another-secret-another-secret-12345", "i-1-gc-2-3")).not.toBe(first);
+    expect(first).not.toContain("i-1");
+  });
+
+  it("uses a partitioned SameSite=None cookie on HTTPS and renews the cookie it was given", async () => {
+    await server.close();
+    server = await start({ publicOrigin: "https://halo.example" });
+    server.discord.users.set("sdk", { id: "77", username: "arbiter", globalName: null });
+    const response = await activity({ code: "sdk" });
+    const line = response.headers.getSetCookie().find((value) => value.startsWith("halo_activity="))!;
+    expect(line).toMatch(/HttpOnly/);
+    expect(line).toMatch(/SameSite=None/);
+    expect(line).toMatch(/Secure/);
+    expect(line).toMatch(/Partitioned/);
+    const renewed = await get("/auth/session", { Cookie: `halo_activity=${cookies(response).halo_activity}` });
+    const renewedLine = renewed.headers.getSetCookie()[0]!;
+    expect(renewedLine).toMatch(/^halo_activity=.*Partitioned/);
+    const pageSession = await get("/auth/session", { Cookie: `halo_session=${token("5")}` });
+    const pageLine = pageSession.headers.getSetCookie()[0]!;
+    expect(pageLine).toMatch(/^halo_session=.*SameSite=Lax; Secure$/);
+    expect(pageLine).not.toMatch(/Partitioned/);
+    const map = await get("/assets/maps/bloodgulch.map", { Cookie: `halo_activity=${cookies(response).halo_activity}` });
+    expect(map.status).toBe(200);
+  });
+
+  it("accepts development codes only under DEV_LOGIN", async () => {
+    expect((await activity({ code: "dev:Alice" })).status).toBe(502);
+    await server.close();
+    server = await start({ devLogin: true, discord: null });
+    const response = await activity({ code: "dev:Alice", instanceId: "local" });
+    expect(await response.json()).toMatchObject({ user: { id: "dev:Alice", name: "Alice" } });
+    expect(await (await get(launch)).text()).toContain('<meta name="halo-activity-dev" content="1">');
+  });
+
+  it("reports who is in a room to signed-in players", async () => {
+    const room = "room-status-0001";
+    expect((await get(`/v1/rooms/${room}`)).status).toBe(401);
+    const signedIn = { Cookie: `halo_session=${token("9")}` };
+    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: null, players: 0 });
+    const host = await join(server.base, room, "host", "user-h", "020000000001", { name: "Host Person" });
+    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: "Host Person", players: 1 });
+    host.socket.close();
+    expect((await get("/v1/rooms/bad", signedIn)).status).toBe(404);
+  });
+
+  it("accepts relay sockets from the application's discordsays.com origin", async () => {
+    const client = open(server.base, "room-origin-0001", "host", "both", "https://123.discordsays.com");
+    await new Promise<void>((resolve, reject) => {
+      client.socket.once("open", () => resolve());
+      client.socket.once("error", reject);
+    });
+    client.socket.close();
+    const other = open(server.base, "room-origin-0001", "host", "both", "https://999.discordsays.com");
+    await new Promise<void>((resolve) => other.socket.once("error", () => resolve()));
   });
 });

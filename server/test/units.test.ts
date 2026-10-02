@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { loadConfig } from "../src/config.ts";
 import { joinBatch, sanitizeName, splitBatch } from "../src/protocol.ts";
-import { buildFile, hostedPage, mapFile, parseRange } from "../src/static.ts";
+import { buildFile, hostedPage, LOGIN_SCRIPT, mapFile, parseRange } from "../src/static.ts";
 import { issueToken, verifyToken } from "../src/tokens.ts";
 import { PAGE } from "./harness.ts";
 
@@ -10,14 +10,37 @@ const SECRET = "x".repeat(40);
 
 describe("the hosted page", () => {
   it("uses relay rooms, drops other services and waits for a session before the game", () => {
-    const page = hostedPage(PAGE);
-    expect(page).toContain('<meta name="halo-transport" content="relay-rooms">');
-    expect(page).toContain("name=halo-build-id");
+    const { html } = hostedPage(PAGE);
+    expect(html).toContain('<meta name="halo-transport" content="relay-rooms">');
+    expect(html).toContain("name=halo-build-id");
     for (const gone of ["halo-signaling-url", "halo-relay-url", "coi-serviceworker", "challenges.cloudflare.com",
-        "<script src=halo.js"]) {
-      expect(page, gone).not.toContain(gone);
+        "<script src=halo.js", "halo-activity"]) {
+      expect(html, gone).not.toContain(gone);
     }
-    expect(page).toMatch(/fetch\("auth\/session".*s\.src="halo\.js"/);
+    expect(html).toContain('<script src="halo-login.js"></script>');
+    expect(LOGIN_SCRIPT).toMatch(/fetch\("auth\/session".*s\.src="halo\.js"/);
+  });
+
+  it("moves inline scripts and handlers into files, in place and in order", () => {
+    const { html, scripts } = hostedPage(PAGE);
+    expect(scripts).toEqual(["window.shellRan = true;"]);
+    expect(html).toContain('<canvas id=canvas data-halo-oncontextmenu=event.preventDefault() tabindex=-1>');
+    expect(html.indexOf('src="halo-shell-0.js"')).toBeGreaterThan(html.indexOf("<canvas"));
+    expect(html.endsWith('<script src="halo-handlers.js"></script>')).toBe(true);
+    expect(html).not.toMatch(/<script>/);
+    expect(hostedPage("<script src=halo.js></script><p>no handlers</p>").html).not.toContain("halo-handlers.js");
+  });
+
+  it("starts the Activity through the Discord SDK loader", () => {
+    const { html } = hostedPage(PAGE, { clientId: "1555", publicOrigin: "https://halo.example", dev: false });
+    expect(html).toContain('<meta name="halo-activity" content="1555">');
+    expect(html).toContain('<meta name="halo-public-origin" content="https://halo.example">');
+    expect(html).toContain('<script src="activity.js"></script>');
+    expect(html).not.toContain("halo-login.js");
+    expect(html).not.toContain("halo-activity-dev");
+    const quoted = hostedPage(PAGE, { clientId: '"><script>', publicOrigin: "x", dev: true }).html;
+    expect(quoted).toContain('content="&quot;>&lt;script>"');
+    expect(quoted).toContain('<meta name="halo-activity-dev" content="1">');
   });
 
   it("refuses a page that does not load the game exactly once", () => {
