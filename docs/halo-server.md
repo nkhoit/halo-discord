@@ -52,6 +52,9 @@ in [websocket-relay-spike.md](websocket-relay-spike.md).
   directory are never reachable.
 - `server/.env`, copied from [`server/example.env`](../server/example.env).
   Never commit it.
+- The site icon in `server/icons/` (favicon.ico, icon-64.png,
+  apple-touch-icon.png) ships with the server and is public.
+  `python tools/icon/ring_icon.py` regenerates it from the 64x64 pixel art.
 
 ## Run locally (no Discord)
 
