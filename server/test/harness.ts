@@ -56,6 +56,7 @@ export function fixtures(): { buildDir: string; mapsDir: string } {
   writeFileSync(joinPath(buildDir, "assets", "ui", "maps", "blood-gulch.png"), "png");
   writeFileSync(joinPath(mapsDir, "bloodgulch.map"), Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 256)));
   writeFileSync(joinPath(mapsDir, "a10.map"), "campaign");
+  writeFileSync(joinPath(mapsDir, "bloodgulch.shaders"), "HALO-SHADERS 1 bloodgulch\n");
   return { buildDir, mapsDir };
 }
 

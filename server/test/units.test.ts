@@ -108,6 +108,9 @@ describe("file allowlists", () => {
     }
     expect(mapFile("assets/maps/bloodgulch.map")).toBe("bloodgulch.map");
     expect(mapFile("assets/maps/ui.map")).toBe("ui.map");
+    expect(mapFile("assets/maps/beavercreek.shaders")).toBe("beavercreek.shaders");
+    expect(mapFile("assets/maps/a10.shaders")).toBeNull();
+    expect(mapFile("assets/maps/beavercreek.txt")).toBeNull();
     for (const path of ["assets/maps/a10.map", "assets/maps/../maps/ui.map", "assets/maps/ui.map.bak",
         "assets/maps//ui.map", "assets/maps/UI.map", "maps/ui.map"]) {
       expect(mapFile(path), path).toBeNull();

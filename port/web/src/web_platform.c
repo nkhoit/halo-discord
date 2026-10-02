@@ -66,7 +66,7 @@ extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_
 	long *maximum_tick_milliseconds);
 /* (port/linux/src/xbox_textures.c, d3d8_gl.c, sdl_platform.c) */
 extern void xgpu_web_texture_statistics(double values[7]);
-extern void xgpu_web_shader_statistics(double values[6]);
+extern void xgpu_web_shader_statistics(double values[9]);
 extern double platform_web_profile_take_callback_maximum(void);
 extern const double *platform_web_profile_take_frame_times(void);
 extern void xgpu_web_frame_statistics(double values[6]);
@@ -89,13 +89,15 @@ extern void xgpu_web_frame_statistics(double values[6]);
  * first draw, [34] after a transient pool overflow, [35] the most draws in a
  * frame, [36] the most transient uploads, [37] the most transient bytes,
  * [38] frames that overflowed the pool, [39] first draws (total), [40] frames
- * with first draws, [41] the longest time outside the frame callback.
+ * with first draws, [41] the longest time outside the frame callback,
+ * [42] programs built ahead, [43] the last warm-up's milliseconds, [44] first
+ * draws of programs not built ahead.
  * [28..38], [40] and [41] are since the last read; other counts
  * are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
 	static double first_draws_total;
-	static double values[42];
+	static double values[45];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
@@ -108,7 +110,7 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	long maximum_ticks_per_frame;
 	long maximum_tick_milliseconds;
 	double textures[7];
-	double shaders[6];
+	double shaders[9];
 	int index;
 
 	network_distributed_web_statistics(&ticks, &own_corrections, &own_correction_maximum_squared,
@@ -158,6 +160,9 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 		values[39] = first_draws_total;
 		values[40] = frame[5];
 		values[41] = times[7];
+		values[42] = shaders[6];
+		values[43] = shaders[7];
+		values[44] = shaders[8];
 	}
 	return values;
 }

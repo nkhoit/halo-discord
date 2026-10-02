@@ -265,7 +265,8 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         }
         /* (diagnostics: when a game reads its maps, and how long each read takes) */
         const started = Date.now();
-        const bytes = await serveFile(request, response, config.mapsDir, map, "application/octet-stream",
+        const bytes = await serveFile(request, response, config.mapsDir, map,
+          map.endsWith(".shaders") ? "text/plain; charset=utf-8" : "application/octet-stream",
           { ...headers, ...MAP_CACHE }, true);
         if (config.netstatsUpload) {
           response.once("finish", () => log({

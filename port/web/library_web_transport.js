@@ -439,6 +439,9 @@ addToLibrary({
         game.firstDraws = HEAPF64[index + 39];
         game.firstDrawFrames = HEAPF64[index + 40];
         game.outsideFrameMaxMs = +HEAPF64[index + 41].toFixed(1);
+        game.warmedPrograms = HEAPF64[index + 42];
+        game.warmupMs = Math.round(HEAPF64[index + 43]);
+        game.unwarmedFirstDraws = HEAPF64[index + 44];
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
@@ -581,6 +584,11 @@ addToLibrary({
           /* the longest time between one frame callback's end and the next
              one's start, and the render cap in force (0: the display's rate) */
           outsideFrameMaxMs: game.outsideFrameMaxMs,
+          /* the shader warm-up: programs built while the map loaded, the
+             last warm-up's time, and first draws it had not covered */
+          warmedPrograms: delta('warmedPrograms'),
+          warmupMs: game.warmupMs,
+          unwarmedFirstDraws: delta('unwarmedFirstDraws'),
           frameCap: typeof Module['_platform_web_frame_cap'] === 'function' ? Module['_platform_web_frame_cap']() : null,
           shaderMs: delta('shaderMs') === null ? null : +delta('shaderMs').toFixed(1),
           shaderMsMax: game.shaderMsMax,

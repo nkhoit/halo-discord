@@ -48,6 +48,11 @@ static struct
 	double source_hits;
 	/* pixel shader keys seen for the first time */
 	double fragment_keys;
+	/* programs the warm-up built, how long the last warm-up took, and first
+	draws of programs it had not built */
+	double warmed_programs;
+	double warmup_milliseconds;
+	double unwarmed_first_draws;
 } shader_web_statistics;
 
 static void shader_web_count(double started)
@@ -92,8 +97,11 @@ int xgpu_web_last_frame_flags(void)
 	return web_last_frame_flags;
 }
 
+static void shader_warmup_check(void);
+
 static void web_frame_presented(void)
 {
+	shader_warmup_check();
 	if (web_frame_now.draws > web_frame_window.maximum_draws)
 		web_frame_window.maximum_draws = web_frame_now.draws;
 	if (web_frame_now.transient_uploads > web_frame_window.maximum_transient_uploads)
@@ -123,8 +131,11 @@ void xgpu_web_frame_statistics(double values[6])
 	memset(&web_frame_window, 0, sizeof(web_frame_window));
 }
 
-void xgpu_web_shader_statistics(double values[6])
+void xgpu_web_shader_statistics(double values[9])
 {
+	values[6] = shader_web_statistics.warmed_programs;
+	values[7] = shader_web_statistics.warmup_milliseconds;
+	values[8] = shader_web_statistics.unwarmed_first_draws;
 	values[0] = shader_web_statistics.count;
 	values[1] = shader_web_statistics.milliseconds;
 	values[2] = shader_web_statistics.milliseconds_maximum;
@@ -318,6 +329,13 @@ struct program_entry
 	GLint screen_offset;
 	/* (the browser's statistics) drawn at least once */
 	BOOL drawn;
+	/* (the browser) built ahead by the warm-up, already in this map's
+	persisted list, and the map (warm-up serial) it was last drawn in; ready
+	once linked and set up (the warm-up links ahead and sets up later) */
+	BOOL warmed;
+	BOOL ready;
+	BOOL persisted;
+	unsigned long used_serial;
 
 	/* the vertex constants c[0..constant_count) the program uses; with
 	consecutive locations, a changed range is uploaded by itself */
@@ -2086,6 +2104,14 @@ static GLuint fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 	return entry->shader;
 }
 
+static void program_setup(struct program_entry *entry);
+#ifdef HALO_WEB
+static BOOL program_finish(struct program_entry *entry);
+#endif
+#ifdef HALO_WEB
+static void shader_record(struct program_entry *entry);
+#endif
+
 static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_shader)
 {
 	static struct program_entry *last;
@@ -2093,7 +2119,6 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 	struct program_entry **bucket = &program_buckets[hash % PROGRAM_BUCKETS];
 	struct program_entry *entry;
 	GLint status = 0;
-	int stage;
 
 	if (last && last->vertex_shader == vertex_shader && last->fragment_shader == fragment_shader)
 		return last;
@@ -2103,6 +2128,10 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 		{
 			if (!entry->program)
 				return NULL;
+#ifdef HALO_WEB
+			if (!entry->ready && !program_finish(entry))
+				return NULL;
+#endif
 			last = entry;
 			return entry;
 		}
@@ -2139,6 +2168,19 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 		entry->program = 0;
 		return NULL;
 	}
+	program_setup(entry);
+#ifdef HALO_WEB
+	shader_record(entry);
+#endif
+	last = entry;
+	return entry;
+}
+
+/* a linked program's uniform locations and sampler units */
+static void program_setup(struct program_entry *entry)
+{
+	int stage;
+
 	state_program(entry->program);
 	entry->constants = glGetUniformLocation(entry->program, "c");
 	entry->constant_count = XGPU_VERTEX_CONSTANT_COUNT;
@@ -2191,9 +2233,432 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 		snprintf(name, sizeof(name), "tex%d", stage);
 		glUniform1i(glGetUniformLocation(entry->program, name), stage);
 	}
-	last = entry;
+	entry->ready = TRUE;
+}
+
+#ifdef HALO_WEB
+/* ---------- program warm-up (the browser)
+
+A program's first draw used to compile its shaders, link it and (in ANGLE,
+Chrome's GL on Direct3D) build its executables, stalling the frame for up to
+hundreds of milliseconds when a match began or a new effect first appeared.
+The programs a map needs are built while it loads instead: those in the
+server's manifest for the map (assets/maps/<map>.shaders, recorded in play by
+platform_web_shader_manifest) and those this browser met on the map before
+(/storage/halo-shaders-<map>.txt). All compile and link first, so the browser
+can work on them in parallel, then each draws one point off screen.
+
+Both files hold records "P <vertex bytes> <fragment bytes>\n" followed by the
+two sources and a newline. */
+
+#include <emscripten/html5.h>
+
+extern unsigned char game_map_loading_in_progress(float *progress);
+extern const char *game_map_loading_name(void);
+
+static unsigned long shader_warmup_serial;
+static char shader_warmup_map[64];
+static GLuint warm_framebuffer;
+static GLuint warm_vertex_array;
+
+static struct source_entry *source_entry_for_shader(GLuint shader)
+{
+	unsigned long index;
+	struct source_entry *entry;
+
+	for (index = 0; index < SOURCE_BUCKETS; index++)
+		for (entry = source_buckets[index]; entry; entry = entry->next)
+			if (entry->shader == shader)
+				return entry;
+	return NULL;
+}
+
+static void shader_persisted_path(const char *map, char *path, size_t size)
+{
+	snprintf(path, size, "/storage/halo-shaders-%s.txt", map);
+}
+
+static void shader_append_record(FILE *file, const struct source_entry *vertex, const struct source_entry *fragment)
+{
+	fprintf(file, "P %lu %lu\n", (unsigned long)vertex->length, (unsigned long)fragment->length);
+	fwrite(vertex->source, 1, vertex->length, file);
+	fwrite(fragment->source, 1, fragment->length, file);
+	fputc('\n', file);
+}
+
+/* a program linked in play: kept in this map's list, to be built ahead next
+time */
+static void shader_record(struct program_entry *entry)
+{
+	struct source_entry *vertex;
+	struct source_entry *fragment;
+	char path[128];
+	FILE *file;
+
+	if (entry->persisted || !shader_warmup_map[0])
+		return;
+	entry->persisted = TRUE;
+	vertex = source_entry_for_shader(entry->vertex_shader);
+	fragment = source_entry_for_shader(entry->fragment_shader);
+	if (!vertex || !fragment)
+		return;
+	shader_persisted_path(shader_warmup_map, path, sizeof(path));
+	if ((file = fopen(path, "ab")) != NULL)
+	{
+		shader_append_record(file, vertex, fragment);
+		fclose(file);
+	}
+}
+
+/* the programs drawn on the current map, as a manifest (for recording the
+server's manifests in play; the caller does not free it) */
+EMSCRIPTEN_KEEPALIVE const char *platform_web_shader_manifest(void)
+{
+	static char *text;
+	FILE *memory;
+	size_t size = 0;
+	unsigned long index;
+	struct program_entry *entry;
+
+	free(text);
+	text = NULL;
+	memory = open_memstream(&text, &size);
+	if (!memory)
+		return "";
+	fprintf(memory, "HALO-SHADERS 1 %s\n", shader_warmup_map);
+	for (index = 0; index < PROGRAM_BUCKETS; index++)
+	{
+		for (entry = program_buckets[index]; entry; entry = entry->next)
+		{
+			struct source_entry *vertex;
+			struct source_entry *fragment;
+
+			if (!entry->program || entry->used_serial != shader_warmup_serial)
+				continue;
+			vertex = source_entry_for_shader(entry->vertex_shader);
+			fragment = source_entry_for_shader(entry->fragment_shader);
+			if (vertex && fragment)
+				shader_append_record(memory, vertex, fragment);
+		}
+	}
+	fclose(memory);
+	return text ? text : "";
+}
+
+/* the shader for the text: compiled now if new, its status checked later */
+static GLuint shader_compile_ahead(GLenum type, const char *source, size_t length)
+{
+	unsigned long hash = 2166136261UL ^ (unsigned long)type;
+	struct source_entry **bucket;
+	struct source_entry *entry;
+	size_t index;
+	GLuint shader;
+
+	for (index = 0; index < length; index++)
+		hash = (hash ^ (unsigned char)source[index]) * 16777619UL;
+	bucket = &source_buckets[hash % SOURCE_BUCKETS];
+	for (entry = *bucket; entry; entry = entry->next)
+		if (entry->hash == hash && entry->type == type && entry->length == length && !memcmp(entry->source, source, length))
+			return entry->shader;
+	entry = calloc(1, sizeof(*entry));
+	entry->source = malloc(length + 1);
+	if (!entry || !entry->source)
+	{
+		free(entry);
+		return 0;
+	}
+	memcpy(entry->source, source, length);
+	entry->source[length] = 0;
+	entry->hash = hash;
+	entry->type = type;
+	entry->length = length;
+	shader = glCreateShader(type);
+	glShaderSource(shader, 1, (const char **)&entry->source, NULL);
+	glCompileShader(shader);
+	shader_web_statistics.compiles++;
+	entry->shader = shader;
+	entry->next = *bucket;
+	*bucket = entry;
+	return shader;
+}
+
+/* a program for the pair, linked now if new (its status checked later) */
+static struct program_entry *program_link_ahead(GLuint vertex_shader, GLuint fragment_shader)
+{
+	unsigned long hash = (vertex_shader * 2654435761UL) ^ fragment_shader;
+	struct program_entry **bucket = &program_buckets[hash % PROGRAM_BUCKETS];
+	struct program_entry *entry;
+
+	for (entry = *bucket; entry; entry = entry->next)
+	{
+		if (entry->vertex_shader == vertex_shader && entry->fragment_shader == fragment_shader)
+		{
+			entry->warmed = TRUE;
+			entry->persisted = TRUE;
+			return NULL;
+		}
+	}
+	entry = calloc(1, sizeof(*entry));
+	entry->vertex_shader = vertex_shader;
+	entry->fragment_shader = fragment_shader;
+	memset(&entry->uniforms, 0xff, sizeof(entry->uniforms));
+	entry->warmed = TRUE;
+	entry->persisted = TRUE;
+	entry->next = *bucket;
+	*bucket = entry;
+	entry->program = glCreateProgram();
+	glAttachShader(entry->program, vertex_shader);
+	glAttachShader(entry->program, fragment_shader);
+	glLinkProgram(entry->program);
 	return entry;
 }
+
+/* parses the records in text and appends the programs they name to the list */
+static void shader_warmup_parse(char *text, struct program_entry ***programs, unsigned long *count,
+	unsigned long *capacity)
+{
+	char *cursor = text;
+
+	if (!text || strncmp(cursor, "HALO-SHADERS 1", 14) == 0)
+		cursor = text ? strchr(text, '\n') : NULL;
+	else if (text)
+		cursor = text - 1;
+	while (cursor && *++cursor == 'P')
+	{
+		unsigned long vertex_length;
+		unsigned long fragment_length;
+		char *body = strchr(cursor, '\n');
+		GLuint vertex;
+		GLuint fragment;
+		struct program_entry *entry;
+
+		if (!body || sscanf(cursor, "P %lu %lu", &vertex_length, &fragment_length) != 2 ||
+			strlen(body + 1) < vertex_length + fragment_length)
+		{
+			break;
+		}
+		body++;
+		vertex = shader_compile_ahead(GL_VERTEX_SHADER, body, vertex_length);
+		fragment = shader_compile_ahead(GL_FRAGMENT_SHADER, body + vertex_length, fragment_length);
+		cursor = body + vertex_length + fragment_length;
+		if (!vertex || !fragment || !(entry = program_link_ahead(vertex, fragment)))
+			continue;
+		if (*count == *capacity)
+		{
+			*capacity = *capacity ? *capacity * 2 : 256;
+			*programs = realloc(*programs, *capacity * sizeof(**programs));
+		}
+		(*programs)[(*count)++] = entry;
+	}
+}
+
+static char *shader_warmup_fetch(const char *map)
+{
+	/* (a synchronous request is allowed on this worker; the session cookie
+	authorizes it like the map itself) */
+	return (char *)EM_ASM_PTR({
+		try
+		{
+			var request = new XMLHttpRequest();
+			request.open('GET', new URL('assets/maps/' + UTF8ToString($0) + '.shaders', scriptDirectory).href, false);
+			request.send(null);
+			return request.status === 200 ? stringToNewUTF8(request.responseText) : 0;
+		}
+		catch (error)
+		{
+			return 0;
+		}
+	}, map);
+}
+
+static char *shader_warmup_read(const char *path)
+{
+	FILE *file = fopen(path, "rb");
+	char *text;
+	long size;
+
+	if (!file)
+		return NULL;
+	fseek(file, 0, SEEK_END);
+	size = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	/* (a list that grew past reason starts over) */
+	if (size <= 0 || size > 16L * 1024 * 1024 || !(text = malloc((size_t)size + 1)))
+	{
+		fclose(file);
+		if (size > 16L * 1024 * 1024)
+			remove(path);
+		return NULL;
+	}
+	size = (long)fread(text, 1, (size_t)size, file);
+	text[size] = 0;
+	fclose(file);
+	return text;
+}
+
+static struct program_entry **warmup_programs;
+static unsigned long warmup_count;
+static unsigned long warmup_next;
+static unsigned long warmup_built;
+static double warmup_started;
+static double warmup_busy;
+static BOOL warmup_parallel;
+
+/* starts building the map's programs: compiles and links them all, which the
+browser may finish in the background (KHR_parallel_shader_compile) */
+static void shader_warmup_begin(const char *map)
+{
+	double started = emscripten_get_now();
+	unsigned long capacity = 0;
+	char path[128];
+	char *manifest;
+	char *persisted;
+	static BOOL extension;
+
+	if (!extension)
+	{
+		extension = TRUE;
+		warmup_parallel = emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(),
+			"KHR_parallel_shader_compile");
+	}
+	manifest = shader_warmup_fetch(map);
+	shader_persisted_path(map, path, sizeof(path));
+	persisted = shader_warmup_read(path);
+	warmup_count = warmup_next = warmup_built = 0;
+	shader_warmup_parse(manifest, &warmup_programs, &warmup_count, &capacity);
+	shader_warmup_parse(persisted, &warmup_programs, &warmup_count, &capacity);
+	free(manifest);
+	free(persisted);
+	warmup_started = started;
+	warmup_busy = emscripten_get_now() - started;
+}
+
+/* finishes programs (each draws one point off screen) until the budget runs
+out or, given one, the next is still compiling */
+static void shader_warmup_build(double budget)
+{
+	double started = emscripten_get_now();
+	GLint framebuffer = 0;
+
+	if (!warm_framebuffer)
+	{
+		GLuint color, depth;
+
+		glGenFramebuffers(1, &warm_framebuffer);
+		glGenRenderbuffers(1, &color);
+		glGenRenderbuffers(1, &depth);
+		glBindRenderbuffer(GL_RENDERBUFFER, color);
+		glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 1, 1);
+		glBindRenderbuffer(GL_RENDERBUFFER, depth);
+		glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 1, 1);
+		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
+		glBindFramebuffer(GL_FRAMEBUFFER, warm_framebuffer);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depth);
+		glGenVertexArrays(1, &warm_vertex_array);
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, warm_framebuffer);
+	glBindVertexArray(warm_vertex_array);
+	glViewport(0, 0, 1, 1);
+	while (warmup_next < warmup_count)
+	{
+		struct program_entry *entry = warmup_programs[warmup_next];
+		GLint status = 0;
+
+		if (entry->ready || !entry->program)
+		{
+			warmup_next++;
+			continue;
+		}
+		if (budget > 0.0)
+		{
+			if (emscripten_get_now() - started >= budget)
+				break;
+			if (warmup_parallel)
+			{
+				glGetProgramiv(entry->program, 0x91B1 /* GL_COMPLETION_STATUS_KHR */, &status);
+				if (!status)
+					break;
+			}
+		}
+		warmup_next++;
+		if (!program_finish(entry))
+			continue;
+		glBindFramebuffer(GL_FRAMEBUFFER, warm_framebuffer);
+		glBindVertexArray(warm_vertex_array);
+		glDrawArrays(GL_POINTS, 0, 1);
+		warmup_built++;
+	}
+	glBindVertexArray(device.vertex_array);
+	xgpu_gl_state_invalidate();
+	warmup_busy += emscripten_get_now() - started;
+	if (warmup_next < warmup_count)
+		return;
+	shader_web_statistics.warmed_programs += (double)warmup_built;
+	shader_web_statistics.warmup_milliseconds = warmup_busy;
+	platform_log("web: built %lu programs ahead for %s in %.0f ms (%.0f ms of it in frames)", warmup_built,
+		shader_warmup_map, emscripten_get_now() - warmup_started, warmup_busy);
+	free(warmup_programs);
+	warmup_programs = NULL;
+	warmup_count = warmup_next = 0;
+}
+
+/* a linked program, set up for drawing (FALSE when its link failed) */
+static BOOL program_finish(struct program_entry *entry)
+{
+	GLint status = 0;
+
+	glGetProgramiv(entry->program, GL_LINK_STATUS, &status);
+	if (!status)
+	{
+		char log[4096];
+
+		glGetProgramInfoLog(entry->program, sizeof(log), NULL, log);
+		platform_log("cannot link a shader program: %s", log);
+		glDeleteProgram(entry->program);
+		entry->program = 0;
+		return FALSE;
+	}
+	program_setup(entry);
+	return TRUE;
+}
+
+static void shader_warmup_start(const char *map)
+{
+	if (!strcmp(map, shader_warmup_map))
+		return;
+	if (warmup_programs)
+		shader_warmup_build(0.0);
+	strncpy(shader_warmup_map, map, sizeof(shader_warmup_map) - 1);
+	shader_warmup_map[sizeof(shader_warmup_map) - 1] = 0;
+	shader_warmup_serial++;
+	shader_warmup_begin(shader_warmup_map);
+}
+
+/* each frame while a map copies in (it is not in the game's map cache yet):
+its programs start building, a little more each frame */
+static void shader_warmup_check(void)
+{
+	const char *map = game_map_loading_name();
+	float progress;
+
+	if (!game_map_loading_in_progress(&progress))
+		return;
+	if (map && map[0])
+		shader_warmup_start(map);
+	if (warmup_programs)
+		shader_warmup_build(8.0);
+}
+
+/* as the game loads a map's tags (scenario_tags_load), before its first frame:
+the rest of its programs are built */
+void xgpu_web_shader_warmup(const char *map)
+{
+	shader_warmup_start(map);
+	if (warmup_programs)
+		shader_warmup_build(0.0);
+}
+#endif
 
 /* ---------- per-draw state */
 
@@ -2818,7 +3283,10 @@ static struct program_entry *prepare_draw(BOOL immediate)
 	{
 		entry->drawn = TRUE;
 		web_frame_now.first_draws++;
+		if (!entry->warmed)
+			shader_web_statistics.unwarmed_first_draws++;
 	}
+	entry->used_serial = shader_warmup_serial;
 #endif
 	state_program(entry->program);
 	gl_check_errors("program bind");

@@ -67,6 +67,16 @@ describe("maps", () => {
       .toBe(401);
   });
 
+  it("serve their shader manifests to sessions only, privately", async () => {
+    expect((await get("/assets/maps/bloodgulch.shaders")).status).toBe(401);
+    const response = await get("/assets/maps/bloodgulch.shaders", { Cookie: `halo_session=${token("1")}` });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(response.headers.get("cache-control")).toMatch(/^private/);
+    expect(await response.text()).toBe("HALO-SHADERS 1 bloodgulch\n");
+    expect((await get("/assets/maps/a10.shaders", { Cookie: `halo_session=${token("1")}` })).status).toBe(404);
+  });
+
   it("serve HEAD and single byte ranges with a cookie or bearer token", async () => {
     const cookie = { Cookie: `halo_session=${token("1")}` };
     const head = await get("/assets/maps/bloodgulch.map", { ...cookie, Range: "bytes=0-" }, "HEAD");

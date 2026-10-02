@@ -68,9 +68,12 @@ export function buildFile(path: string): { file: string; type: string } | null {
   return null;
 }
 
+/* A map, or its shader manifest (<map>.shaders: the programs the game builds
+ahead while the map loads, recorded in play from the same game data, and
+served like the map itself). */
 export function mapFile(path: string): string | null {
-  const match = /^assets\/maps\/([a-z0-9]+\.map)$/.exec(path);
-  return match && MAPS.has(match[1]!) ? match[1]! : null;
+  const match = /^assets\/maps\/([a-z0-9]+)\.(map|shaders)$/.exec(path);
+  return match && MAPS.has(`${match[1]}.map`) ? `${match[1]}.${match[2]}` : null;
 }
 
 /* The site icon (tools/icon/ring_icon.py), public like the page itself. */

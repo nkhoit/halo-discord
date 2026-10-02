@@ -662,6 +662,13 @@ long scenario_tags_load(
 	sound_cache_open();
 	if (cache_file_open(stripped_scenario_name, &cache_file_globals.header))
 	{
+#ifdef HALO_WEB
+		/* the browser builds the map's shader programs now, not in its first
+		frames (port/linux/src/d3d8_gl.c) */
+		extern void xgpu_web_shader_warmup(const char *map);
+
+		xgpu_web_shader_warmup(stripped_scenario_name);
+#endif
 		tag_cache_base_address = physical_memory_get_tag_cache_base_address();
 		if (cache_file_header_verify(&cache_file_globals.header, scenario_name, TRUE))
 		{
