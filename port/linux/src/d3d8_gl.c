@@ -60,6 +60,69 @@ static void shader_web_count(double started)
 		shader_web_statistics.milliseconds_maximum = elapsed;
 }
 
+/* per frame, then per measurement window: draws, transient buffer uploads
+(each a glBufferData), their bytes, frames whose uploads overflowed the
+transient pool (re-specifying a buffer pending draws still use), and first
+draws of a new program (ANGLE may compile on the first draw, after the link) */
+static struct
+{
+	double draws;
+	double transient_uploads;
+	double transient_bytes;
+	double overflows;
+	double first_draws;
+} web_frame_now;
+
+static struct
+{
+	double maximum_draws;
+	double maximum_transient_uploads;
+	double maximum_transient_bytes;
+	double overflow_frames;
+	double first_draws;
+	double first_draw_frames;
+} web_frame_window;
+
+/* bit 0: the last presented frame drew a program for the first time; bit 1:
+it overflowed the transient pool (sdl_platform.c's frame meter) */
+static int web_last_frame_flags;
+
+int xgpu_web_last_frame_flags(void)
+{
+	return web_last_frame_flags;
+}
+
+static void web_frame_presented(void)
+{
+	if (web_frame_now.draws > web_frame_window.maximum_draws)
+		web_frame_window.maximum_draws = web_frame_now.draws;
+	if (web_frame_now.transient_uploads > web_frame_window.maximum_transient_uploads)
+		web_frame_window.maximum_transient_uploads = web_frame_now.transient_uploads;
+	if (web_frame_now.transient_bytes > web_frame_window.maximum_transient_bytes)
+		web_frame_window.maximum_transient_bytes = web_frame_now.transient_bytes;
+	if (web_frame_now.overflows)
+		web_frame_window.overflow_frames++;
+	if (web_frame_now.first_draws)
+		web_frame_window.first_draw_frames++;
+	web_frame_window.first_draws += web_frame_now.first_draws;
+	web_last_frame_flags = (web_frame_now.first_draws ? 1 : 0) | (web_frame_now.overflows ? 2 : 0);
+	memset(&web_frame_now, 0, sizeof(web_frame_now));
+}
+
+/* [0] the most draws in a frame, [1] the most transient uploads, [2] the most
+transient bytes, [3] frames that overflowed the pool, [4] first draws of new
+programs, [5] frames with first draws; all since the last call */
+void xgpu_web_frame_statistics(double values[6])
+{
+	values[0] = web_frame_window.maximum_draws;
+	values[1] = web_frame_window.maximum_transient_uploads;
+	values[2] = web_frame_window.maximum_transient_bytes;
+	values[3] = web_frame_window.overflow_frames;
+	values[4] = web_frame_window.first_draws;
+	values[5] = web_frame_window.first_draw_frames;
+	memset(&web_frame_window, 0, sizeof(web_frame_window));
+}
+
 void xgpu_web_shader_statistics(double values[6])
 {
 	values[0] = shader_web_statistics.count;
@@ -253,6 +316,8 @@ struct program_entry
 	GLint bump_matrix, bump_luminance, texture_scale;
 	GLint texture_lod_bias;
 	GLint screen_offset;
+	/* (the browser's statistics) drawn at least once */
+	BOOL drawn;
 
 	/* the vertex constants c[0..constant_count) the program uses; with
 	consecutive locations, a changed range is uploaded by itself */
@@ -2747,6 +2812,14 @@ static struct program_entry *prepare_draw(BOOL immediate)
 		stats.immediate_draws++;
 	else
 		stats.draws++;
+#ifdef HALO_WEB
+	web_frame_now.draws++;
+	if (!entry->drawn)
+	{
+		entry->drawn = TRUE;
+		web_frame_now.first_draws++;
+	}
+#endif
 	state_program(entry->program);
 	gl_check_errors("program bind");
 #ifdef HALO_ANDROID
@@ -3305,7 +3378,10 @@ static GLuint web_transient_upload(GLenum target, const void *data, unsigned lon
 		/* Busy gameplay should remain below this.  Orphan the last buffer on
 		overflow, preserving correctness without writing outside the pool. */
 		*count = WEB_TRANSIENT_BUFFER_SLOTS - 1;
+		web_frame_now.overflows++;
 	}
+	web_frame_now.transient_uploads++;
+	web_frame_now.transient_bytes += (double)size;
 	buffer = buffers[ring][(*count)++];
 	if (!buffer)
 	{
@@ -4177,6 +4253,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	device.frame++;
 	#ifdef HALO_WEB
 	web_stream_cache_expire();
+	web_frame_presented();
 	#endif
 	stats.presents++;
 	if (debug_settings.statistics && device.frame % 60 == 0)

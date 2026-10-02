@@ -46,8 +46,24 @@ static struct
 	double last_start;
 	double gap_maximum;
 	unsigned long hitches;
+	/* this measurement window's gaps between frame starts, for their
+	distribution, and the longest after a frame that drew a program for the
+	first time or overflowed the transient buffer pool (d3d8_gl.c) */
+	double window_gaps[4096];
+	unsigned long window_gap_count;
+	double first_draw_gap_maximum;
+	double overflow_gap_maximum;
 } web_frame_meter;
 extern void web_net_end_frame(void);
+extern int xgpu_web_last_frame_flags(void);
+
+static int web_compare_doubles(const void *a, const void *b)
+{
+	double left = *(const double *)a;
+	double right = *(const double *)b;
+
+	return left < right ? -1 : left > right;
+}
 #endif
 
 static struct platform_input_state input_state;
@@ -474,6 +490,16 @@ void platform_web_frame_begin(void)
 			web_frame_meter.gap_maximum = gap;
 		if (gap > 50.0)
 			web_frame_meter.hitches++;
+		if (web_frame_meter.window_gap_count < sizeof(web_frame_meter.window_gaps) / sizeof(double))
+			web_frame_meter.window_gaps[web_frame_meter.window_gap_count++] = gap;
+		{
+			int flags = xgpu_web_last_frame_flags();
+
+			if ((flags & 1) && gap > web_frame_meter.first_draw_gap_maximum)
+				web_frame_meter.first_draw_gap_maximum = gap;
+			if ((flags & 2) && gap > web_frame_meter.overflow_gap_maximum)
+				web_frame_meter.overflow_gap_maximum = gap;
+		}
 	}
 	web_frame_meter.last_start = now;
 	web_frame_meter.starts++;
@@ -550,6 +576,37 @@ EMSCRIPTEN_KEEPALIVE double platform_web_profile_take_gap_maximum(void)
 
 	web_frame_meter.gap_maximum = 0.0;
 	return gap;
+}
+
+/* since the last call: [0] the 99th percentile gap between frame starts,
+[1..4] gaps over 16.7, 33.3, 50 and 100 ms, [5] the longest gap after a frame
+that drew a program for the first time, [6] after one that overflowed the
+transient buffer pool */
+EMSCRIPTEN_KEEPALIVE const double *platform_web_profile_take_frame_times(void)
+{
+	static double values[7];
+	static double sorted[4096];
+	unsigned long count = web_frame_meter.window_gap_count;
+	unsigned long index;
+
+	memset(values, 0, sizeof(values));
+	memcpy(sorted, web_frame_meter.window_gaps, count * sizeof(double));
+	qsort(sorted, count, sizeof(double), web_compare_doubles);
+	if (count)
+		values[0] = sorted[count * 99 / 100 < count ? count * 99 / 100 : count - 1];
+	for (index = 0; index < count; index++)
+	{
+		values[1] += sorted[index] > 1000.0 / 60.0;
+		values[2] += sorted[index] > 1000.0 / 30.0;
+		values[3] += sorted[index] > 50.0;
+		values[4] += sorted[index] > 100.0;
+	}
+	values[5] = web_frame_meter.first_draw_gap_maximum;
+	values[6] = web_frame_meter.overflow_gap_maximum;
+	web_frame_meter.window_gap_count = 0;
+	web_frame_meter.first_draw_gap_maximum = 0.0;
+	web_frame_meter.overflow_gap_maximum = 0.0;
+	return values;
 }
 
 /* the longest frame callback since the last call */

@@ -428,6 +428,16 @@ addToLibrary({
         game.shaderCompiles = HEAPF64[index + 25];
         game.shaderSourceHits = HEAPF64[index + 26];
         game.pixelShaderKeys = HEAPF64[index + 27];
+        game.frameGapP99Ms = +HEAPF64[index + 28].toFixed(1);
+        game.framesOver = [HEAPF64[index + 29], HEAPF64[index + 30], HEAPF64[index + 31], HEAPF64[index + 32]];
+        game.firstDrawGapMaxMs = +HEAPF64[index + 33].toFixed(1);
+        game.overflowGapMaxMs = +HEAPF64[index + 34].toFixed(1);
+        game.maxDrawsPerFrame = HEAPF64[index + 35];
+        game.maxTransientUploadsPerFrame = HEAPF64[index + 36];
+        game.maxTransientKilobytesPerFrame = Math.round(HEAPF64[index + 37] / 1024);
+        game.transientOverflowFrames = HEAPF64[index + 38];
+        game.firstDraws = HEAPF64[index + 39];
+        game.firstDrawFrames = HEAPF64[index + 40];
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
@@ -550,6 +560,18 @@ addToLibrary({
           shaderCompiles: delta('shaderCompiles'),
           shaderSourceHits: delta('shaderSourceHits'),
           pixelShaderKeys: delta('pixelShaderKeys'),
+          /* frame pacing: the gaps' 99th percentile, how many exceeded 16.7,
+             33.3, 50 and 100 ms, and what the slowest frames had done */
+          frameGapP99Ms: game.frameGapP99Ms,
+          framesOver16_33_50_100Ms: game.framesOver,
+          firstDraws: delta('firstDraws'),
+          firstDrawFrames: game.firstDrawFrames,
+          firstDrawGapMaxMs: game.firstDrawGapMaxMs,
+          maxDrawsPerFrame: game.maxDrawsPerFrame,
+          maxTransientUploadsPerFrame: game.maxTransientUploadsPerFrame,
+          maxTransientKilobytesPerFrame: game.maxTransientKilobytesPerFrame,
+          transientOverflowFrames: game.transientOverflowFrames,
+          overflowGapMaxMs: game.overflowGapMaxMs,
           shaderMs: delta('shaderMs') === null ? null : +delta('shaderMs').toFixed(1),
           shaderMsMax: game.shaderMsMax,
           textureUploads: delta('textureUploads'),

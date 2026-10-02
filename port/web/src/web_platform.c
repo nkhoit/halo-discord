@@ -68,6 +68,8 @@ extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_
 extern void xgpu_web_texture_statistics(double values[7]);
 extern void xgpu_web_shader_statistics(double values[6]);
 extern double platform_web_profile_take_callback_maximum(void);
+extern const double *platform_web_profile_take_frame_times(void);
+extern void xgpu_web_frame_statistics(double values[6]);
 
 /* Local network statistics for ?netstats=1 (library_web_transport.js):
  * [0] ticks sent, [1] own units put back by the host, [2] the farthest of
@@ -82,10 +84,17 @@ extern double platform_web_profile_take_callback_maximum(void);
  * bytes, milliseconds and the longest, [22..23] milliseconds spent hashing
  * textures and the longest, [24] idle textures dropped, [25] of [15], shader
  * compiles, [26] shaders reused for text compiled before, [27] new pixel
- * shader keys. Counts are totals. */
+ * shader keys, [28] the 99th percentile frame gap, [29..32] gaps over 16.7,
+ * 33.3, 50 and 100 ms, [33] the longest gap after a frame with a program's
+ * first draw, [34] after a transient pool overflow, [35] the most draws in a
+ * frame, [36] the most transient uploads, [37] the most transient bytes,
+ * [38] frames that overflowed the pool, [39] first draws (total), [40] frames
+ * with first draws. [28..38] and [40] are since the last read; other counts
+ * are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
-	static double values[28];
+	static double first_draws_total;
+	static double values[41];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
@@ -133,6 +142,21 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	values[25] = shaders[3];
 	values[26] = shaders[4];
 	values[27] = shaders[5];
+	{
+		const double *times = platform_web_profile_take_frame_times();
+		double frame[6];
+
+		for (index = 0; index < 7; index++)
+			values[28 + index] = times[index];
+		xgpu_web_frame_statistics(frame);
+		values[35] = frame[0];
+		values[36] = frame[1];
+		values[37] = frame[2];
+		values[38] = frame[3];
+		first_draws_total += frame[4];
+		values[39] = first_draws_total;
+		values[40] = frame[5];
+	}
 	return values;
 }
 
