@@ -42,6 +42,12 @@ static struct
 	double count;
 	double milliseconds;
 	double milliseconds_maximum;
+	/* of count: shader compiles (the rest are program links) */
+	double compiles;
+	/* shaders whose text was compiled before, reused (shader_from_source) */
+	double source_hits;
+	/* pixel shader keys seen for the first time */
+	double fragment_keys;
 } shader_web_statistics;
 
 static void shader_web_count(double started)
@@ -54,11 +60,14 @@ static void shader_web_count(double started)
 		shader_web_statistics.milliseconds_maximum = elapsed;
 }
 
-void xgpu_web_shader_statistics(double values[3])
+void xgpu_web_shader_statistics(double values[6])
 {
 	values[0] = shader_web_statistics.count;
 	values[1] = shader_web_statistics.milliseconds;
 	values[2] = shader_web_statistics.milliseconds_maximum;
+	values[3] = shader_web_statistics.compiles;
+	values[4] = shader_web_statistics.source_hits;
+	values[5] = shader_web_statistics.fragment_keys;
 	shader_web_statistics.milliseconds_maximum = 0.0;
 }
 #endif
@@ -764,6 +773,7 @@ static GLuint compile_shader(GLenum type, const char *source, const char *what)
 	glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
 #ifdef HALO_WEB
 	shader_web_count(started);
+	shader_web_statistics.compiles++;
 #endif
 	if (!status)
 	{
@@ -1863,6 +1873,66 @@ static struct vertex_shader_object *current_program(void)
 
 /* ---------- program cache */
 
+/* GL shaders by their text. Different state can generate the same program:
+a pixel shader key holds every combiner register, including those of stages
+the program does not use, which keep whatever an earlier shader left there.
+Compiling each such key anew (and linking a new program for each new shader)
+stalled frames throughout a game; the same text now reuses one shader, and
+so one program. */
+struct source_entry
+{
+	struct source_entry *next;
+	unsigned long hash;
+	GLenum type;
+	size_t length;
+	char *source;
+	GLuint shader;
+};
+
+#define SOURCE_BUCKETS 1024
+
+static struct source_entry *source_buckets[SOURCE_BUCKETS];
+
+static GLuint shader_from_source(GLenum type, const char *source, const char *what)
+{
+	size_t length = strlen(source);
+	unsigned long hash = 2166136261UL ^ (unsigned long)type;
+	struct source_entry **bucket;
+	struct source_entry *entry;
+	size_t index;
+
+	for (index = 0; index < length; index++)
+		hash = (hash ^ (unsigned char)source[index]) * 16777619UL;
+	bucket = &source_buckets[hash % SOURCE_BUCKETS];
+	for (entry = *bucket; entry; entry = entry->next)
+	{
+		if (entry->hash == hash && entry->type == type && entry->length == length &&
+			!memcmp(entry->source, source, length))
+		{
+#ifdef HALO_WEB
+			shader_web_statistics.source_hits++;
+#endif
+			return entry->shader;
+		}
+	}
+	entry = calloc(1, sizeof(*entry));
+	entry->source = malloc(length + 1);
+	if (!entry->source)
+	{
+		free(entry);
+		return compile_shader(type, source, what);
+	}
+	memcpy(entry->source, source, length + 1);
+	entry->hash = hash;
+	entry->type = type;
+	entry->length = length;
+	/* (a failed compile is remembered too, so it is not retried each draw) */
+	entry->shader = compile_shader(type, source, what);
+	entry->next = *bucket;
+	*bucket = entry;
+	return entry->shader;
+}
+
 /* size is a multiple of 4 */
 static unsigned long hash_words(const void *data, unsigned long size)
 {
@@ -1883,7 +1953,7 @@ static GLuint vertex_shader_get(struct vertex_shader_object *program, BOOL immed
 		char *source = nv2a_vertex_shader_to_glsl(program->instructions, program->instruction_count,
 			immediate ? 0 : device.vertex_shader->packed_mask);
 
-		program->shader[variant] = compile_shader(GL_VERTEX_SHADER, source, "vertex");
+		program->shader[variant] = shader_from_source(GL_VERTEX_SHADER, source, "vertex");
 		if (debug_settings.dump_shaders)
 		{
 			char path[512];
@@ -1928,7 +1998,10 @@ static GLuint fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 	entry->hash = hash;
 	entry->key = *key;
 	source = nv2a_pixel_shader_to_glsl(key);
-	entry->shader = compile_shader(GL_FRAGMENT_SHADER, source, "pixel");
+	entry->shader = shader_from_source(GL_FRAGMENT_SHADER, source, "pixel");
+#ifdef HALO_WEB
+	shader_web_statistics.fragment_keys++;
+#endif
 	if (debug_settings.dump_shaders)
 	{
 		char path[512];

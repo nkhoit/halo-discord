@@ -66,7 +66,7 @@ extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_
 	long *maximum_tick_milliseconds);
 /* (port/linux/src/xbox_textures.c, d3d8_gl.c, sdl_platform.c) */
 extern void xgpu_web_texture_statistics(double values[7]);
-extern void xgpu_web_shader_statistics(double values[3]);
+extern void xgpu_web_shader_statistics(double values[6]);
 extern double platform_web_profile_take_callback_maximum(void);
 
 /* Local network statistics for ?netstats=1 (library_web_transport.js):
@@ -80,10 +80,12 @@ extern double platform_web_profile_take_callback_maximum(void);
  * (both since the last read), [15..17] shaders compiled and programs linked,
  * their milliseconds and the longest, [18..21] textures uploaded, their
  * bytes, milliseconds and the longest, [22..23] milliseconds spent hashing
- * textures and the longest, [24] idle textures dropped. Counts are totals. */
+ * textures and the longest, [24] idle textures dropped, [25] of [15], shader
+ * compiles, [26] shaders reused for text compiled before, [27] new pixel
+ * shader keys. Counts are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
-	static double values[25];
+	static double values[28];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
@@ -96,7 +98,7 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	long maximum_ticks_per_frame;
 	long maximum_tick_milliseconds;
 	double textures[7];
-	double shaders[3];
+	double shaders[6];
 	int index;
 
 	network_distributed_web_statistics(&ticks, &own_corrections, &own_correction_maximum_squared,
@@ -128,6 +130,9 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	values[22] = textures[4];
 	values[23] = textures[5];
 	values[24] = textures[6];
+	values[25] = shaders[3];
+	values[26] = shaders[4];
+	values[27] = shaders[5];
 	return values;
 }
 

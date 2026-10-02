@@ -702,12 +702,23 @@ struct texture_entry
 	unsigned long content_hash;
 	unsigned long content_hash_frame;
 	unsigned long content_hash_interval;
+	/* (when it was last drawn: the browser's frame rate is the display's,
+	often 144 or 240, so idle time is measured in time, not frames) */
+	double last_used_milliseconds;
 	#endif
 	unsigned long last_used_frame;
 };
 
 #define TEXTURE_BUCKET_COUNT 4096
 #define TEXTURE_IDLE_FRAMES 1800
+#ifdef HALO_WEB
+/* 1800 frames is half a minute at 60 frames a second but 7.5 s at 240: a
+texture off screen that long was dropped and decoded and uploaded again on
+the frame it came back, often with many others at once (a respawn, a turn),
+which stalled the frame */
+#define TEXTURE_IDLE_MILLISECONDS 60000.0
+static double texture_frame_milliseconds;
+#endif
 #define MAXIMUM_PALETTE_VARIANTS 8
 
 static struct texture_entry *texture_buckets[TEXTURE_BUCKET_COUNT];
@@ -922,6 +933,9 @@ GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *
 	}
 	#endif
 	entry->last_used_frame = texture_frame;
+	#ifdef HALO_WEB
+	entry->last_used_milliseconds = texture_frame_milliseconds;
+	#endif
 	#ifndef HALO_WEB
 	if (!palettized && !no_cache)
 	{
@@ -943,6 +957,9 @@ void xgpu_texture_cache_begin_frame(void)
 	unsigned long index;
 
 	texture_frame++;
+#ifdef HALO_WEB
+	texture_frame_milliseconds = emscripten_get_now();
+#endif
 	if (texture_frame % 600)
 		return;
 	/* drop textures that have not been used for a while */
@@ -954,7 +971,11 @@ void xgpu_texture_cache_begin_frame(void)
 		{
 			struct texture_entry *entry = *link;
 
+#ifdef HALO_WEB
+			if (texture_frame_milliseconds - entry->last_used_milliseconds > TEXTURE_IDLE_MILLISECONDS)
+#else
 			if (texture_frame - entry->last_used_frame > TEXTURE_IDLE_FRAMES)
+#endif
 			{
 				*link = entry->next;
 				glDeleteTextures(1, &entry->texture);

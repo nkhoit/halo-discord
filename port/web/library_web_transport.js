@@ -425,6 +425,9 @@ addToLibrary({
         game.textureHashMs = HEAPF64[index + 22];
         game.textureHashMsMax = +HEAPF64[index + 23].toFixed(1);
         game.textureDrops = HEAPF64[index + 24];
+        game.shaderCompiles = HEAPF64[index + 25];
+        game.shaderSourceHits = HEAPF64[index + 26];
+        game.pixelShaderKeys = HEAPF64[index + 27];
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
@@ -544,6 +547,9 @@ addToLibrary({
           tickMsMax: game.tickMsMax,
           callbackMsMax: game.callbackMsMax,
           shaders: delta('shaders'),
+          shaderCompiles: delta('shaderCompiles'),
+          shaderSourceHits: delta('shaderSourceHits'),
+          pixelShaderKeys: delta('pixelShaderKeys'),
           shaderMs: delta('shaderMs') === null ? null : +delta('shaderMs').toFixed(1),
           shaderMsMax: game.shaderMsMax,
           textureUploads: delta('textureUploads'),
