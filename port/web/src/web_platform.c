@@ -66,7 +66,7 @@ extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_
 	long *maximum_tick_milliseconds);
 /* (port/linux/src/xbox_textures.c, d3d8_gl.c, sdl_platform.c) */
 extern void xgpu_web_texture_statistics(double values[7]);
-extern void xgpu_web_shader_statistics(double values[9]);
+extern void xgpu_web_shader_statistics(double values[12]);
 extern double platform_web_profile_take_callback_maximum(void);
 extern const double *platform_web_profile_take_frame_times(void);
 extern void xgpu_web_frame_statistics(double values[6]);
@@ -91,13 +91,16 @@ extern void xgpu_web_frame_statistics(double values[6]);
  * [38] frames that overflowed the pool, [39] first draws (total), [40] frames
  * with first draws, [41] the longest time outside the frame callback,
  * [42] programs built ahead, [43] the last warm-up's milliseconds, [44] first
- * draws of programs not built ahead.
+ * draws of programs not built ahead, [45] draws skipped while their program
+ * compiled in the background, [46] programs compiled so, [47] the longest
+ * wait for one, [48] the longest interval between the worker's animation
+ * frames, [49] the longest delay from one's timestamp to the game frame.
  * [28..38], [40] and [41] are since the last read; other counts
  * are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
 	static double first_draws_total;
-	static double values[45];
+	static double values[50];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
@@ -110,7 +113,7 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	long maximum_ticks_per_frame;
 	long maximum_tick_milliseconds;
 	double textures[7];
-	double shaders[9];
+	double shaders[12];
 	int index;
 
 	network_distributed_web_statistics(&ticks, &own_corrections, &own_correction_maximum_squared,
@@ -163,6 +166,11 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 		values[42] = shaders[6];
 		values[43] = shaders[7];
 		values[44] = shaders[8];
+		values[45] = shaders[9];
+		values[46] = shaders[10];
+		values[47] = shaders[11];
+		values[48] = times[8];
+		values[49] = times[9];
 	}
 	return values;
 }

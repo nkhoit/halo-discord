@@ -58,6 +58,12 @@ static struct
 	presenting, the browser, other work on the worker) */
 	double last_end;
 	double outside_maximum;
+	/* the worker's animation frames: this window's longest interval between
+	two (the browser not producing frames) and the longest delay from one's
+	timestamp to the game's frame starting in it (the worker busy) */
+	double raf_last;
+	double raf_interval_maximum;
+	double raf_late_maximum;
 	/* frames per second to render at most, 0 for the display's rate (a
 	measurement switch: the simulation stays at 30 ticks a second) */
 	int frame_cap;
@@ -511,6 +517,35 @@ void platform_web_frame_begin(void)
 	}
 	if (web_frame_meter.last_end > 0.0 && now - web_frame_meter.last_end > web_frame_meter.outside_maximum)
 		web_frame_meter.outside_maximum = now - web_frame_meter.last_end;
+	{
+		/* (requestAnimationFrame on this worker is wrapped once to keep each
+		frame's timestamp; Emscripten's loop calls it by its global name) */
+		double late = 0.0;
+		double timestamp = EM_ASM_DOUBLE({
+			if (!self.haloRafWrapped && typeof requestAnimationFrame == 'function')
+			{
+				var request = requestAnimationFrame;
+				self.haloRafWrapped = true;
+				self.requestAnimationFrame = function(callback)
+				{
+					return request.call(self, function(time) { self.haloRafTime = time; callback(time); });
+				};
+			}
+			if (!self.haloRafTime)
+				return 0;
+			setValue($0, performance.now() - self.haloRafTime, 'double');
+			return self.haloRafTime;
+		}, &late);
+
+		if (timestamp > 0.0)
+		{
+			if (web_frame_meter.raf_last > 0.0 && timestamp - web_frame_meter.raf_last > web_frame_meter.raf_interval_maximum)
+				web_frame_meter.raf_interval_maximum = timestamp - web_frame_meter.raf_last;
+			if (late > web_frame_meter.raf_late_maximum)
+				web_frame_meter.raf_late_maximum = late;
+			web_frame_meter.raf_last = timestamp;
+		}
+	}
 	web_frame_meter.last_start = now;
 	web_frame_meter.starts++;
 	web_frame_meter.callback_start = now;
@@ -593,10 +628,12 @@ EMSCRIPTEN_KEEPALIVE double platform_web_profile_take_gap_maximum(void)
 [1..4] gaps over 16.7, 33.3, 50 and 100 ms, [5] the longest gap after a frame
 that drew a program for the first time, [6] after one that overflowed the
 transient buffer pool, [7] the longest time between one callback's end and
-the next one's start */
+the next one's start, [8] the longest interval between the worker's animation
+frames, [9] the longest delay from an animation frame's timestamp to the game
+frame starting */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_profile_take_frame_times(void)
 {
-	static double values[8];
+	static double values[10];
 	static double sorted[4096];
 	unsigned long count = web_frame_meter.window_gap_count;
 	unsigned long index;
@@ -616,7 +653,11 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_profile_take_frame_times(void)
 	values[5] = web_frame_meter.first_draw_gap_maximum;
 	values[6] = web_frame_meter.overflow_gap_maximum;
 	values[7] = web_frame_meter.outside_maximum;
+	values[8] = web_frame_meter.raf_interval_maximum;
+	values[9] = web_frame_meter.raf_late_maximum;
 	web_frame_meter.outside_maximum = 0.0;
+	web_frame_meter.raf_interval_maximum = 0.0;
+	web_frame_meter.raf_late_maximum = 0.0;
 	web_frame_meter.window_gap_count = 0;
 	web_frame_meter.first_draw_gap_maximum = 0.0;
 	web_frame_meter.overflow_gap_maximum = 0.0;
