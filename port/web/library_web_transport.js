@@ -1188,6 +1188,18 @@ addToLibrary({
       }
     },
 
+    /* (the host) whether its game is past the lobby, for the room's status:
+       others wait for the match to end rather than fail to join. Sent again
+       on every reconnect. */
+    relaySendPhase: function(relay) {
+      if (!relay || !relay.ready || relay.options.role !== 'host' || relay.inMatch === undefined) return;
+      try {
+        relay.reliable.send(JSON.stringify({ type: 'phase', inMatch: relay.inMatch }));
+      } catch (error) {
+        /* closing: the next "ready" sends it */
+      }
+    },
+
     relayCloseSockets: function(relay, code) {
       [relay.reliable, relay.unreliable].forEach(function(socket) {
         if (!socket) return;
@@ -1340,6 +1352,7 @@ addToLibrary({
         try { message = JSON.parse(data); } catch (error) { return; }
         if (message.type === 'ready' && socket === relay.reliable) {
           relay.ready = true;
+          runtime.relaySendPhase(relay);
           relay.reconnectAttempt = 0;
           if (relay.everReady) relay.reconnects++;
           relay.everReady = true;
@@ -1691,6 +1704,12 @@ addToLibrary({
         /* Room mode: connects to the configured relay room; its members
            become peers through onRelayPeer. */
         openRelay: function() { runtime.openRelay(); },
+        setRelayPhase: function(inMatch) {
+          var relay = runtime.relay;
+          if (!relay || relay.inMatch === !!inMatch) return;
+          relay.inMatch = !!inMatch;
+          runtime.relaySendPhase(relay);
+        },
         addPeer: function(options) { return runtime.addPeer(options); },
         handleSignal: function(peerId, signal) { return runtime.handleSignal(peerId, signal); },
         restartIce: function(peerId) { return runtime.restartIce(peerId); },
