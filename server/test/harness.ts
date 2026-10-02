@@ -43,7 +43,7 @@ export class FakeDiscord implements DiscordApi {
   }
 }
 
-export function fixtures(): { buildDir: string; mapsDir: string } {
+export function fixtures(): { buildDir: string; mapsDir: string; uiDir: string } {
   const root = mkdtempSync(joinPath(tmpdir(), "halo-server-test-"));
   const buildDir = joinPath(root, "build");
   const mapsDir = joinPath(root, "maps");
@@ -57,7 +57,13 @@ export function fixtures(): { buildDir: string; mapsDir: string } {
   writeFileSync(joinPath(mapsDir, "bloodgulch.map"), Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 256)));
   writeFileSync(joinPath(mapsDir, "a10.map"), "campaign");
   writeFileSync(joinPath(mapsDir, "bloodgulch.shaders"), "HALO-SHADERS 1 bloodgulch\n");
-  return { buildDir, mapsDir };
+  const uiDir = joinPath(mapsDir, "ui");
+  mkdirSync(joinPath(uiDir, "maps"), { recursive: true });
+  mkdirSync(joinPath(uiDir, "modes"));
+  writeFileSync(joinPath(uiDir, "maps", "blood-gulch.png"), "map png");
+  writeFileSync(joinPath(uiDir, "modes", "slayer.png"), "mode png");
+  writeFileSync(joinPath(uiDir, "secret.png"), "not listed");
+  return { buildDir, mapsDir, uiDir };
 }
 
 export function testConfig(overrides: Partial<Config> = {}): Config {

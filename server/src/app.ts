@@ -30,6 +30,7 @@ import {
   type Context,
   type AssetVersions,
   contentVersion,
+  gameImage,
   HANDLERS_SCRIPT,
   hostedPage,
   ICONS,
@@ -88,6 +89,8 @@ async function readSmallJson(request: IncomingMessage, limit: number): Promise<u
   }
 }
 const ICON_DIRECTORY = fileURLToPath(new URL("../icons/", import.meta.url));
+const CLIENT_DIRECTORY = fileURLToPath(new URL("../client/", import.meta.url));
+const HOSTED_FILES: Record<string, string> = { "hosted.js": JAVASCRIPT, "hosted.css": "text/css; charset=utf-8" };
 
 function sendBody(request: IncomingMessage, response: ServerResponse, headers: Record<string, string>,
     type: string, body: string): void {
@@ -116,6 +119,10 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
   };
   const iconVersions = Object.fromEntries(Object.keys(ICONS).map((name) =>
     [name, contentVersion(readFileSync(join(ICON_DIRECTORY, name)))]));
+  const hosted = Object.fromEntries(Object.keys(HOSTED_FILES).map((name) => {
+    const body = readFileSync(join(CLIENT_DIRECTORY, name), "utf8");
+    return [name, { body, version: contentVersion(body) }];
+  })) as Record<string, { body: string; version: string }>;
   const loginVersion = contentVersion(LOGIN_SCRIPT);
   const handlersVersion = contentVersion(HANDLERS_SCRIPT);
 
@@ -199,7 +206,8 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
   }
 
   async function versions(): Promise<AssetVersions> {
-    return { app: await appVersion(), activity: contentVersion(await activityBundle()), icons: iconVersions };
+    return { app: await appVersion(), activity: contentVersion(await activityBundle()), icons: iconVersions,
+      hostedScript: hosted["hosted.js"]!.version, hostedStyle: hosted["hosted.css"]!.version };
   }
 
   const server = createServer(async (request, response) => {
@@ -243,6 +251,20 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       if (relative === "activity.js") {
         const bundle = await activityBundle();
         return sendBody(request, response, cache(contentVersion(bundle)), JAVASCRIPT, bundle);
+      }
+      if (Object.hasOwn(HOSTED_FILES, relative)) {
+        const file = hosted[relative]!;
+        return sendBody(request, response, cache(file.version), HOSTED_FILES[relative]!, file.body);
+      }
+      const image = gameImage(relative);
+      if (image) {
+        if (!requestSession(config, request)) {
+          response.writeHead(401, { ...headers, Vary: MAP_CACHE.Vary, "Content-Type": "text/plain" })
+            .end("login required");
+          return;
+        }
+        await serveFile(request, response, config.uiDir, image, "image/png", { ...headers, ...MAP_CACHE }, false);
+        return;
       }
       if (Object.hasOwn(ICONS, relative)) {
         await serveFile(request, response, ICON_DIRECTORY, relative, ICONS[relative]!, cache(iconVersions[relative]!), false);

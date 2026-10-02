@@ -115,6 +115,7 @@
     hostWasReady: false,
     hostSettings: null,
     guestWasJoined: false,
+    inMatch: false,
     leavePromise: null,
     wizardStep: "map",
   };
@@ -363,80 +364,146 @@
   }
 
   /* Discord Activity: activity.js signs in through the Discord SDK and sets
-     HaloActivity before the game loads. The room belongs to the Activity
-     instance, so there are no invite links: the lobby polls the room and
-     offers to host when nobody does, or to join the player who hosts. */
-  var ACTIVITY_POLL_MILLISECONDS = 2000;
-  var activityLobby = { timer: 0, view: null, notice: null, named: false };
-
+     HaloActivity before the game loads. */
   function activity() {
     var value = global.HaloActivity;
     return value && typeof value.roomId === "string" ? value : null;
   }
 
-  function stopActivityLobby() {
-    if (activityLobby.timer) global.clearTimeout(activityLobby.timer);
-    activityLobby.timer = 0;
-    activityLobby.view = null;
+  /* The hosted page (this server's, in a browser or as the Discord
+     Activity): its own UI (server/client/hosted.js) replaces the shell's
+     dialogs and reads status(). The room is the Activity instance's or, in a
+     browser, the page address's #room= (made up when missing, so the address
+     is the link to share). The lobby polls the room: nobody hosting offers
+     hosting; a host in its lobby is joined at once, under the Discord name;
+     a host in a match is waited for (Halo cannot join a match in progress). */
+  var LOBBY_POLL_MILLISECONDS = 2000;
+  var JOIN_RETRY_MILLISECONDS = 10000;
+  var NOTICE_MILLISECONDS = 15000;
+  var CLIENT_STATE = Object.freeze({ PREGAME: 2, INGAME: 3, POSTGAME: 4 });
+  var hostedLobby = { timer: 0, view: null, summary: null, roomId: null, retryAt: 0, notice: null, noticeAt: 0 };
+
+  function hostedPage() {
+    var mode = typeof document.querySelector === "function" &&
+      document.querySelector('meta[name="halo-transport"]');
+    return !!(mode && mode.content === "relay-rooms");
   }
 
-  function startActivityLobby() {
-    if (!activity() || session.active || activityLobby.timer || !session.runtimeReady) return;
-    useDiscordName();
-    activityLobby.timer = global.setTimeout(pollActivityLobby, 0);
+  function pageRoomId() {
+    if (activity()) return activity().roomId;
+    if (!hostedPage()) return null;
+    var fragment = new URLSearchParams(String(global.location.hash || "").replace(/^#/, ""));
+    var id = fragment.get("room");
+    if (!id || !/^[A-Za-z0-9_-]{16,64}$/.test(id)) {
+      id = randomRoomId();
+      fragment.set("room", id);
+      global.history.replaceState(null, "", "#" + fragment.toString());
+    }
+    return id;
   }
 
-  /* The Discord display name, when it fits Halo's rules, replaces a
-     generated "Spartan 123" name. */
-  function useDiscordName() {
-    if (activityLobby.named || !elements.playerName) return;
-    activityLobby.named = true;
-    var user = activity().user;
-    var name = String(user && user.name || "").replace(/[^A-Za-z0-9 ._'-]/g, "").trim()
+  function setNotice(message) {
+    hostedLobby.notice = message || null;
+    hostedLobby.noticeAt = Date.now();
+  }
+
+  function stopHostedLobby() {
+    if (hostedLobby.timer) global.clearTimeout(hostedLobby.timer);
+    hostedLobby.timer = 0;
+  }
+
+  function startHostedLobby() {
+    if (!hostedPage() || session.active || hostedLobby.timer || !session.runtimeReady) return;
+    hostedLobby.roomId = pageRoomId();
+    hostedLobby.timer = global.setTimeout(pollHostedLobby, 0);
+  }
+
+  /* The Discord display name, when it fits Halo's rules (eleven basic
+     characters). */
+  function discordPlayerName() {
+    var user = activity() ? activity().user : (global.HaloHostedUser || relayAuth.user);
+    var name = String(user && user.name || "").replace(/[^A-Za-z0-9 ._'-]/g, "").replace(/\s+/g, " ").trim()
       .slice(0, PLAYER_NAME_MAXIMUM_LENGTH).trim();
-    if (!/^Spartan \d{3}$/.test(elements.playerName.value) || !/^[A-Za-z0-9]/.test(name)) return;
-    elements.playerName.value = name;
-    elements.playerName.dispatchEvent(new Event("input", { bubbles: true }));
+    return /^[A-Za-z0-9]/.test(name) ? name : null;
   }
 
-  async function pollActivityLobby() {
-    activityLobby.timer = 0;
-    if (!activity() || session.active) return;
+  async function pollHostedLobby() {
+    hostedLobby.timer = 0;
+    if (!hostedPage() || session.active) return;
     var summary = null;
     try {
-      var response = await fetch(relayEndpoint("v1/rooms/" + activity().roomId),
+      var response = await fetch(relayEndpoint("v1/rooms/" + hostedLobby.roomId),
         { credentials: "include", cache: "no-store" });
-      if (response.status === 401) await activity().signIn();
-      else if (response.ok) summary = await response.json();
+      if (response.status === 401) {
+        if (activity()) await activity().signIn();
+        else await relaySession("room=" + hostedLobby.roomId);
+      } else if (response.ok) {
+        summary = await response.json();
+      }
     } catch (error) {
       /* Try again on the next poll. */
     }
     if (session.active) return;
-    if (summary) showActivityLobby(summary);
-    activityLobby.timer = global.setTimeout(pollActivityLobby, ACTIVITY_POLL_MILLISECONDS);
+    if (summary) showHostedLobby(summary);
+    hostedLobby.timer = global.setTimeout(pollHostedLobby, LOBBY_POLL_MILLISECONDS);
   }
 
-  function showActivityLobby(summary) {
-    var view = summary.host ? "join:" + summary.host : "host";
-    if (view === activityLobby.view) return;
-    activityLobby.view = view;
-    showDialog();
-    if (summary.host) {
-      showJoinConfirmation("room:" + activity().roomId);
-      elements.description.textContent = "Join the game.";
-      if (elements.joinSummary) elements.joinSummary.textContent = summary.host +
-        " is hosting in this Activity. Choose your name and color, then join.";
-      /* Brings the button into view in a short Activity frame; Enter joins. */
-      if (elements.joinProfile) elements.joinProfile.focus();
+  function showHostedLobby(summary) {
+    hostedLobby.summary = summary;
+    if (!summary.host) {
+      hostedLobby.view = "pick";
+    } else if (summary.inMatch) {
+      hostedLobby.view = "wait-match";
+    } else if (Date.now() < hostedLobby.retryAt) {
+      hostedLobby.view = "wait-retry";
     } else {
-      showSetup();
-      elements.description.textContent =
-        "Nobody is hosting yet. Pick a map and mode to host a game for everyone in this Activity.";
+      /* (if this join fails, the next waits a while) */
+      hostedLobby.view = "joining";
+      hostedLobby.retryAt = Date.now() + JOIN_RETRY_MILLISECONDS;
+      join("room:" + hostedLobby.roomId);
     }
-    if (activityLobby.notice) {
-      setStatus(activityLobby.notice, "error");
-      activityLobby.notice = null;
+  }
+
+  function clientGameState() {
+    var get = global.Module && global.Module._platform_web_online_get_client_state;
+    try {
+      return typeof get === "function" ? get() : -1;
+    } catch (error) {
+      return -1;
     }
+  }
+
+  /* What the hosted page's UI shows. view: "booting", "checking" (the room
+     not yet polled), "pick" (nobody hosts: choose and host), "joining",
+     "wait-match" (the host is in a match), "wait-retry" (a join failed),
+     "host-starting", "hosting" (the host's Halo lobby), "joined" (a guest in
+     the host's lobby) or "match". */
+  function hostedStatus() {
+    var state = -1;
+    try { state = session.runtimeReady ? gameState() : -1; } catch (error) { /* starting */ }
+    var view;
+    if (!session.runtimeReady) view = "booting";
+    else if (session.active && session.role === "host") {
+      view = state === GAME_STATE.HOSTING ? (session.inMatch ? "match" : "hosting") : "host-starting";
+    } else if (session.active) {
+      view = state === GAME_STATE.JOINED ? (session.inMatch ? "match" : "joined") : "joining";
+    } else view = hostedLobby.view || "checking";
+    if (hostedLobby.notice && Date.now() - hostedLobby.noticeAt > NOTICE_MILLISECONDS) hostedLobby.notice = null;
+    var summary = hostedLobby.summary || {};
+    var players = Array.from(session.roster.values()).map(function(player) {
+      return player && player.profile ? player.profile.name : null;
+    }).filter(Boolean);
+    return {
+      view: view,
+      role: session.role,
+      roomId: hostedLobby.roomId,
+      host: session.role === "host" ? (discordPlayerName() || "You") : (summary.host || null),
+      players: session.active ? players : [],
+      playerCount: session.active ? players.length : (summary.players || 0),
+      notice: hostedLobby.notice,
+      settings: session.hostSettings || readHostSettings(),
+      shareUrl: activity() || !hostedPage() ? null : global.location.href,
+    };
   }
 
   function clearTurnstileTimer() {
@@ -580,6 +647,8 @@
   }
 
   function showDialog() {
+    /* (the hosted page has its own UI; a modal would make it inert) */
+    if (hostedPage()) return;
     if (!elements.dialog.open) elements.dialog.showModal();
   }
 
@@ -738,8 +807,8 @@
 
   function readPlayerProfile() {
     return normalizePlayerProfile({
-      name: elements.playerName ? elements.playerName.value :
-        (session.profile && session.profile.name),
+      name: (hostedPage() && discordPlayerName()) || (elements.playerName ? elements.playerName.value :
+        (session.profile && session.profile.name)),
       style: selectedPlayerStyle(),
     });
   }
@@ -932,6 +1001,15 @@
       mapName: selectedLabel(elements.map, mapIndex),
       modeName: selectedLabel(elements.mode, modeIndex),
     };
+  }
+
+  /* The last map and mode chosen (restored into the shell's selects). */
+  function readHostSettings() {
+    try {
+      return normalizeHostSettings(null);
+    } catch (error) {
+      return null;
+    }
   }
 
   function restoreHostSettings() {
@@ -1761,11 +1839,11 @@
     var recoveredVerification = false;
     try {
       if (relaySettings()) {
-        stopActivityLobby();
-        var roomId = activity() ? activity().roomId : randomRoomId();
+        stopHostedLobby();
+        var roomId = pageRoomId() || randomRoomId();
         await startRelayRoom(roomId, operation);
         session.inviteCode = "room:" + session.room.id;
-        session.inviteUrl = activity() ? "" : makeInviteUrl(session.inviteCode);
+        session.inviteUrl = activity() ? "" : (hostedPage() ? global.location.href : makeInviteUrl(session.inviteCode));
         showInvite();
       } else {
         await openSignalingRoom(operation, turnstileToken);
@@ -1825,7 +1903,7 @@
     setStatus("Opening your friend's private room…");
     try {
       if (invite.relay) {
-        stopActivityLobby();
+        stopHostedLobby();
         await startRelayRoom(invite.roomId, operation);
         requireCurrentOperation(operation);
         setGameTransportState(TRANSPORT_STATE.CONNECTING);
@@ -1878,6 +1956,11 @@
       return;
     }
     elements.dialog.dataset.gameState = String(state);
+    var clientState = clientGameState();
+    session.inMatch = clientState === CLIENT_STATE.INGAME || clientState === CLIENT_STATE.POSTGAME;
+    if (session.role === "host" && global.HaloWebTransport && typeof global.HaloWebTransport.setRelayPhase === "function") {
+      global.HaloWebTransport.setRelayPhase(session.inMatch);
+    }
     if (state === GAME_STATE.ERROR) {
       fail(new Error(GAME_ERRORS[gameError()] || "Halo could not enter the online lobby."));
       return;
@@ -1911,6 +1994,8 @@
       setStatus("Halo found the lobby. Joining…");
     } else if (state === GAME_STATE.JOINED) {
       session.guestWasJoined = true;
+      hostedLobby.retryAt = 0;
+      setNotice(null);
       setHeader("Connected to friend", "connected");
       setStatus("You're in the lobby.");
       global.setTimeout(function() {
@@ -1924,9 +2009,9 @@
       session.guestWasJoined = false;
       relayRoomHasHost(session.room && session.room.id).then(function(hasHost) {
         var message = hasHost === false ? "The host left or ended the game." : null;
-        if (message && activity()) activityLobby.notice = message;
+        if (message && hostedPage()) setNotice(message);
         return leave(true).then(function() {
-          if (message && !activity()) setStatus(message, "error");
+          if (message && !hostedPage()) setStatus(message, "error");
         });
       });
     }
@@ -1969,6 +2054,7 @@
     session.hostWasReady = false;
     session.hostSettings = null;
     session.guestWasJoined = false;
+    session.inMatch = false;
     session.pendingInvite = null;
     session.wizardStep = "map";
     if (relayAuth.refreshTimer) global.clearTimeout(relayAuth.refreshTimer);
@@ -2015,10 +2101,7 @@
         showSetup();
         setBusy(false);
       }
-      if (activity()) {
-        activityLobby.view = null;
-        startActivityLobby();
-      }
+      if (hostedPage()) startHostedLobby();
     })();
     try {
       await session.leavePromise;
@@ -2032,9 +2115,9 @@
     var message = error && error.message ? error.message : "Online play failed.";
     telemetry("online_error", "online");
     var wasActive = session.active;
-    if (activity()) {
-      /* The Activity lobby reopens after leaving and shows the message. */
-      activityLobby.notice = message;
+    if (hostedPage()) {
+      /* The hosted lobby reopens after leaving and shows the message. */
+      setNotice(message);
       leave(false).then(function() { setBusy(false); });
       return;
     }
@@ -2225,7 +2308,8 @@
     attachEvents();
     renderRoster();
     setBusy(false);
-    session.pendingInvite = takeInviteFromLocation();
+    /* (the hosted page's room stays in its address) */
+    session.pendingInvite = hostedPage() ? null : takeInviteFromLocation();
     if (session.pendingInvite) {
       showDialog();
       showJoinConfirmation(session.pendingInvite);
@@ -2372,12 +2456,13 @@
       if (session.pendingInvite) {
         showJoinConfirmation(session.pendingInvite);
       }
-      startActivityLobby();
+      startHostedLobby();
     },
     host: host,
     join: join,
     leave: function() { return leave(true); },
     defaultFrameCap: defaultFrameCap,
+    status: hostedStatus,
   });
 
   if (document.readyState === "loading") {

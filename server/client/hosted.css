@@ -1,0 +1,212 @@
+/* The hosted page (server/client/hosted.js): the game fills the frame, and
+   none of upstream's shell chrome shows. */
+
+html.halo-hosted,
+html.halo-hosted body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+  color: #e6f2fb;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+html.halo-hosted body::before,
+html.halo-hosted body::after,
+html.halo-hosted main::after { display: none !important; }
+
+html.halo-hosted header,
+html.halo-hosted #game-frame > footer,
+html.halo-hosted #duke-legend,
+html.halo-hosted #player-sidebar,
+html.halo-hosted #online-dialog,
+html.halo-hosted #about-dialog,
+html.halo-hosted #campaign-loading { display: none !important; }
+
+html.halo-hosted main#game-area {
+  position: fixed;
+  inset: 0;
+  display: block;
+  background: #000;
+}
+html.halo-hosted #game-frame {
+  position: absolute;
+  inset: 0;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  transform: none;
+  display: block;
+}
+html.halo-hosted #game-frame::before { display: none; }
+/* The canvas keeps its 16:9 backing store; the frame letterboxes it. */
+html.halo-hosted #game-frame canvas.emscripten,
+html.halo-hosted #game-frame canvas.emscripten.ready {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+  object-fit: contain;
+  border: 0;
+  box-shadow: none;
+  clip-path: none;
+  background: #000;
+}
+
+/* the shell's start-up screen, as the page's loading screen */
+html.halo-hosted #loading {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 45%, #0b2742, #02070f 70%);
+}
+html.halo-hosted #loading[hidden] { display: none; }
+html.halo-hosted #loading::before,
+html.halo-hosted #loading::after { display: none; }
+
+#hosted-ui button {
+  min-height: 2.25rem;
+  padding: .4rem .9rem;
+  border: 1px solid rgba(110, 190, 240, .55);
+  border-radius: .35rem;
+  color: #e6f2fb;
+  background: rgba(10, 40, 66, .9);
+  font: inherit;
+  font-size: .95rem;
+  cursor: pointer;
+}
+#hosted-ui button:hover,
+#hosted-ui button:focus-visible { border-color: #8fd3ff; background: rgba(18, 66, 104, .95); outline: none; }
+#hosted-ui button.primary { border-color: #6cc6ff; background: #0d6fb3; font-weight: 600; }
+#hosted-ui button.primary:hover,
+#hosted-ui button.primary:focus-visible { background: #1689d6; }
+#hosted-ui [hidden] { display: none !important; }
+
+/* the lobby: a panel over the game, scrolling in a short frame */
+#hosted-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: clamp(.75rem, 3vh, 2rem) clamp(.75rem, 3vw, 2rem);
+  background: rgba(2, 8, 16, .88);
+  text-align: center;
+}
+#hosted-panel.picking { justify-content: flex-start; }
+#hosted-title { margin: 0 0 .35rem; font-size: clamp(1.2rem, 3.2vh, 1.8rem); font-weight: 600; }
+#hosted-text { margin: 0 0 .75rem; color: #a9c4d8; }
+#hosted-notice { margin: 0 auto .75rem; max-width: 36rem; color: #ffb4a8; }
+#hosted-picker { max-width: 64rem; margin: 0 auto; }
+.hosted-maps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: .5rem;
+  margin-bottom: .75rem;
+}
+.hosted-modes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: .4rem;
+  margin-bottom: .75rem;
+}
+#hosted-ui .hosted-map,
+#hosted-ui .hosted-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: .25rem;
+  padding: .3rem;
+  overflow: hidden;
+}
+#hosted-ui .hosted-mode { flex-direction: row; align-items: center; padding: .25rem .6rem .25rem .3rem; }
+.hosted-map img { width: 100%; aspect-ratio: 140 / 114; object-fit: cover; border-radius: .2rem; }
+.hosted-mode img { width: 2.6rem; aspect-ratio: 140 / 114; object-fit: cover; border-radius: .15rem; }
+.hosted-card-label { font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#hosted-ui .selected { border-color: #8fd3ff; background: #0d4f80; box-shadow: 0 0 0 2px rgba(143, 211, 255, .45); }
+.hosted-actions { position: sticky; bottom: 0; padding: .4rem 0; background: rgba(2, 8, 16, .9); }
+#hosted-host { min-width: 10rem; }
+#hosted-ui .hosted-link { align-self: center; margin-top: .75rem; background: transparent; }
+
+/* in Halo's own lobby: a bar along the top */
+#hosted-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 16;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  padding: .4rem .75rem;
+  background: rgba(2, 8, 16, .8);
+}
+#hosted-bar-text { margin-right: .5rem; }
+
+/* the mouse is free: click to play, or the paused menu */
+#hosted-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, .55);
+}
+.hosted-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: .6rem;
+  min-width: min(18rem, 90vw);
+  padding: 1rem 1.25rem;
+  border: 1px solid rgba(110, 190, 240, .35);
+  border-radius: .5rem;
+  background: rgba(4, 16, 30, .94);
+}
+#hosted-overlay-title { margin: 0; text-align: center; font-size: 1.3rem; }
+#hosted-resume { min-height: 2.75rem; font-size: 1.1rem; }
+.hosted-audio { display: flex; align-items: center; gap: .6rem; }
+.hosted-audio input { flex: 1; accent-color: #6cc6ff; }
+.hosted-overlay-actions { display: flex; gap: .5rem; }
+.hosted-overlay-actions button { flex: 1; }
+.hosted-hint { margin: 0; color: #7f9db3; font-size: .78rem; text-align: center; }
+
+#hosted-map-loading {
+  position: fixed;
+  left: 50%;
+  bottom: 1rem;
+  z-index: 12;
+  display: grid;
+  gap: .3rem;
+  width: min(22rem, calc(100% - 2rem));
+  padding: .5rem .75rem;
+  border-radius: .35rem;
+  background: rgba(0, 0, 0, .8);
+  font-size: .85rem;
+  pointer-events: none;
+  translate: -50% 0;
+}
+#hosted-map-loading progress { width: 100%; height: 4px; accent-color: #6cc6ff; }
+
+@media (max-height: 420px) {
+  .hosted-maps { grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); }
+  .hosted-map img { aspect-ratio: 2 / 1; }
+  #hosted-title { font-size: 1.1rem; }
+}

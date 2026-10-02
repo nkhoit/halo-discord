@@ -76,6 +76,20 @@ export function mapFile(path: string): string | null {
   return match && MAPS.has(`${match[1]}.map`) ? `${match[1]}.${match[2]}` : null;
 }
 
+/* The lobby's images (game data, served like the maps): each multiplayer
+   map's preview and each game type's icon, by the slugs hosted.js uses. */
+export const MAP_IMAGES = new Set([
+  "battle-creek", "sidewinder", "damnation", "rat-race", "prisoner", "hang-em-high", "chill-out",
+  "derelict", "boarding-action", "blood-gulch", "wizard", "chiron-tl-34", "longest",
+]);
+export const MODE_IMAGES = new Set(["slayer", "team-slayer", "capture-the-flag", "oddball", "king-of-the-hill", "race"]);
+
+export function gameImage(path: string): string | null {
+  const match = /^game-ui\/(maps|modes)\/([a-z0-9-]+)\.png$/.exec(path);
+  if (!match) return null;
+  return (match[1] === "maps" ? MAP_IMAGES : MODE_IMAGES).has(match[2]!) ? `${match[1]}/${match[2]}.png` : null;
+}
+
 /* The site icon (tools/icon/ring_icon.py), public like the page itself. */
 export const ICONS: Record<string, string> = {
   "favicon.ico": "image/x-icon",
@@ -103,6 +117,9 @@ export interface AssetVersions {
   /* halo.js and halo.wasm together: the loader asks for both by this version. */
   app: string;
   activity: string;
+  /* hosted.js and hosted.css (server/client): the hosted page's own UI. */
+  hostedScript: string;
+  hostedStyle: string;
   icons: Record<string, string>;
 }
 
@@ -137,7 +154,7 @@ export const LOGIN_SCRIPT = START_GAME +
   `fetch("auth/session",{credentials:"same-origin",cache:"no-store"}).then(function(r){` +
   `if(r.status===401){location.replace("auth/login?return="+encodeURIComponent(location.pathname+location.search+location.hash));return}` +
   `if(!r.ok)throw new Error("session "+r.status);` +
-  `haloStartGame()})` +
+  `return r.json().then(function(s){window.HaloHostedUser=s&&s.user||null;haloStartGame()})})` +
   `.catch(function(e){console.error("Halo could not start:",e)});\n`;
 
 /* Binds handlers that were inline attributes (data-halo-on<event>). */
@@ -188,6 +205,10 @@ export function hostedPage(page: string, activity: ActivityPageOptions | null = 
     `<link rel="apple-touch-icon" href="${icons("apple-touch-icon.png")}">`;
   const assetVersion = (versions ? `<meta name="halo-asset-version" content="${attribute(versions.app)}">` : "") +
     (options.netstatsUpload ? `<meta name="halo-netstats-upload" content="1">` : "");
+  /* The hosted page's own UI over upstream's shell (whose chrome it hides),
+     after the shell's script so it can drive the shell's controls. */
+  const hostedUi = `<link rel="stylesheet" href="${versioned("hosted.css", versions?.hostedStyle)}">` +
+    `<script src="${versioned("hosted.js", versions?.hostedScript)}"></script>`;
   const loader = activity ?
     `<meta name="halo-transport" content="relay-rooms">` +
     `<meta name="halo-activity" content="${attribute(activity.clientId)}">` +
@@ -196,7 +217,8 @@ export function hostedPage(page: string, activity: ActivityPageOptions | null = 
     `<script src="${versioned("activity.js", versions?.activity)}"></script>` :
     `<meta name="halo-transport" content="relay-rooms">` +
     `<script src="${versioned("halo-login.js", contentVersion(LOGIN_SCRIPT))}"></script>`;
-  page = page.replace(game, iconLinks + assetVersion + loader);
+  page = page.replace(game, iconLinks + assetVersion + hostedUi + loader);
+  page = page.replace(/<html\b([^>]*)>/, (_, rest: string) => `<html${rest} class="halo-hosted">`);
   if (handlers) page += `<script src="${versioned("halo-handlers.js", contentVersion(HANDLERS_SCRIPT))}"></script>`;
   return { html: page, scripts };
 }

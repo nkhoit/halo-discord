@@ -6,6 +6,8 @@ one origin:
 - the page (`halo.html`, `halo.js`, `halo.wasm`), public;
 - the maps (`ui.map` and the 13 stock multiplayer maps only, HEAD and single
   byte ranges), which need a session;
+- the lobby's images (each multiplayer map's preview and each game type's
+  icon, extracted from your own `ui.map`), which need a session;
 - Discord login (OAuth2 `identify guilds`, membership of one Discord server
   checked at login) issuing a short-lived HMAC-signed session bound to the
   Discord user ID;
@@ -63,11 +65,45 @@ in [websocket-relay-spike.md](websocket-relay-spike.md).
   wastes load time. Without them the game still learns each map's programs
   per browser (kept in its storage) and builds them ahead from the second
   visit.
+- The lobby's images, `<MAPS_DIR>/ui/maps/<slug>.png` and
+  `<MAPS_DIR>/ui/modes/<slug>.png` (or under `UI_DIR`), extracted from
+  your own `ui.map`: the 140x114 previews and icons Halo's menus show
+  (`ui\shell\bitmaps\mp_map_grafix` and `game_type_grafix`). Game
+  data: generated where the maps are, never committed. Optional; the lobby
+  shows names alone without them.
+
+  ```sh
+  node tools/web/extract-ui-images.mjs ~/halo-discord/maps/ui.map ~/halo-discord/maps/ui
+  # on forge (no Node on the host), in any Node 22 image:
+  sudo docker run --rm --user $(id -u):$(id -g) -v ~/halo-discord/maps:/maps \
+    -v "$PWD/tools/web":/tools --entrypoint node halo-lab /tools/extract-ui-images.mjs /maps/ui.map /maps/ui
+  ```
 - `server/.env`, copied from [`server/example.env`](../server/example.env).
   Never commit it.
 - The site icon in `server/icons/` (favicon.ico, icon-64.png,
   apple-touch-icon.png) ships with the server and is public.
   `python tools/icon/ring_icon.py` regenerates it from the 64x64 pixel art.
+
+## The hosted page
+
+One page for the Discord Activity and the browser
+(`server/client/hosted.js` and `hosted.css` over upstream's shell, whose
+chrome they hide; local development keeps upstream's shell as it is):
+
+- The game fills the frame (letterboxed). Before it runs, a loading screen.
+- The room is the Activity instance's, or in a browser the address's
+  `#room=` (made up on first visit, so the address is the invite link).
+  The lobby polls the room: nobody hosting shows the map and game type
+  picker; a host in its lobby is joined at once, under the Discord name;
+  a host in a match shows "<host> is in a match; you'll join when it ends"
+  (the host tells the relay when its match starts and ends).
+- In Halo's lobby a bar shows the room (the host's "Start match" presses A
+  for it). In a match, whenever the game does not have the mouse an overlay
+  offers Play/Resume, sound on/off and volume (kept in the browser), Game
+  menu (Halo's Start, its pause menu) and Leave/End game.
+- Escape belongs to the page: browsers release the mouse on it, which shows
+  the overlay, so Halo's pause moved to the overlay's Game menu. F11 toggles
+  full screen for the frame (also inside the Activity), F8 the frame cap.
 
 ## Run locally (no Discord)
 

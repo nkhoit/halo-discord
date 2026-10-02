@@ -41,6 +41,9 @@ export const consoleLog: Log = (entry) => console.log(JSON.stringify({ at: new D
 class Room {
   readonly members = new Map<WebSocket, Member>();
   build: string | null = null;
+  /* The host's word: its game is past the lobby, so nobody can join until it
+     returns (Halo has no joining a match in progress). */
+  inMatch = false;
   readonly id: string;
 
   constructor(id: string) {
@@ -155,9 +158,9 @@ export class Relay {
 
   /* Who is in a room, for a lobby that has to choose between hosting and
      joining: the host's display name, if any, and the number of players. */
-  summary(roomId: string): { host: string | null; players: number } {
+  summary(roomId: string): { host: string | null; players: number; inMatch: boolean } {
     const room = this.rooms.get(roomId);
-    if (!room) return { host: null, players: 0 };
+    if (!room) return { host: null, players: 0, inMatch: false };
     let host: string | null = null;
     const players = new Set<string>();
     for (const member of room.members.values()) {
@@ -165,7 +168,7 @@ export class Relay {
       players.add(member.id);
       if (member.role === "host") host = member.name;
     }
-    return { host, players: players.size };
+    return { host, players: players.size, inMatch: host !== null && room.inMatch };
   }
 
   private refuse(socket: WebSocket, roomId: string, joining: Omit<Member, "since">, reason: string): void {
@@ -186,13 +189,38 @@ export class Relay {
     if (!member) return;
     room.members.delete(socket);
     if (carries(member.kind, true) && !room.present(member.id)) this.announce(room, member, "peer-down");
+    if (member.role === "host" && ![...room.members.values()].some((other) => other.role === "host")) {
+      room.inMatch = false;
+    }
     if (!room.members.size) this.rooms.delete(room.id);
+  }
+
+  /* The one text message after "auth": the host's {"type":"phase","inMatch":boolean}. */
+  private control(room: Room, sender: Member, data: RawData): boolean {
+    const message = data instanceof Buffer ? data : Buffer.concat(data as Buffer[]);
+    if (message.byteLength > 256) return false;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message.toString("utf8"));
+    } catch {
+      return false;
+    }
+    const value = parsed as { type?: unknown; inMatch?: unknown } | null;
+    if (!value || value.type !== "phase" || typeof value.inMatch !== "boolean") return false;
+    if (room.inMatch !== value.inMatch) {
+      this.log({ event: "phase", room: room.id.slice(0, 8), user: sender.user, inMatch: value.inMatch });
+    }
+    room.inMatch = value.inMatch;
+    return true;
   }
 
   private receive(room: Room, socket: WebSocket, data: RawData, isBinary: boolean): void {
     const sender = room.members.get(socket);
     if (!sender) return;
-    if (!isBinary) return close(socket, CloseCode.UnsupportedData, "binary frames only");
+    if (!isBinary) {
+      if (sender.role === "host" && this.control(room, sender, data)) return;
+      return close(socket, CloseCode.UnsupportedData, "binary frames only");
+    }
     const message = data instanceof Buffer ? data : Buffer.concat(data as Buffer[]);
     const bytes = new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
     const batched = bytes[0] === BATCH_MARKER;

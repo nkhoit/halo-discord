@@ -4,7 +4,33 @@ Is Halo still fun when every multiplayer packet goes through a WebSocket relay
 instead of WebRTC? This note records the test setup, measurements and the
 GO/NO-GO.
 
-## Resume here (2026-10-02 night: making play feel good)
+## Resume here (2026-10-02: the Activity is just the game)
+
+Branch `nkhoit-activity-ux` (from main after #24) makes the hosted page
+the game alone (#13), with the lobby's real map and game type art from the
+player's own `ui.map` (#6) and the "host is in a match" state (#5); see
+[halo-server.md](halo-server.md#the-hosted-page). The feel work below (#17)
+waits for the next real session's scorecard. Not scheduled: #14-#16 (the
+lobby's status already lists players, which a team picker can build on).
+
+Decisions (coordinating chat, on the user's behalf):
+
+17. The hosted UI is a layer over upstream's shell (server-injected
+    `hosted.js`/`hosted.css`) rather than a new page: the shell's Module
+    setup, input, audio and loading keep working unchanged, and the server
+    hides its chrome. Upstream's shell is untouched for local development.
+18. A browser room lives in the address (`#room=`), the browser's
+    equivalent of the Activity instance; the address is the invite link
+    (a "Copy invite link" button, browser only).
+19. The overlay shows only in a match; in Halo's lobby a bar is the UI.
+20. Halo's Start and the host's A are pressed through
+    `platform_web_press_button` (a 150 ms virtual press), so the page can
+    keep Escape and needs no synthetic key events.
+21. Images: the engine's own data, not a native dump mode: a Node tool
+    decodes the Xbox bitmaps (unswizzle as `xbox_textures.c`, DXT) and crops
+    to the 140x114 rectangle the menu widgets draw (`draw_bitmap_in_rect`).
+
+## Earlier: making play feel good (2026-10-02 night)
 
 The Activity works inside Discord (two PCs, two accounts, sessions 4-6).
 The work now is feel: frame pacing, then shooting and other players

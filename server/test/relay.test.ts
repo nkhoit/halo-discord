@@ -144,6 +144,37 @@ describe("membership", () => {
   });
 });
 
+describe("the host's phase", () => {
+  it("lets the host say it is in a match, for the room's status", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST, { name: "Chief" });
+    const guest = await join(server.base, room, "guest", "user-a", GUEST_A);
+    expect(server.app.relay.summary(room)).toEqual({ host: "Chief", players: 2, inMatch: false });
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true }));
+    await until(() => server.app.relay.summary(room).inMatch);
+    host.socket.send(frame(Channel.Reliable, GUEST_A, undefined, 7));
+    await until(() => guest.frames.length === 1);
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: false }));
+    await until(() => !server.app.relay.summary(room).inMatch);
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true }));
+    await until(() => server.app.relay.summary(room).inMatch);
+    host.socket.close();
+    await until(() => server.app.relay.summary(room).host === null);
+    expect(server.app.relay.summary(room).inMatch).toBe(false);
+  });
+
+  it("closes a guest's text and the host's malformed text", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST);
+    const guest = await join(server.base, room, "guest", "user-a", GUEST_A);
+    guest.socket.send(JSON.stringify({ type: "phase", inMatch: true }));
+    expect((await guest.closed).code).toBe(1003);
+    expect(server.app.relay.summary(room).inMatch).toBe(false);
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: "yes" }));
+    expect((await host.closed).code).toBe(1003);
+  });
+});
+
 describe("routing", () => {
   it("forwards host to the named guest and guests to the host only, stamped with the sender", async () => {
     const room = newRoom();
