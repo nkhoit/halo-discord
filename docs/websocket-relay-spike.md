@@ -603,15 +603,39 @@ uploads, content hashing and idle drops. The server also logs every map read.
   and refused predictions even without impairment. That is not the regime of
   real play (0 of both), so it is not used for this.
 
-### Open suspect
+### Second session: the stalls are shader compiles
 
-The web texture cache drops textures unused for 1800 frames (checked every
-600 frames). At 60 fps that is 30 s; at the 240 fps these PCs render it is
-7.5 s. Whatever was off screen that long (the other side of the map, weapons,
-effects) is decoded and uploaded again on the frame it returns, often many at
-once after a respawn or a turn, on both clients at the same game moment.
-Unchanged textures are also re-hashed every eight frames or less. The
-attribution counters decide it; a time-based expiry would be the fix.
+With the attribution counters (Chrome on both PCs, 01:47-01:50 UTC):
+
+- The worst stall, a 208 ms frame gap with 6 ticks run in one frame, had a
+  203 ms frame callback (the stall was inside the game's frame) and 31 shader
+  compiles or links in that window, the longest 155 ms. Smaller gaps lined up
+  with dozens of compiles too, and the host kept compiling throughout the
+  match (600 and more in two minutes, on one map).
+- Texture eviction was real (up to 48 drops in a window, uploads after) but
+  cheap (at most 1.8 ms an upload, 0.7 ms a hash). Not the stall.
+- Maps were fetched whole at load (14-22 MB, 135-296 ms each) and never during
+  the match. Streaming is ruled out.
+- Network fine: peer round trip 75-85 ms, no corrections.
+
+Cause: the pixel shader cache key holds the whole block of combiner
+registers, constants excluded, including the inputs and outputs of stages the
+shader does not use, which keep whatever an earlier shader left there. One
+effective shader therefore appeared under many keys; each generated the same
+GLSL, compiled it again, and (programs being keyed by GL shader name) linked a
+new program.
+
+Fix (`d3d8_gl.c`): GL shaders are cached by their text, so a repeated text
+reuses its shader and its program. In a lab match the host met 29 new pixel
+shader keys in 150 s and compiled once; the guest met 6 and compiled once.
+Netstats now report new pixel shader keys, real compiles and reused texts
+separately. The web texture cache also measures idle time in time (60 s)
+rather than 1800 frames (7.5 s at 240 fps).
+
+A first sight of a genuinely new shader still compiles on the frame that
+draws it (about 100-155 ms). If that remains noticeable, the next steps are
+warming known shaders during loading, KHR_parallel_shader_compile, and only
+then a soft cap on catch-up ticks.
 
 ### Activity start-up crash found on the way
 
