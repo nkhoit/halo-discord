@@ -56,8 +56,14 @@ async function panel(title, text, actions) {
   return box;
 }
 
-/* Stands in for the SDK on local test pages (only offered under DEV_LOGIN). */
+/* Stands in for the SDK on local test pages (only offered under DEV_LOGIN),
+   and makes the frame look like Discord's: no WebRTC at all. */
 function developmentSdk(user, instanceId) {
+  for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
+      "RTCSessionDescription", "RTCIceCandidate"]) {
+    delete window[name];
+    if (name in window) window[name] = undefined;
+  }
   return {
     instanceId,
     ready: async () => {},

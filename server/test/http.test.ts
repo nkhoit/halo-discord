@@ -231,6 +231,10 @@ describe("the Discord Activity", () => {
     expect(JSON.stringify(body)).not.toContain("access-sdk");
     expect(server.discord.exchanges.at(-1)).toEqual({ code: "sdk", redirectUri: undefined });
     expect(cookies(response).halo_activity).toBe(body.token);
+    expect(server.logs.find((entry) => entry.event === "login"))
+      .toMatchObject({ via: "activity", user: "77", room: String(activityRoomId(SECRET, "i-1-gc-2-3")).slice(0, 8) });
+    expect(JSON.stringify(server.logs)).not.toContain(String(body.token));
+    expect(JSON.stringify(server.logs)).not.toContain("access-sdk");
     expect((await activity({})).status).toBe(400);
     expect((await activity({ code: "sdk", instanceId: "../x" })).status).toBe(400);
     server.discord.users.set("out", { id: "1", username: "stranger", globalName: null });

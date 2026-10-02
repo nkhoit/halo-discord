@@ -72,7 +72,7 @@ function sendBody(request: IncomingMessage, response: ServerResponse, headers: R
 
 export function createApp(config: Config, discord: DiscordApi | null, log: Log = consoleLog,
     authDeadlineMilliseconds = AUTH_DEADLINE_MILLISECONDS, heartbeatMilliseconds = HEARTBEAT_MILLISECONDS): App {
-  const auth = new Auth(config, discord);
+  const auth = new Auth(config, discord, log);
   const relay = new Relay(config.maxRooms, log);
   const origins = new Set([config.publicOrigin, ...config.extraOrigins]);
   /* Discord's proxy origin for this application's Activity. */

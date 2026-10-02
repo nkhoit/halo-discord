@@ -58,7 +58,9 @@ class FakeWebSocket {
   binary(bytes) { this.onmessage({ data: new Uint8Array(bytes).buffer }); }
 }
 global.WebSocket = FakeWebSocket;
-global.RTCPeerConnection = class { constructor() { throw new Error('relay mode must not use WebRTC'); } };
+/* Like Discord's Activity frame: no WebRTC at all, so any use in relay mode throws. */
+delete global.RTCPeerConnection;
+delete global.RTCDataChannel;
 
 const runtime = library.$HaloWebTransportRuntime;
 global.HaloWebTransportRuntime = runtime;
@@ -90,7 +92,9 @@ async function addGuest(sockets_) {
 const states = [];
 
 (async () => {
-  assert.equal(HaloWebTransport.isSupported(), true);
+  assert.equal(HaloWebTransport.isSupported(), false, 'WebRTC, the default, is unavailable here');
+  assert.equal(HaloWebTransport.isSupported('relay'), true, 'the relay needs only WebSocket');
+  assert.equal(HaloWebTransport.isSupported('webrtc'), false);
 
   // One socket carries both channels.
   await addGuest(1);

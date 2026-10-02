@@ -1150,9 +1150,13 @@
     wasmFunction("platform_web_online_set_transport_state")(value);
   }
 
+  /* Relay pages (the hosted page, the Discord Activity) need only WebSocket;
+     Discord's Activity frame has no RTCPeerConnection at all. */
   function transport() {
-    if (!global.HaloWebTransport || !global.HaloWebTransport.isSupported()) {
-      throw new Error("This browser does not support WebRTC multiplayer.");
+    var relay = !!relaySettings();
+    if (!global.HaloWebTransport || !global.HaloWebTransport.isSupported(relay ? "relay" : "webrtc")) {
+      throw new Error(relay ? "This browser does not support WebSocket multiplayer." :
+        "This browser does not support WebRTC multiplayer.");
     }
     return global.HaloWebTransport;
   }
@@ -1886,7 +1890,8 @@
         setStatus(session.connectedPeerCount ?
           connectedFriendsLabel(session.connectedPeerCount) + ". " + hostSettingsLabel() +
             " is ready — press Start Game in Halo." :
-          hostSettingsLabel() + " is ready — send the invite link to your friends.");
+          hostSettingsLabel() + (activity() ? " is ready — others in this Activity can join now." :
+            " is ready — send the invite link to your friends."));
       } else if (state === GAME_STATE.WAITING) {
         setStatus("Waiting for Halo's main menu…");
       } else if (state === GAME_STATE.HOST_STARTING) {

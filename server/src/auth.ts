@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Config } from "./config.ts";
 import type { DiscordApi, DiscordUser } from "./discord.ts";
+import { consoleLog, type Log } from "./relay.ts";
 import { INSTANCE_ID_PATTERN, sanitizeName } from "./protocol.ts";
 import { issueToken, type Session, verifyToken } from "./tokens.ts";
 
@@ -124,8 +125,10 @@ export class Auth {
   private readonly config: Config;
   private readonly discord: DiscordApi | null;
   private readonly limiter: RateLimiter;
+  private readonly log: Log;
 
-  constructor(config: Config, discord: DiscordApi | null) {
+  constructor(config: Config, discord: DiscordApi | null, log: Log = consoleLog) {
+    this.log = log;
     this.config = config;
     this.discord = discord;
     this.limiter = new RateLimiter(config.authRateLimitPerMinute);
@@ -200,6 +203,7 @@ export class Auth {
       return page(response, 403, "This game is only open to members of its Discord server.");
     }
     const { token } = this.issue(user);
+    this.log({ event: "login", via: "browser", user: user.id });
     response.writeHead(302, {
       Location: safeReturnPath(Buffer.from(returnPath ?? "", "base64url").toString("utf8")),
       "Set-Cookie": [
@@ -257,11 +261,13 @@ export class Auth {
       issued = this.issue(user);
     }
     const { token, session } = issued;
+    const roomId = instanceId ? activityRoomId(this.config.tokenSecret, instanceId) : null;
+    this.log({ event: "login", via: "activity", user: session.sub, room: roomId?.slice(0, 8) ?? null });
     json(response, 200, {
       token,
       user: { id: session.sub, name: session.name },
       expiresAt: session.exp,
-      ...(instanceId ? { roomId: activityRoomId(this.config.tokenSecret, instanceId) } : {}),
+      ...(roomId ? { roomId } : {}),
     }, {
       "Set-Cookie": cookie(this.config, ACTIVITY_COOKIE, token,
         { maxAge: this.config.tokenTtlSeconds, partitioned: true }),

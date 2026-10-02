@@ -1525,8 +1525,10 @@ addToLibrary({
           if (!runtime.netstatsEnabled) throw new Error('Open the page with ?netstats=1');
           if (runtime.relay) runtime.relayCloseSockets(runtime.relay, 4999);
         },
-        isSupported: function() {
-          return runtime.options.transport === 'relay' ?
+        /* Whether this browser can run a transport: the configured one, or
+           the one named, so a page can check before configuring. */
+        isSupported: function(transport) {
+          return (transport || runtime.options.transport) === 'relay' ?
             typeof WebSocket === 'function' : typeof RTCPeerConnection === 'function';
         },
       });

@@ -99,7 +99,8 @@ const context = {
     configure(options) { configured.push(options); },
     disconnectAll() { disconnects++; },
     getLocalIdentifier: () => '020000000001',
-    isSupported: () => true,
+    /* Discord's Activity frame has WebSocket but no RTCPeerConnection. */
+    isSupported: transport => transport === 'relay',
     openRelay() { relayOpened++; },
     removePeer() {},
   },
@@ -136,6 +137,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'online_client.js'), 
   context.HaloOnline.runtimeReady();
   await tick();
 
+  assert.doesNotMatch(elements['online-status'].textContent, /WebRTC|does not support/, 'no WebRTC requirement in the Activity');
   assert(fetches.some(url => url === `https://123.discordsays.com/v1/rooms/${ROOM}`), 'the lobby polls its room');
   assert.equal(elements['online-dialog'].open, true);
   assert.equal(elements['online-dialog'].dataset.view, 'setup', 'nobody hosts yet, so offer hosting');
