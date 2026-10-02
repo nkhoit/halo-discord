@@ -11,8 +11,9 @@ export interface DiscordApi {
      omitted for the Embedded App SDK's authorize flow. */
   exchangeCode(code: string, redirectUri?: string): Promise<string>;
   getUser(accessToken: string): Promise<DiscordUser>;
-  /* Whether the user belongs to the guild (needs the `guilds` scope). */
-  isGuildMember(accessToken: string, guildId: string): Promise<boolean>;
+  /* The user's matching guild, if any. Fetches the guild list once and checks
+     the whole allowlist locally. */
+  findGuildMembership(accessToken: string, guildIds: readonly string[]): Promise<string | null>;
 }
 
 const API = "https://discord.com/api/v10";
@@ -61,9 +62,15 @@ export class HttpDiscordApi implements DiscordApi {
     };
   }
 
-  async isGuildMember(accessToken: string, guildId: string): Promise<boolean> {
+  async findGuildMembership(accessToken: string, guildIds: readonly string[]): Promise<string | null> {
     const guilds = await this.get(accessToken, "/users/@me/guilds");
-    return Array.isArray(guilds) && guilds.some((guild) => guild && guild.id === guildId);
+    if (!Array.isArray(guilds)) return null;
+    const allowed = new Set(guildIds);
+    for (const guild of guilds) {
+      if (guild && typeof guild === "object" && "id" in guild && typeof guild.id === "string" &&
+          allowed.has(guild.id)) return guild.id;
+    }
+    return null;
   }
 
   private async get(accessToken: string, path: string): Promise<unknown> {

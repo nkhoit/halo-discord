@@ -15,7 +15,7 @@ export interface Config {
   /* Images the lobby shows, extracted from the player's own ui.map
      (tools/web/extract-ui-images.mjs): maps/<slug>.png and modes/<slug>.png. */
   uiDir: string;
-  discord: { clientId: string; clientSecret: string; guildId: string } | null;
+  discord: { clientId: string; clientSecret: string; guildIds: string[] } | null;
   tokenSecret: string;
   tokenTtlSeconds: number;
   /* Development only: /auth/dev-login issues tokens without Discord. */
@@ -33,6 +33,20 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function discordGuildIds(env: NodeJS.ProcessEnv): string[] {
+  const plural = env.DISCORD_GUILD_IDS;
+  if (plural === undefined) {
+    const legacy = required(env, "DISCORD_GUILD_ID");
+    if (!/^\d{1,20}$/.test(legacy)) throw new Error("DISCORD_GUILD_ID is invalid");
+    return [legacy];
+  }
+  const guildIds = plural.split(",").map((guildId) => guildId.trim());
+  if (!guildIds.length || guildIds.some((guildId) => !/^\d{1,20}$/.test(guildId))) {
+    throw new Error("DISCORD_GUILD_IDS must be a comma-separated list of Discord guild IDs");
+  }
+  return [...new Set(guildIds)];
 }
 
 export function isLoopbackHost(host: string): boolean {
@@ -55,7 +69,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const discord = env.DISCORD_CLIENT_ID ? {
     clientId: required(env, "DISCORD_CLIENT_ID"),
     clientSecret: required(env, "DISCORD_CLIENT_SECRET"),
-    guildId: required(env, "DISCORD_GUILD_ID"),
+    guildIds: discordGuildIds(env),
   } : null;
   if (!discord && !devLogin) throw new Error("DISCORD_CLIENT_ID (or DEV_LOGIN in development) is required");
   const trustProxy = env.TRUST_PROXY ?? "none";
