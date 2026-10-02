@@ -1339,6 +1339,10 @@ static void get_local_player_input_blob(
 
 					if (biped &&
 						(controls_enable_crouch ||
+#ifdef HALO_LINUX
+						input_abstraction_keyboard_crouch_enabled(
+							gamepad_index, input->throttle.i, input->throttle.j) ||
+#endif
 						TEST_FLAG(biped->biped.flags, _biped_airborne_bit) ||
 						magnitude_squared2d(&input->throttle) < 0.98f * 0.98f))
 					{

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <pthread.h>
 #include "halo_aim_device.h"
+#include "halo_movement_source.h"
 #define PORT_COUNT 4
 #define TRUE 1
 #define FALSE 0
@@ -31,6 +32,7 @@ static Uint64 wheel_moved_ms;
 static struct halo_aim_look_state aim_look_states[4];
 static SDL_JoystickID aim_gamepad_ids[4];
 static BOOL aim_gamepad_identity_known[4],aim_look_states_initialized;
+static unsigned keyboard_movement_axes[4];
 static struct {DWORD packet_number; XINPUT_GAMEPAD previous;} controllers[4];
 static Uint64 SDL_GetTicks(void) {return ticks;}
 static SDL_JoystickID SDL_GetGamepadID(SDL_Gamepad *p) {return p->id;}
@@ -45,7 +47,7 @@ static int console_is_active(void) {return 0;}
 static void wheel_update(void) {}
 static void keyboard_gamepad(const struct platform_input_state *input,XINPUT_GAMEPAD *pad) {(void)input;pad->sThumbLX=32767;}
 static void sdl_gamepad_state(SDL_Gamepad *p,XINPUT_GAMEPAD *out) {out->sThumbRX=p->pad.sThumbRX;out->sThumbRY=p->pad.sThumbRY;}
-static void test_input_gamepad(XINPUT_GAMEPAD *p) {if(synthetic_look)p->sThumbRX=32767;}
+static int test_input_gamepad(XINPUT_GAMEPAD *p) {if(synthetic_look)p->sThumbRX=32767;return 0;}
 #include "xinput_aim.inc"
 static void poll(int port) {XINPUT_STATE s;assert(XInputGetState(&controllers[port],&s)==0);ticks+=16;}
 int main(void)

@@ -35,6 +35,13 @@ typedef char verify_game_input_preferences_size[
 
 /* ---------- prototypes/INPUT_ABSTRACTION.C */
 
+#ifdef HALO_LINUX
+boolean input_abstraction_keyboard_crouch_enabled(
+	short controller_index,
+	real forward,
+	real strafe);
+#endif
+
 void input_abstraction_initialize(
 	void);
 void input_abstraction_update(

@@ -69,6 +69,9 @@ symbols in this file:
 #include "scenario/scenario.h"
 #include "units/vehicle_definitions.h"
 #include "units/vehicles.h"
+#ifdef HALO_LINUX
+#include "halo_movement_source.h"
+#endif
 
 /* ---------- constants */
 
@@ -182,6 +185,46 @@ static real const stick_direction_angles[] =
 };
 
 /* ---------- public code */
+
+#ifdef HALO_LINUX
+boolean input_abstraction_keyboard_crouch_enabled(
+	short controller_index,
+	real forward,
+	real strafe)
+{
+	struct gamepad_state const *gamepad;
+	unsigned axes;
+	short preset;
+	boolean keyboard_forward;
+	boolean keyboard_strafe;
+	real controller_forward;
+	real controller_strafe;
+
+	if (controller_index < 0 || controller_index >= MAXIMUM_GAMEPADS)
+		return FALSE;
+	gamepad = input_get_gamepad_state(controller_index);
+	if (!gamepad)
+		return FALSE;
+	axes = halo_linux_keyboard_movement_axes(controller_index);
+	preset = input_abstraction_globals.player_control_preferences[controller_index].joystick_controls;
+	/* Respect the movement preset and D-pad overrides, not look ownership.
+	 * Only surviving keyboard contributions can bypass the Xbox throttle rule.
+	 * In mixed-axis movement, a full controller contribution still cancels. */
+	keyboard_forward = (axes & HALO_KEYBOARD_MOVEMENT_Y) && forward != 0.f &&
+		(preset == _joystick_controls_default || preset == _joystick_controls_legacy) &&
+		!gamepad->buttons[_gamepad_binary_button_dpad_up] &&
+		!gamepad->buttons[_gamepad_binary_button_dpad_down];
+	keyboard_strafe = (axes & HALO_KEYBOARD_MOVEMENT_X) && strafe != 0.f &&
+		(preset == _joystick_controls_default || preset == _joystick_controls_legacy_southpaw) &&
+		!gamepad->buttons[_gamepad_binary_button_dpad_left] &&
+		!gamepad->buttons[_gamepad_binary_button_dpad_right];
+	controller_forward = keyboard_forward ? 0.f : forward;
+	controller_strafe = keyboard_strafe ? 0.f : strafe;
+	return (keyboard_forward || keyboard_strafe) &&
+		controller_forward * controller_forward + controller_strafe * controller_strafe <
+			0.98f * 0.98f;
+}
+#endif
 
 void input_abstraction_initialize(
 	void)
