@@ -35,6 +35,7 @@ drive the controller.
 #include "platform.h"
 #include "sdl_platform.h"
 #include "port_config.h"
+#include "halo_aim_device.h"
 
 #include <SDL3/SDL.h>
 #include <math.h>
@@ -82,6 +83,56 @@ static Uint64 wheel_moved_ms = 0;
 static Uint64 wheel_press_until_ms = 0;
 static BOOL wheel_scrolling = FALSE;
 
+/* Camera-assist ownership is per local-player port. Port 0 combines the
+keyboard/mouse with gamepad 0, so its no-input default is mouse look. */
+static struct halo_aim_look_state aim_look_states[PORT_COUNT];
+static SDL_JoystickID aim_gamepad_ids[PORT_COUNT];
+static BOOL aim_gamepad_identity_known[PORT_COUNT];
+static BOOL aim_look_states_initialized = FALSE;
+
+static void aim_look_states_initialize_locked(void)
+{
+	int port;
+
+	if (aim_look_states_initialized)
+		return;
+	for (port = 0; port < PORT_COUNT; port++)
+	{
+		halo_aim_look_state_reset(
+			&aim_look_states[port],
+			port == 0 ? _halo_aim_look_device_mouse : _halo_aim_look_device_controller);
+	}
+	aim_look_states_initialized = TRUE;
+}
+
+static void aim_look_reset_port_locked(int port)
+{
+	halo_aim_look_state_reset(
+		&aim_look_states[port],
+		port == 0 ? _halo_aim_look_device_mouse : _halo_aim_look_device_controller);
+}
+
+static void aim_look_update_gamepad_locked(
+	int port,
+	SDL_Gamepad *gamepad,
+	const XINPUT_GAMEPAD *state)
+{
+	SDL_JoystickID id = gamepad ? SDL_GetGamepadID(gamepad) : 0;
+
+	aim_look_states_initialize_locked();
+	if (!aim_gamepad_identity_known[port] || aim_gamepad_ids[port] != id)
+	{
+		aim_gamepad_ids[port] = id;
+		aim_gamepad_identity_known[port] = TRUE;
+		/* Hotplug is not look input: preserve ownership, discard old samples. */
+		halo_aim_look_clear_controller_sample(&aim_look_states[port]);
+	}
+	halo_aim_look_note_controller_sample(
+		&aim_look_states[port],
+		gamepad ? state->sThumbRX : 0,
+		gamepad ? state->sThumbRY : 0, SDL_GetTicks());
+}
+
 static float mouse_sensitivity(void)
 {
 	static float sensitivity = -1.0f;
@@ -93,6 +144,19 @@ static float mouse_sensitivity(void)
 			sensitivity = 1.0f;
 	}
 	return sensitivity;
+}
+
+int halo_linux_camera_assist_enabled(short gamepad_index)
+{
+	int enabled;
+
+	if (gamepad_index < 0 || gamepad_index >= PORT_COUNT)
+		return TRUE;
+	pthread_mutex_lock(&mouse_lock);
+	aim_look_states_initialize_locked();
+	enabled = halo_aim_look_camera_assist_allowed(&aim_look_states[gamepad_index]);
+	pthread_mutex_unlock(&mouse_lock);
+	return enabled;
 }
 
 /* radians of yaw and pitch for the mouse motion since the last call; the
@@ -111,6 +175,7 @@ int halo_linux_mouse_look(short gamepad_index, float *yaw, float *pitch)
 	if (invert < 0)
 		invert = config_boolean("input.invert_mouse");
 	pthread_mutex_lock(&mouse_lock);
+	aim_look_states_initialize_locked();
 	x = mouse_pending_x;
 	y = mouse_pending_y;
 	mouse_pending_x = 0.0f;
@@ -135,7 +200,7 @@ static void mouse_poll(const struct platform_input_state *input)
 		mouse_pending_x = 0.0f;
 		mouse_pending_y = 0.0f;
 	}
-	if (!input->mouse_released)
+	if (!input->mouse_released && !input->ui_pointer)
 	{
 		mouse_pending_x += input->mouse_dx;
 		mouse_pending_y += input->mouse_dy;
@@ -479,6 +544,11 @@ HANDLE WINAPI XInputOpen(PXPP_DEVICE_TYPE device_type, DWORD port, DWORD slot,
 	(void)polling_parameters;
 	if (device_type == XDEVICE_TYPE_GAMEPAD && port < PORT_COUNT)
 	{
+		pthread_mutex_lock(&mouse_lock);
+		aim_look_states_initialize_locked();
+		aim_look_reset_port_locked((int)port);
+		aim_gamepad_identity_known[port] = FALSE;
+		pthread_mutex_unlock(&mouse_lock);
 		memset(&controllers[port], 0, sizeof(controllers[port]));
 		controllers[port].open = TRUE;
 		return (HANDLE)&controllers[port];
@@ -495,9 +565,22 @@ HANDLE WINAPI XInputOpen(PXPP_DEVICE_TYPE device_type, DWORD port, DWORD slot,
 VOID WINAPI XInputClose(HANDLE device)
 {
 	struct controller *controller = (struct controller *)device;
+	int port;
 
 	if (controller)
 		controller->open = FALSE;
+	for (port = 0; port < PORT_COUNT; port++)
+	{
+		if (device == (HANDLE)&controllers[port])
+		{
+			pthread_mutex_lock(&mouse_lock);
+			aim_look_states_initialize_locked();
+			aim_look_reset_port_locked(port);
+			aim_gamepad_identity_known[port] = FALSE;
+			pthread_mutex_unlock(&mouse_lock);
+			break;
+		}
+	}
 }
 
 static int controller_port(HANDLE device)
@@ -518,6 +601,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 	SDL_Gamepad *gamepads[PORT_COUNT];
 	int gamepad_index;
 	int count;
+	SDL_Gamepad *look_gamepad = NULL;
 
 	memset(state, 0, sizeof(*state));
 	if (port < 0)
@@ -534,14 +618,31 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		if (!console_is_active())
 			keyboard_gamepad(&input, &state->Gamepad);
 		if (count > 0)
-			sdl_gamepad_state(gamepads[0], &state->Gamepad);
+		{
+			look_gamepad = gamepads[0];
+			sdl_gamepad_state(look_gamepad, &state->Gamepad);
+		}
+		pthread_mutex_lock(&mouse_lock);
+		aim_look_update_gamepad_locked(port, look_gamepad, &state->Gamepad);
+		/* Same-poll ties favor captured mouse; later polls keep their ordering. */
+		halo_aim_look_note_mouse_motion(&aim_look_states[0],
+			!input.mouse_released && !input.ui_pointer &&
+			(input.mouse_dx != 0.0f || input.mouse_dy != 0.0f));
+		pthread_mutex_unlock(&mouse_lock);
+		/* Do not let synthetic network-test input change the physical device. */
 		test_input_gamepad(&state->Gamepad);
 	}
 	else
 	{
 		gamepad_index = gamepad_index_for_port(port);
 		if (gamepad_index >= 0 && gamepad_index < count)
-			sdl_gamepad_state(gamepads[gamepad_index], &state->Gamepad);
+		{
+			look_gamepad = gamepads[gamepad_index];
+			sdl_gamepad_state(look_gamepad, &state->Gamepad);
+		}
+		pthread_mutex_lock(&mouse_lock);
+		aim_look_update_gamepad_locked(port, look_gamepad, &state->Gamepad);
+		pthread_mutex_unlock(&mouse_lock);
 	}
 
 	if (memcmp(&state->Gamepad, &controllers[port].previous, sizeof(state->Gamepad)))

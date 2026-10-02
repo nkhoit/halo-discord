@@ -211,6 +211,11 @@ symbols in this file:
 
 #include "real_math.h"
 
+#ifdef HALO_LINUX
+#include "halo_aim_device.h"
+extern int halo_linux_camera_assist_enabled(short gamepad_index);
+#endif
+
 /* ---------- constants */
 
 enum control_button
@@ -1208,6 +1213,12 @@ static void get_local_player_input_blob(
 								PIN(constants->magnetism_friction, 0.f, 1.f);
 							real magnetism_scale = control->magnetism_level *
 								PIN(constants->magnetism_adhesion, 0.f, 1.f);
+#ifdef HALO_LINUX
+							/* Aim/projectile magnetism stays intact; gate only camera pull. */
+							int camera_assist_allowed;
+
+							camera_assist_allowed = halo_linux_camera_assist_enabled(gamepad_index);
+#endif
 
 							if (game_players_are_double_speed())
 							{
@@ -1223,10 +1234,25 @@ static void get_local_player_input_blob(
 								target_angular_velocity.pitch,
 								-DEGREES_TO_RADIANS(3.f),
 								DEGREES_TO_RADIANS(3.f));
+#ifdef HALO_LINUX
+							look_delta.yaw = halo_aim_camera_assist_blend(
+								camera_assist_allowed,
+								look_delta.yaw,
+								target_angular_velocity.yaw,
+								input_scale,
+								magnetism_scale);
+							look_delta.pitch = halo_aim_camera_assist_blend(
+								camera_assist_allowed,
+								look_delta.pitch,
+								target_angular_velocity.pitch,
+								input_scale,
+								magnetism_scale);
+#else
 							look_delta.yaw = target_angular_velocity.yaw * magnetism_scale +
 								look_delta.yaw * input_scale;
 							look_delta.pitch = target_angular_velocity.pitch * magnetism_scale +
 								look_delta.pitch * input_scale;
+#endif
 						}
 					}
 
