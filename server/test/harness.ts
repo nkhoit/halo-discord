@@ -73,6 +73,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     trustProxy: "none",
     authRateLimitPerMinute: 1000,
     maxRooms: 64,
+    netstatsUpload: false,
     ...overrides,
   };
 }

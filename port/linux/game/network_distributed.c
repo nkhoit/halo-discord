@@ -33,6 +33,8 @@ Players are named by their absolute index, which is the same on every
 machine (their datum identifiers need not be).
 */
 
+#include <math.h>
+
 #include "cseries.h"
 #include "game/game.h"
 #include "game/players.h"
@@ -201,18 +203,32 @@ static struct
 	long own_corrections;
 	real own_correction_maximum_squared;
 	long rejected_predictions;
+	/* own corrections that also turned the unit more than
+	OWN_AIM_CORRECTION_DEGREES, and the most it turned */
+	long own_aim_corrections;
+	real own_aim_correction_maximum_degrees;
+	/* the host put this machine's own player in (or out of) a seat */
+	long own_seat_corrections;
 } distributed_web_statistics;
+
+#define OWN_AIM_CORRECTION_DEGREES 5.0f
 
 void network_distributed_web_statistics(
 	long *ticks,
 	long *own_corrections,
 	real *own_correction_maximum_squared,
-	long *rejected_predictions)
+	long *rejected_predictions,
+	long *own_aim_corrections,
+	real *own_aim_correction_maximum_degrees,
+	long *own_seat_corrections)
 {
 	*ticks = distributed_web_statistics.ticks;
 	*own_corrections = distributed_web_statistics.own_corrections;
 	*own_correction_maximum_squared = distributed_web_statistics.own_correction_maximum_squared;
 	*rejected_predictions = distributed_web_statistics.rejected_predictions;
+	*own_aim_corrections = distributed_web_statistics.own_aim_corrections;
+	*own_aim_correction_maximum_degrees = distributed_web_statistics.own_aim_correction_maximum_degrees;
+	*own_seat_corrections = distributed_web_statistics.own_seat_corrections;
 }
 #endif
 
@@ -571,6 +587,10 @@ static void distributed_handle_unit_states(
 				*disagreement = 0;
 			else if (!local || ++*disagreement > SEAT_DISAGREEMENT_TICKS)
 			{
+#ifdef HALO_WEB
+				if (local)
+					distributed_web_statistics.own_seat_corrections++;
+#endif
 				network_objects_set_seat(unit_index, state->vehicle_index, state->seat_index);
 				*disagreement = 0;
 			}
@@ -614,9 +634,20 @@ static void distributed_handle_unit_states(
 
 				if (distance_squared > LOCAL_CORRECTION_TOLERANCE * LOCAL_CORRECTION_TOLERANCE)
 				{
+					real_vector3d const *forward = &object->object.forward;
+					real dot = forward->i * state->forward.i + forward->j * state->forward.j +
+						forward->k * state->forward.k;
+					real degrees = (real)(acos(dot < -1.0f ? -1.0f : dot > 1.0f ? 1.0f : dot) * 180.0 / 3.14159265358979);
+
 					distributed_web_statistics.own_corrections++;
 					if (distance_squared > distributed_web_statistics.own_correction_maximum_squared)
 						distributed_web_statistics.own_correction_maximum_squared = distance_squared;
+					if (degrees > OWN_AIM_CORRECTION_DEGREES)
+					{
+						distributed_web_statistics.own_aim_corrections++;
+						if (degrees > distributed_web_statistics.own_aim_correction_maximum_degrees)
+							distributed_web_statistics.own_aim_correction_maximum_degrees = degrees;
+					}
 				}
 			}
 #endif

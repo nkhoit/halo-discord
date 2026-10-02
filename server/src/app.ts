@@ -67,6 +67,8 @@ function splitContext(url: URL): { context: Context; path: string } {
 }
 
 const JAVASCRIPT = "text/javascript; charset=utf-8";
+const NETSTATS_INTERVAL_MILLISECONDS = 2000;
+const MAXIMUM_NETSTATS_BYTES = 16 * 1024;
 const ICON_DIRECTORY = fileURLToPath(new URL("../icons/", import.meta.url));
 
 function sendBody(request: IncomingMessage, response: ServerResponse, headers: Record<string, string>,
@@ -121,6 +123,38 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     return app.version;
   }
 
+  /* A page's measurement windows (library_web_transport.js netstatsSend),
+     logged with the player's Discord ID: one a user every two seconds, small
+     JSON objects only. Off unless NETSTATS_UPLOAD=1. */
+  const netstatsLast = new Map<string, number>();
+  async function receiveNetstats(request: IncomingMessage, response: ServerResponse,
+      headers: Record<string, string>): Promise<void> {
+    const reply = (status: number) => response.writeHead(status, headers).end();
+    if (!config.netstatsUpload) return void reply(404);
+    const session = requestSession(config, request);
+    if (!session) return void reply(401);
+    const now = Date.now();
+    if (now - (netstatsLast.get(session.sub) ?? 0) < NETSTATS_INTERVAL_MILLISECONDS) return void reply(429);
+    netstatsLast.set(session.sub, now);
+    if (netstatsLast.size > 10_000) netstatsLast.clear();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      size += (chunk as Buffer).length;
+      if (size > MAXIMUM_NETSTATS_BYTES) return void reply(413);
+      chunks.push(chunk as Buffer);
+    }
+    let stats: unknown;
+    try {
+      stats = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      return void reply(400);
+    }
+    if (!stats || typeof stats !== "object" || Array.isArray(stats)) return void reply(400);
+    log({ event: "netstats", user: session.sub, stats });
+    reply(204);
+  }
+
   async function versions(): Promise<AssetVersions> {
     return { app: await appVersion(), activity: contentVersion(await activityBundle()), icons: iconVersions };
   }
@@ -139,6 +173,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         return;
       }
       if (await auth.handle(request, response, new URL(path + url.search, url))) return;
+      if (path === "/v1/netstats" && request.method === "POST") return receiveNetstats(request, response, headers);
       if (request.method !== "GET" && request.method !== "HEAD") {
         response.writeHead(405, { Allow: "GET, HEAD", "Cache-Control": NO_STORE }).end();
         return;
@@ -192,7 +227,8 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         const page = await source();
         if (page === null) return notFound();
         const activity = context === "activity";
-        const { html } = hostedPage(page, activity ? activityPage : null, await versions());
+        const { html } = hostedPage(page, activity ? activityPage : null, await versions(),
+          { netstatsUpload: config.netstatsUpload });
         return sendBody(request, response,
           activity ? { ...headers, "Content-Security-Policy": ACTIVITY_CSP } : headers, build.type, html);
       }

@@ -85,7 +85,7 @@ function frame(length) {
   assert.equal(runtime.netstatsEnabled, true);
   assert.equal(intervals.length, 1, '?netstats=1 starts the periodic console summary');
 
-  game([100, 0, 0, 0]);
+  game([100, 0, 0, 0, 0, 0, 0, 10, 20, 0, 0, 0, 1]);
   await runtime.netstatsTakeWindow();
   HaloWebTransport.configure({ onSignal() {}, onStateChange() {} });
   await HaloWebTransport.addPeer({
@@ -101,7 +101,7 @@ function frame(length) {
   }
   record.reliable.onmessage({ data: frame(100) });
   record.droppedDatagrams += 3;
-  game([160, 2, 3.07, 1]);
+  game([160, 2, 3.07, 1, 1, 37.5, 1, 12, 70, 5, 1, 4, 3]);
   hitches = 1;
   gapMaximum = 62.5;
   now = 2000;
@@ -113,6 +113,12 @@ function frame(length) {
   assert.equal(first.game.rejectedPredictions, 1);
   assert.equal(first.game.frameGapMaxMs, 62.5);
   assert.equal(first.game.frameHitches, 1);
+  assert.equal(first.game.ownAimCorrections, 1);
+  assert.equal(first.game.ownAimCorrectionMaxDegrees, 37.5);
+  assert.equal(first.game.ownSeatCorrections, 1);
+  assert.deepEqual(first.game.hostInputsPerTick, [2, 50, 5, 1], 'host ticks with 0, 1, 2 and 3+ client inputs');
+  assert.equal(first.game.multiTickFrames, 4);
+  assert.equal(first.game.maxTicksPerFrame, 3);
   const peer = first.peers[0];
   assert.equal(peer.rttMs, 12);
   assert.equal(peer.droppedDatagrams, 3);

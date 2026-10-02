@@ -404,10 +404,23 @@ addToLibrary({
         game.ownCorrections = HEAPF64[index + 1];
         game.ownCorrectionMaxUnits = +HEAPF64[index + 2].toFixed(2);
         game.rejectedPredictions = HEAPF64[index + 3];
+        game.ownAimCorrections = HEAPF64[index + 4];
+        game.ownAimCorrectionMaxDegrees = +HEAPF64[index + 5].toFixed(1);
+        game.ownSeatCorrections = HEAPF64[index + 6];
+        game.hostInputs0 = HEAPF64[index + 7];
+        game.hostInputs1 = HEAPF64[index + 8];
+        game.hostInputs2 = HEAPF64[index + 9];
+        game.hostInputs3 = HEAPF64[index + 10];
+        game.multiTickFrames = HEAPF64[index + 11];
+        game.maxTicksPerFrame = HEAPF64[index + 12];
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
         game.frameHitches = Module['_platform_web_profile_hitches']();
+        if (typeof Module['_platform_web_profile_over_budget'] === 'function') {
+          game.framesOverBudget = Module['_platform_web_profile_over_budget']();
+          game.frames = Module['_platform_web_profile_starts']();
+        }
       }
       return game;
     },
@@ -496,6 +509,7 @@ addToLibrary({
         at: new Date().toISOString(),
         windowSeconds: +seconds.toFixed(2),
         visibility: document.visibilityState,
+        focused: typeof document.hasFocus === 'function' ? document.hasFocus() : null,
         transport: runtime.options.transport,
         game: {
           ticksPerSecond: delta('ticks') === null ? null : +(delta('ticks') / seconds).toFixed(1),
@@ -504,6 +518,15 @@ addToLibrary({
           rejectedPredictions: delta('rejectedPredictions'),
           frameGapMaxMs: game.frameGapMaxMs,
           frameHitches: delta('frameHitches'),
+          framesPerSecond: delta('frames') === null ? null : +(delta('frames') / seconds).toFixed(1),
+          framesOverBudget: delta('framesOverBudget'),
+          multiTickFrames: delta('multiTickFrames'),
+          maxTicksPerFrame: game.maxTicksPerFrame,
+          ownAimCorrections: delta('ownAimCorrections'),
+          ownAimCorrectionMaxDegrees: game.ownAimCorrectionMaxDegrees,
+          ownSeatCorrections: delta('ownSeatCorrections'),
+          /* the host: ticks that had 0, 1, 2 or 3+ client input packets */
+          hostInputsPerTick: [delta('hostInputs0'), delta('hostInputs1'), delta('hostInputs2'), delta('hostInputs3')],
         },
         peers: peers,
         relay: relaySummary,
@@ -534,8 +557,23 @@ addToLibrary({
             runtime.netstatsHistory.shift();
           }
           console.info('[netstats] ' + JSON.stringify(stats));
+          if (runtime.netstatsUpload) runtime.netstatsSend(stats);
         });
       }, runtime.NETSTATS_LOG_MILLISECONDS);
+    },
+
+    /* With the server's halo-netstats-upload meta (an opt-in of the server's
+       operator), each window also goes to the server's log. */
+    netstatsSend: function(stats) {
+      try {
+        fetch('v1/netstats', {
+          method: 'POST',
+          credentials: 'same-origin',
+          keepalive: true,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(stats),
+        }).catch(function() {});
+      } catch (error) { /* best effort */ }
     },
 
     deliverOne: function(record, reliable) {
@@ -1459,8 +1497,10 @@ addToLibrary({
     install: function() {
       if (typeof window === 'undefined' || window.HaloWebTransport) return;
       var runtime = HaloWebTransportRuntime;
-      runtime.netstatsEnabled = !!window.location &&
-        /[?&]netstats=1(&|$)/.test(window.location.search);
+      runtime.netstatsUpload = typeof document !== 'undefined' && typeof document.querySelector === 'function' &&
+        !!document.querySelector('meta[name="halo-netstats-upload"]');
+      runtime.netstatsEnabled = runtime.netstatsUpload || (!!window.location &&
+        /[?&]netstats=1(&|$)/.test(window.location.search));
       if (runtime.netstatsEnabled) runtime.startNetstatsLog();
       window.HaloWebTransport = Object.freeze({
         configure: function(options) {

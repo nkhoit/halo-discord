@@ -76,6 +76,20 @@ symbols in this file:
 boolean network_game_distributed(void);
 /* port/linux/game/network_distributed.c's */
 void network_distributed_tick(void);
+
+/* (the browser's network statistics) frames that ran more than one tick, to
+catch up after a stall, and the most ticks one frame ran since the last read */
+static long game_time_multiple_tick_frames;
+static long game_time_maximum_ticks_per_frame;
+
+void game_time_tick_statistics(
+	long *multiple_tick_frames,
+	long *maximum_ticks_per_frame)
+{
+	*multiple_tick_frames = game_time_multiple_tick_frames;
+	*maximum_ticks_per_frame = game_time_maximum_ticks_per_frame;
+	game_time_maximum_ticks_per_frame = 0;
+}
 #endif
 
 /* ---------- constants */
@@ -642,6 +656,12 @@ void game_time_update(
 				{
 					server_updates = 0;
 				}
+#ifdef HALO_LINUX
+				if (server_updates > 1)
+					game_time_multiple_tick_frames++;
+				if (server_updates > game_time_maximum_ticks_per_frame)
+					game_time_maximum_ticks_per_frame = server_updates;
+#endif
 
 				code_000a50d0((short)(maximum_possible_server_time - game_time_globals->local_time),
 					(short)server_updates, 0, FALSE);

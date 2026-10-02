@@ -370,3 +370,36 @@ describe("caching", () => {
     expect((await get("/assets/maps/bloodgulch.map")).headers.get("vary")).toBe("Cookie, Authorization");
   });
 });
+
+describe("measurement uploads", () => {
+  const post = (body: string, cookie?: string) => fetch(`${server.base}/v1/netstats`, {
+    method: "POST", body, headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
+  });
+
+  it("are off unless the server opts in", async () => {
+    expect((await post("{}", `halo_session=${token("9")}`)).status).toBe(404);
+    expect(await (await get("/")).text()).not.toContain("halo-netstats-upload");
+  });
+
+  it("log a signed-in player's windows, one every two seconds, small JSON objects only", async () => {
+    await server.close();
+    server = await start({ netstatsUpload: true });
+    expect(await (await get("/")).text()).toContain('<meta name="halo-netstats-upload" content="1">');
+    expect(await (await get("/?frame_id=f&instance_id=i")).text()).toContain("halo-netstats-upload");
+    expect((await post("{}")).status).toBe(401);
+    const cookie = `halo_session=${token("42", "Chief")}`;
+    const window = { windowSeconds: 5, game: { ticksPerSecond: 30, ownCorrections: 0 } };
+    const first = await post(JSON.stringify(window), cookie);
+    expect(first.status).toBe(204);
+    expect(first.headers.get("cache-control")).toBe("no-store");
+    expect(server.logs.find((entry) => entry.event === "netstats")).toEqual({ event: "netstats", user: "42", stats: window });
+    expect((await post(JSON.stringify(window), cookie)).status).toBe(429);
+    const other = `halo_session=${token("43")}`;
+    expect((await post("[1, 2]", other)).status).toBe(400);
+    const another = `halo_session=${token("44")}`;
+    expect((await post("not json", another)).status).toBe(400);
+    const big = `halo_session=${token("45")}`;
+    expect((await post(JSON.stringify({ pad: "x".repeat(20_000) }), big)).status).toBe(413);
+    expect(JSON.stringify(server.logs)).not.toContain(token("42", "Chief"));
+  });
+});

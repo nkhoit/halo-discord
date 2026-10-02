@@ -262,6 +262,18 @@ in only one packet between two of the host's ticks would be lost. Every
 button seen since the host's last tick stays down for the next. */
 static unsigned long update_server_pending_control_flags[MAXIMUM_NUMBER_OF_PLAYERS];
 
+/* (the browser's network statistics) how many of a client player's input
+packets the host had for each of its ticks: none, one, two, three or more */
+static long update_server_inputs_since_tick[MAXIMUM_NUMBER_OF_PLAYERS];
+static boolean update_server_remote_player[MAXIMUM_NUMBER_OF_PLAYERS];
+static long update_server_input_histogram_counts[4];
+
+void update_server_input_histogram(
+	long histogram[4])
+{
+	csmemcpy(histogram, update_server_input_histogram_counts, sizeof(update_server_input_histogram_counts));
+}
+
 /* the distributed netcode (port/linux/NETCODE.md): the latest action the
 host relayed for each player, and the buttons of every relayed update since
 this client's last tick */
@@ -395,6 +407,13 @@ void update_server_next_update(
 #ifdef HALO_LINUX
 		update->update.actions[queue_index].control_flags |= update_server_pending_control_flags[queue_index];
 		update_server_pending_control_flags[queue_index] = 0;
+		if (update_server_remote_player[queue_index])
+		{
+			long received = update_server_inputs_since_tick[queue_index];
+
+			update_server_input_histogram_counts[received < 3 ? received : 3]++;
+			update_server_inputs_since_tick[queue_index] = 0;
+		}
 #endif
 		update->update.action_count += 1;
 	}
@@ -811,6 +830,8 @@ void update_server_handle_client_update(
 #ifdef HALO_LINUX
 			update_server_pending_control_flags[DATUM_INDEX_TO_ABSOLUTE_INDEX(player_list[player_index])] |=
 				queue->current_action.control_flags;
+			update_server_inputs_since_tick[DATUM_INDEX_TO_ABSOLUTE_INDEX(player_list[player_index])]++;
+			update_server_remote_player[DATUM_INDEX_TO_ABSOLUTE_INDEX(player_list[player_index])] = TRUE;
 #endif
 			match_assert_valid_real(
 				"c:\\halo\\SOURCE\\game\\player_queues_new.c",

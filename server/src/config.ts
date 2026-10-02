@@ -21,6 +21,8 @@ export interface Config {
   trustProxy: "none" | "cloudflare" | "forwarded";
   authRateLimitPerMinute: number;
   maxRooms: number;
+  /* pages report their ?netstats=1 windows to POST /v1/netstats, logged */
+  netstatsUpload: boolean;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -71,5 +73,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxy,
     authRateLimitPerMinute: Number(env.AUTH_RATE_LIMIT_PER_MINUTE ?? 30),
     maxRooms: Number(env.MAX_ROOMS ?? 64),
+    netstatsUpload: env.NETSTATS_UPLOAD === "1",
   };
 }

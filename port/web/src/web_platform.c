@@ -58,25 +58,50 @@ EMSCRIPTEN_KEEPALIVE double platform_web_map_load_progress(void)
 
 /* (port/linux/game/network_distributed.c, Xbox ABI float real) */
 extern void network_distributed_web_statistics(long *ticks, long *own_corrections,
-	float *own_correction_maximum_squared, long *rejected_predictions);
+	float *own_correction_maximum_squared, long *rejected_predictions, long *own_aim_corrections,
+	float *own_aim_correction_maximum_degrees, long *own_seat_corrections);
+/* (source/game/player_queues_new.c, source/game/game_time.c) */
+extern void update_server_input_histogram(long histogram[4]);
+extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_ticks_per_frame);
 
 /* Local network statistics for ?netstats=1 (library_web_transport.js):
-ticks sent, own units put back by the host, the farthest of those in world
-units, and predictions the host refused. */
+ * [0] ticks sent, [1] own units put back by the host, [2] the farthest of
+ * those in world units, [3] predictions the host refused, [4] own
+ * corrections that also turned the unit, [5] the most degrees one turned it,
+ * [6] own seat corrections, [7..10] (the host) ticks with 0, 1, 2 and 3+
+ * client input packets, [11] frames that ran several ticks to catch up,
+ * [12] the most ticks one frame ran since the last read. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
-	static double values[4];
+	static double values[13];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
 	long rejected_predictions;
+	long own_aim_corrections;
+	float own_aim_correction_maximum_degrees;
+	long own_seat_corrections;
+	long histogram[4];
+	long multiple_tick_frames;
+	long maximum_ticks_per_frame;
+	int index;
 
-	network_distributed_web_statistics(&ticks, &own_corrections,
-		&own_correction_maximum_squared, &rejected_predictions);
+	network_distributed_web_statistics(&ticks, &own_corrections, &own_correction_maximum_squared,
+		&rejected_predictions, &own_aim_corrections, &own_aim_correction_maximum_degrees,
+		&own_seat_corrections);
+	update_server_input_histogram(histogram);
+	game_time_tick_statistics(&multiple_tick_frames, &maximum_ticks_per_frame);
 	values[0] = (double)ticks;
 	values[1] = (double)own_corrections;
 	values[2] = sqrt((double)own_correction_maximum_squared);
 	values[3] = (double)rejected_predictions;
+	values[4] = (double)own_aim_corrections;
+	values[5] = (double)own_aim_correction_maximum_degrees;
+	values[6] = (double)own_seat_corrections;
+	for (index = 0; index < 4; index++)
+		values[7 + index] = (double)histogram[index];
+	values[11] = (double)multiple_tick_frames;
+	values[12] = (double)maximum_ticks_per_frame;
 	return values;
 }
 

@@ -160,9 +160,9 @@ function attribute(value: string): string {
 }
 
 export function hostedPage(page: string, activity: ActivityPageOptions | null = null,
-    versions: AssetVersions | null = null): HostedPage {
+    versions: AssetVersions | null = null, options: { netstatsUpload?: boolean } = {}): HostedPage {
   for (const name of ["halo-signaling-url", "halo-relay-url", "halo-turnstile-sitekey", "halo-transport",
-      "halo-activity", "halo-activity-dev", "halo-public-origin"]) {
+      "halo-activity", "halo-activity-dev", "halo-public-origin", "halo-netstats-upload", "halo-asset-version"]) {
     page = page.replace(metaPattern(name), "");
   }
   page = page.replace(scriptPattern("coi-serviceworker\\.js"), "");
@@ -183,7 +183,8 @@ export function hostedPage(page: string, activity: ActivityPageOptions | null = 
   const iconLinks = `<link rel="icon" href="${icons("favicon.ico")}" sizes="32x32 64x64">` +
     `<link rel="icon" type="image/png" sizes="64x64" href="${icons("icon-64.png")}">` +
     `<link rel="apple-touch-icon" href="${icons("apple-touch-icon.png")}">`;
-  const assetVersion = versions ? `<meta name="halo-asset-version" content="${attribute(versions.app)}">` : "";
+  const assetVersion = (versions ? `<meta name="halo-asset-version" content="${attribute(versions.app)}">` : "") +
+    (options.netstatsUpload ? `<meta name="halo-netstats-upload" content="1">` : "");
   const loader = activity ?
     `<meta name="halo-transport" content="relay-rooms">` +
     `<meta name="halo-activity" content="${attribute(activity.clientId)}">` +
