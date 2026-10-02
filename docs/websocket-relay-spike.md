@@ -40,6 +40,13 @@ Activity decisions (coordinating chat, on the user's behalf):
     status (no invites), first host wins.
 14. `pagehide` leaves the room: a page parked in the back/forward cache
     otherwise kept its socket and showed others a host that no longer played.
+15. Relay pages check WebSocket support only. Discord's frame has no
+    RTCPeerConnection; the first in-Discord test failed on a WebRTC support
+    check made before the relay was configured.
+16. Content-versioned asset URLs and explicit Cache-Control on everything
+    (runbook "Caching"). The second in-Discord test still ran the old game:
+    the server sent no Cache-Control, and Cloudflare's 4-hour browser TTL
+    let the Discord client keep the previous `halo.js`.
 
 Known gaps: the shell's UI images (`assets/ui/**`: map and mode cards,
 Spartan previews, controller art) are not in this repository, so every

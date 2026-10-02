@@ -273,6 +273,30 @@ player's round trip to the server. Install Docker, copy `build/web` and the
 maps, run the container as above, then either the tunnel (no inbound NSG
 rules) or Caddy (allow 80/443 inbound).
 
+## Caching
+
+Any cache may sit in front of the server (Cloudflare's edge on the tunnel,
+Discord's proxy for the Activity, a browser), so every response says what
+may be kept:
+
+- Pages, `/auth/*`, `/v1/rooms/*`, `/healthz` and errors: `no-store`.
+- Every asset the page loads carries `?v=<content hash>`: `halo.js` and
+  `halo.wasm` share one version (the loader sets `Module.locateFile` for
+  the wasm; pthread workers reuse `halo.js`'s URL), and the shell scripts,
+  loaders and icons carry their own. The current version is
+  `public, max-age=31536000, immutable`; a missing or stale `?v=` gets
+  `no-cache`. A new build or server version changes the URLs, so nothing
+  needs purging after a deploy.
+- Maps: `private, max-age=3600` with `Vary: Cookie, Authorization`. Shared
+  caches never store them; the player's own browser may keep them for an
+  hour, which spares the server's upload when a match restarts.
+
+Cloudflare's zone setting Caching > Configuration > Browser Cache TTL
+(default 4 hours) replaces a shorter origin `Cache-Control` for files with
+cacheable extensions, so unversioned URLs such as `/halo.js` reach browsers
+with `max-age=14400`. Pages never use those URLs; setting it to "Respect
+Existing Headers" makes the origin authoritative everywhere.
+
 ## Operating
 
 - Logs are JSON lines on stdout: `accept`, `close` (code, age), `refuse`,
