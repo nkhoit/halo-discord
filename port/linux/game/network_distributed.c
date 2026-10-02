@@ -34,6 +34,10 @@ machine (their datum identifiers need not be).
 */
 
 #include <math.h>
+#ifdef HALO_WEB
+#include <stdlib.h>
+#include <emscripten.h>
+#endif
 
 #include "cseries.h"
 #include "game/game.h"
@@ -212,6 +216,215 @@ static struct
 } distributed_web_statistics;
 
 #define OWN_AIM_CORRECTION_DEGREES 5.0f
+
+/* what shooting and the other players look like here, for the browser's feel
+scorecard: from the fire button to this machine's player's weapon firing,
+from a hit reported to the host's damage for it coming back, how far the
+host's word moved other players' units each tick, and ticks run without a
+newer relayed input for the other players (they go on with the last) */
+#define WEB_FEEL_SAMPLES 512
+#define WEB_FEEL_PENDING_HITS 16
+#define WEB_FEEL_PRESS_TIMEOUT 1000.0
+#define WEB_FEEL_REMOTE_SNAP 1.0f
+
+static struct
+{
+	boolean trigger_down;
+	double press_time;
+	double fire_samples[WEB_FEEL_SAMPLES];
+	short fire_count;
+	long unanswered_presses;
+	struct
+	{
+		long object_index;
+		double time;
+	} hits[WEB_FEEL_PENDING_HITS];
+	double hit_samples[WEB_FEEL_SAMPLES];
+	short hit_count;
+	long unconfirmed_hits;
+	double remote_samples[WEB_FEEL_SAMPLES];
+	short remote_count;
+	long remote_snaps;
+	boolean relayed_since_tick;
+	short relayed_this_tick;
+	long relayed_held_ticks;
+	long relayed_held_run;
+	long relayed_held_run_maximum;
+	long relayed_bunched_ticks;
+} web_feel;
+
+static void web_feel_sample(double *samples, short *count, double value)
+{
+	if (*count < WEB_FEEL_SAMPLES)
+		samples[(*count)++] = value;
+}
+
+static int web_feel_compare(void const *a, void const *b)
+{
+	double x = *(double const *)a;
+	double y = *(double const *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* [0] p50, [1] p99, [2] the maximum of the samples, then none left */
+static void web_feel_take(double *samples, short *count, double *values)
+{
+	values[0] = values[1] = values[2] = 0.0;
+	if (*count)
+	{
+		qsort(samples, *count, sizeof(double), web_feel_compare);
+		values[0] = samples[*count / 2];
+		values[1] = samples[(*count * 99) / 100 < *count ? (*count * 99) / 100 : *count - 1];
+		values[2] = samples[*count - 1];
+	}
+	*count = 0;
+}
+
+/* (player_control.c, every frame) this machine's player's fire button */
+void network_web_trigger(
+	real primary_trigger)
+{
+	double now = emscripten_get_now();
+	boolean down = primary_trigger > 0.0f;
+
+	if (web_feel.press_time > 0.0 && now - web_feel.press_time > WEB_FEEL_PRESS_TIMEOUT)
+	{
+		web_feel.unanswered_presses++;
+		web_feel.press_time = 0.0;
+	}
+	if (down && !web_feel.trigger_down && web_feel.press_time <= 0.0)
+		web_feel.press_time = now;
+	web_feel.trigger_down = down;
+}
+
+/* (weapons.c) a weapon fired its primary trigger: this machine's player's
+answers a press */
+void network_web_weapon_fired(
+	long owner_object_index)
+{
+	long player_index = owner_object_index != NONE ? player_index_from_unit_index(owner_object_index) : NONE;
+
+	if (web_feel.press_time <= 0.0 || player_index == NONE || !distributed_player_is_local(player_index))
+		return;
+	web_feel_sample(web_feel.fire_samples, &web_feel.fire_count, emscripten_get_now() - web_feel.press_time);
+	web_feel.press_time = 0.0;
+}
+
+/* reports the host did not answer within a second: refused, or dealt to
+nothing this machine has */
+static void web_feel_expire_hits(
+	double now)
+{
+	short index;
+
+	for (index = 0; index < WEB_FEEL_PENDING_HITS; index++)
+	{
+		if (web_feel.hits[index].time > 0.0 && now - web_feel.hits[index].time > 1000.0)
+		{
+			web_feel.unconfirmed_hits++;
+			web_feel.hits[index].time = 0.0;
+		}
+	}
+}
+
+/* (network_damage.c, a client) a hit on the object reported to the host */
+void network_web_hit_reported(
+	long object_index)
+{
+	short index;
+	short free_index = NONE;
+
+	web_feel_expire_hits(emscripten_get_now());
+	for (index = 0; index < WEB_FEEL_PENDING_HITS; index++)
+	{
+		if (web_feel.hits[index].time > 0.0 && web_feel.hits[index].object_index == object_index)
+			return;
+		if (web_feel.hits[index].time <= 0.0 && free_index == NONE)
+			free_index = index;
+	}
+	if (free_index != NONE)
+	{
+		web_feel.hits[free_index].object_index = object_index;
+		web_feel.hits[free_index].time = emscripten_get_now();
+	}
+}
+
+/* (network_damage.c, a client) the host's damage by this machine's player
+to the object arrived */
+void network_web_hit_confirmed(
+	long object_index)
+{
+	double now = emscripten_get_now();
+	short index;
+
+	web_feel_expire_hits(now);
+	for (index = 0; index < WEB_FEEL_PENDING_HITS; index++)
+	{
+		if (web_feel.hits[index].time > 0.0 && web_feel.hits[index].object_index == object_index)
+		{
+			web_feel_sample(web_feel.hit_samples, &web_feel.hit_count, now - web_feel.hits[index].time);
+			web_feel.hits[index].time = 0.0;
+		}
+	}
+}
+
+/* (player_queues_new.c, a client) the host relayed the players' inputs */
+void network_web_relayed_update(
+	void)
+{
+	web_feel.relayed_this_tick++;
+}
+
+/* (player_queues_new.c, a client) a tick runs the others' latest inputs */
+void network_web_client_tick(
+	void)
+{
+	if (!web_feel.relayed_this_tick)
+	{
+		web_feel.relayed_held_ticks++;
+		if (++web_feel.relayed_held_run > web_feel.relayed_held_run_maximum)
+			web_feel.relayed_held_run_maximum = web_feel.relayed_held_run;
+	}
+	else
+	{
+		web_feel.relayed_held_run = 0;
+		if (web_feel.relayed_this_tick > 1)
+			web_feel.relayed_bunched_ticks++;
+	}
+	web_feel.relayed_this_tick = 0;
+}
+
+/* since the last call: [0] fire button presses answered by a shot, [1..3]
+press to shot p50, p99, max (ms), [4] presses no shot answered within a
+second; [5] hits confirmed, [6..8] report to the host's damage p50, p99,
+max (ms); [9] other players' corrections, [10..12] their distance p50, p99,
+max (world units), [13] those over a world unit; [14] ticks with no newer
+relayed input, [15] the longest run of them, [16] ticks after two or more,
+[17] hits reported that the host did not answer within a second */
+void network_distributed_web_feel(
+	double values[18])
+{
+	web_feel_expire_hits(emscripten_get_now());
+	values[17] = (double)web_feel.unconfirmed_hits;
+	web_feel.unconfirmed_hits = 0;
+	values[0] = web_feel.fire_count;
+	web_feel_take(web_feel.fire_samples, &web_feel.fire_count, &values[1]);
+	values[4] = (double)web_feel.unanswered_presses;
+	values[5] = web_feel.hit_count;
+	web_feel_take(web_feel.hit_samples, &web_feel.hit_count, &values[6]);
+	values[9] = web_feel.remote_count;
+	web_feel_take(web_feel.remote_samples, &web_feel.remote_count, &values[10]);
+	values[13] = (double)web_feel.remote_snaps;
+	values[14] = (double)web_feel.relayed_held_ticks;
+	values[15] = (double)web_feel.relayed_held_run_maximum;
+	values[16] = (double)web_feel.relayed_bunched_ticks;
+	web_feel.unanswered_presses = 0;
+	web_feel.remote_snaps = 0;
+	web_feel.relayed_held_ticks = 0;
+	web_feel.relayed_held_run_maximum = 0;
+	web_feel.relayed_bunched_ticks = 0;
+}
 
 void network_distributed_web_statistics(
 	long *ticks,
@@ -649,6 +862,20 @@ static void distributed_handle_unit_states(
 							distributed_web_statistics.own_aim_correction_maximum_degrees = degrees;
 					}
 				}
+			}
+#endif
+#ifdef HALO_WEB
+			if (!local)
+			{
+				struct object_datum *object = object_get(unit_index);
+				real dx = state->position.x - object->object.position.x;
+				real dy = state->position.y - object->object.position.y;
+				real dz = state->position.z - object->object.position.z;
+				real distance = (real)sqrt(dx * dx + dy * dy + dz * dz);
+
+				web_feel_sample(web_feel.remote_samples, &web_feel.remote_count, distance);
+				if (distance > WEB_FEEL_REMOTE_SNAP)
+					web_feel.remote_snaps++;
 			}
 #endif
 			distributed_apply_state(unit_index, state, local ? LOCAL_CORRECTION_TOLERANCE : REMOTE_CORRECTION_TOLERANCE);

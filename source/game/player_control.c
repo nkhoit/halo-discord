@@ -732,6 +732,15 @@ static void handle_one_player_input(
 	player->control_flags = input.unit_control_flags;
 	player->throttle = input.throttle;
 	player->primary_trigger = input.primary_trigger;
+#ifdef HALO_WEB
+	{
+		/* (the browser's feel scorecard, network_distributed.c) */
+		extern void network_web_trigger(real primary_trigger);
+
+		if (local_player_index == 0)
+			network_web_trigger(player->primary_trigger);
+	}
+#endif
 	match_assert_valid_real(
 		"c:\\halo\\SOURCE\\game\\player_control.c",
 		0x351,

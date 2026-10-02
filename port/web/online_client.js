@@ -2239,21 +2239,52 @@
     }
   }
 
-  /* A measurement switch: render at most 120 or 60 frames a second (the
-     simulation stays at 30 ticks). ?fpsCap=120 sets it on a page; F8 cycles
-     it anywhere, including the Activity, which has no address bar. */
+  /* The render cap (the simulation stays at 30 ticks). A browser rendering
+     well past 120 frames a second misses whole frames now and then (Chrome
+     at 240 Hz: 60 ms gaps a few times a minute, none at 120), so by default
+     a display faster than 165 Hz renders every second (or third) frame:
+     the largest whole fraction of its rate at most 120. The cap can only
+     skip display frames, so a 144 Hz display stays uncapped rather than
+     dropping to 72. F8 cycles off, 120 and 60 anywhere, including the
+     Activity, and the choice is kept in this browser; ?fpsCap=N sets it on
+     a page for one visit. */
   var FRAME_CAPS = [0, 120, 60];
+  var FRAME_CAP_STORAGE = "halo-frame-cap";
+  var frameCapAuto = { active: false, refresh: 0 };
+
+  function defaultFrameCap(refreshHz) {
+    if (!(refreshHz > 165)) return 0;
+    /* (an estimate a hair over 240 Hz still halves) */
+    return Math.round(refreshHz / Math.ceil(refreshHz / 120 - 0.05));
+  }
 
   function frameCap() {
     var get = global.Module && global.Module._platform_web_frame_cap;
     return typeof get === "function" ? get() : 0;
   }
 
-  function setFrameCap(cap) {
+  function storedFrameCap() {
+    try {
+      var value = global.localStorage && global.localStorage.getItem(FRAME_CAP_STORAGE);
+      return value !== null && value !== undefined && FRAME_CAPS.indexOf(Number(value)) >= 0 ? Number(value) : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function setFrameCap(cap, how) {
     var set = global.Module && global.Module._platform_web_set_frame_cap;
     if (typeof set !== "function") return;
     set(cap);
-    if (typeof document.createElement !== "function" || !document.body) return;
+    frameCapAuto.active = how === "auto";
+    if (how === "chosen") {
+      try {
+        if (global.localStorage) global.localStorage.setItem(FRAME_CAP_STORAGE, String(cap));
+      } catch (error) {
+        /* (storage refused: the choice lasts this visit) */
+      }
+    }
+    if (how === "auto" || typeof document.createElement !== "function" || !document.body) return;
     var notice = byId("frame-cap-notice");
     if (!notice) {
       notice = document.createElement("div");
@@ -2270,19 +2301,60 @@
     notice.hideTimer = global.setTimeout(function() { notice.hidden = true; }, 2000);
   }
 
+  /* the display's refresh rate from 120 animation frames, then the default
+     cap unless one was chosen. A busy page misses frames, which only
+     lengthens intervals (the game loading at start-up made most of them
+     two frames long), so the rate is the 10th percentile's, and the faster
+     of this and any earlier estimate. */
+  function estimateFrameCap() {
+    if (typeof global.requestAnimationFrame !== "function") return;
+    var times = [];
+    var sample = function(time) {
+      times.push(time);
+      if (times.length < 121) {
+        global.requestAnimationFrame(sample);
+        return;
+      }
+      var intervals = [];
+      for (var i = 1; i < times.length; i++) intervals.push(times[i] - times[i - 1]);
+      intervals.sort(function(x, y) { return x - y; });
+      var short = intervals[Math.floor(intervals.length / 10)];
+      if (!(short > 0)) return;
+      frameCapAuto.refresh = Math.max(frameCapAuto.refresh, 1000 / short);
+      if (storedFrameCap() === null && (frameCapAuto.active || frameCap() === 0)) {
+        setFrameCap(defaultFrameCap(frameCapAuto.refresh), "auto");
+      }
+    };
+    global.requestAnimationFrame(sample);
+  }
+
   var frameCapInitialized = false;
 
   function initializeFrameCap() {
     if (frameCapInitialized) return;
     frameCapInitialized = true;
     var requested = Number(new URL(global.location.href).searchParams.get("fpsCap"));
-    if (requested > 0) setFrameCap(requested);
+    var stored = storedFrameCap();
+    if (requested > 0) setFrameCap(requested, "page");
+    else if (stored !== null) setFrameCap(stored, "stored");
+    else {
+      estimateFrameCap();
+      /* (again once start-up's work is done) */
+      global.setTimeout(estimateFrameCap, 15000);
+    }
     if (typeof global.addEventListener === "function") {
       global.addEventListener("keydown", function(event) {
         if (event.key !== "F8" || event.repeat) return;
         var index = FRAME_CAPS.indexOf(frameCap());
-        setFrameCap(FRAME_CAPS[(index + 1) % FRAME_CAPS.length]);
+        setFrameCap(FRAME_CAPS[(index + 1) % FRAME_CAPS.length], "chosen");
       }, true);
+      /* (a window moved to another display usually resizes too) */
+      var resizeTimer = null;
+      global.addEventListener("resize", function() {
+        if (!frameCapAuto.active) return;
+        global.clearTimeout(resizeTimer);
+        resizeTimer = global.setTimeout(estimateFrameCap, 1000);
+      });
     }
   }
 
@@ -2305,6 +2377,7 @@
     host: host,
     join: join,
     leave: function() { return leave(true); },
+    defaultFrameCap: defaultFrameCap,
   });
 
   if (document.readyState === "loading") {

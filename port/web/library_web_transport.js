@@ -442,6 +442,21 @@ addToLibrary({
         game.warmedPrograms = HEAPF64[index + 42];
         game.warmupMs = Math.round(HEAPF64[index + 43]);
         game.unwarmedFirstDraws = HEAPF64[index + 44];
+        game.deferredDraws = HEAPF64[index + 45];
+        game.deferredPrograms = HEAPF64[index + 46];
+        game.programWaitMaxMs = Math.round(HEAPF64[index + 47]);
+        game.rafIntervalMaxMs = +HEAPF64[index + 48].toFixed(1);
+        game.rafLateMaxMs = +HEAPF64[index + 49].toFixed(1);
+        var feel = function(offset) { return +HEAPF64[index + 50 + offset].toFixed(2); };
+        game.feel = {
+          shots: feel(0), fireP50Ms: feel(1), fireP99Ms: feel(2), fireMaxMs: feel(3),
+          unansweredPresses: feel(4),
+          hitConfirms: feel(5), hitConfirmP50Ms: feel(6), hitConfirmP99Ms: feel(7), hitConfirmMaxMs: feel(8),
+          remoteCorrections: feel(9), remoteErrorP50: feel(10), remoteErrorP99: feel(11),
+          remoteErrorMax: feel(12), remoteSnaps: feel(13),
+          relayedHeldTicks: feel(14), relayedHeldRunMax: feel(15), relayedBunchedTicks: feel(16),
+          unconfirmedHits: feel(17),
+        };
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
@@ -589,6 +604,15 @@ addToLibrary({
           warmedPrograms: delta('warmedPrograms'),
           warmupMs: game.warmupMs,
           unwarmedFirstDraws: delta('unwarmedFirstDraws'),
+          /* programs compiled in the background: draws skipped meanwhile,
+             the programs, and the longest wait (an effect appearing late) */
+          deferredDraws: delta('deferredDraws'),
+          deferredPrograms: delta('deferredPrograms'),
+          programWaitMaxMs: game.programWaitMaxMs,
+          /* the worker's animation frames: longest interval between two,
+             longest delay from one's timestamp to the game frame */
+          rafIntervalMaxMs: game.rafIntervalMaxMs,
+          rafLateMaxMs: game.rafLateMaxMs,
           frameCap: typeof Module['_platform_web_frame_cap'] === 'function' ? Module['_platform_web_frame_cap']() : null,
           shaderMs: delta('shaderMs') === null ? null : +delta('shaderMs').toFixed(1),
           shaderMsMax: game.shaderMsMax,
@@ -600,6 +624,11 @@ addToLibrary({
           textureHashMsMax: game.textureHashMsMax,
           textureDrops: delta('textureDrops'),
         },
+        /* shooting and the other players this window: fire button to shot
+           (ms), hit reported to the host's damage back (ms), how far the
+           host's word moved other players each tick (world units; snaps over
+           1), and ticks run on the others' last input for want of a newer */
+        feel: game.feel || null,
         peers: peers,
         relay: relaySummary,
         mainThread: main,

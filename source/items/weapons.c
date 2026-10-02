@@ -2536,6 +2536,17 @@ static void weapon_trigger_fire(
 		}
 
 		weapon->weapon.game_time_last_fired= game_time_get();
+#ifdef HALO_WEB
+		{
+			/* (the browser's feel scorecard, network_distributed.c) */
+			extern void network_web_weapon_fired(long owner_object_index);
+
+			if (trigger_index==0)
+			{
+				network_web_weapon_fired(owner_object_index);
+			}
+		}
+#endif
 
 		first_person_weapon_message_from_weapon(weapon_index, misfired ?
 			(trigger_index ? _first_person_weapon_message_secondary_misfire : _first_person_weapon_message_primary_misfire) :

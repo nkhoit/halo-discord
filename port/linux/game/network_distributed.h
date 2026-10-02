@@ -137,4 +137,10 @@ void network_damage_handle_events(void const *entries, short count);
 void network_damage_handle_reports(long machine_index, void const *entries, short count);
 word network_damage_entry_size(byte type);
 
+#ifdef HALO_WEB
+/* the browser's feel scorecard (network_distributed.c) */
+void network_web_hit_reported(long object_index);
+void network_web_hit_confirmed(long object_index);
+#endif
+
 #endif // __NETWORK_DISTRIBUTED_H

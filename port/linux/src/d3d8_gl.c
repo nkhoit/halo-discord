@@ -33,6 +33,7 @@ Conventions carried over from the Xbox:
 #include <time.h>
 #ifdef HALO_WEB
 #include <emscripten.h>
+#include <emscripten/html5.h>
 
 /* (the browser's network statistics, port/web/src/web_platform.c) shaders
 compiled and programs linked, which the first draw of a new effect waits
@@ -53,7 +54,25 @@ static struct
 	double warmed_programs;
 	double warmup_milliseconds;
 	double unwarmed_first_draws;
+	/* draws skipped while their program compiled in the background, the
+	programs that made draws wait, and the longest wait (ms) */
+	double deferred_draws;
+	double deferred_programs;
+	double wait_milliseconds_maximum;
 } shader_web_statistics;
+
+/* KHR_parallel_shader_compile: shaders compile and programs link in the
+background, and a program's draws wait (skipped) until it is ready rather
+than stalling the frame */
+static BOOL web_parallel_compile(void)
+{
+	static int enabled = -1;
+
+	if (enabled < 0)
+		enabled = emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(),
+			"KHR_parallel_shader_compile") ? 1 : 0;
+	return enabled;
+}
 
 static void shader_web_count(double started)
 {
@@ -131,8 +150,12 @@ void xgpu_web_frame_statistics(double values[6])
 	memset(&web_frame_window, 0, sizeof(web_frame_window));
 }
 
-void xgpu_web_shader_statistics(double values[9])
+void xgpu_web_shader_statistics(double values[12])
 {
+	values[9] = shader_web_statistics.deferred_draws;
+	values[10] = shader_web_statistics.deferred_programs;
+	values[11] = shader_web_statistics.wait_milliseconds_maximum;
+	shader_web_statistics.wait_milliseconds_maximum = 0.0;
 	values[6] = shader_web_statistics.warmed_programs;
 	values[7] = shader_web_statistics.warmup_milliseconds;
 	values[8] = shader_web_statistics.unwarmed_first_draws;
@@ -334,6 +357,8 @@ struct program_entry
 	in; ready once linked and set up (the warm-up links ahead, sets up later) */
 	BOOL warmed;
 	BOOL ready;
+	/* (the browser) when its background link began, 0 if not in one */
+	double link_started;
 	unsigned long listed_serial;
 	unsigned long used_serial;
 
@@ -853,6 +878,14 @@ static GLuint compile_shader(GLenum type, const char *source, const char *what)
 
 	glShaderSource(shader, 1, &source, NULL);
 	glCompileShader(shader);
+#ifdef HALO_WEB
+	/* (its status waits for the program's link: a failed compile fails it) */
+	if (web_parallel_compile())
+	{
+		shader_web_statistics.compiles++;
+		return shader;
+	}
+#endif
 	glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
 #ifdef HALO_WEB
 	shader_web_count(started);
@@ -2107,6 +2140,7 @@ static GLuint fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 static void program_setup(struct program_entry *entry);
 #ifdef HALO_WEB
 static BOOL program_finish(struct program_entry *entry);
+static BOOL program_ready(struct program_entry *entry);
 static void shader_record(struct program_entry *entry);
 #endif
 
@@ -2127,7 +2161,7 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 			if (!entry->program)
 				return NULL;
 #ifdef HALO_WEB
-			if (!entry->ready && !program_finish(entry))
+			if (!entry->ready && !program_ready(entry))
 				return NULL;
 #endif
 			last = entry;
@@ -2146,6 +2180,16 @@ static struct program_entry *program_get(GLuint vertex_shader, GLuint fragment_s
 	entry->program = glCreateProgram();
 	glAttachShader(entry->program, vertex_shader);
 	glAttachShader(entry->program, fragment_shader);
+#ifdef HALO_WEB
+	if (web_parallel_compile())
+	{
+		glLinkProgram(entry->program);
+		entry->link_started = emscripten_get_now();
+		shader_web_statistics.deferred_programs++;
+		shader_web_statistics.deferred_draws++;
+		return NULL;
+	}
+#endif
 	{
 #ifdef HALO_WEB
 		double started = emscripten_get_now();
@@ -2404,6 +2448,7 @@ static struct program_entry *program_link_ahead(GLuint vertex_shader, GLuint fra
 	glAttachShader(entry->program, vertex_shader);
 	glAttachShader(entry->program, fragment_shader);
 	glLinkProgram(entry->program);
+	entry->link_started = emscripten_get_now();
 	return entry;
 }
 
@@ -2496,7 +2541,6 @@ static unsigned long warmup_next;
 static unsigned long warmup_built;
 static double warmup_started;
 static double warmup_busy;
-static BOOL warmup_parallel;
 
 /* starts building the map's programs: compiles and links them all, which the
 browser may finish in the background (KHR_parallel_shader_compile) */
@@ -2507,14 +2551,6 @@ static void shader_warmup_begin(const char *map)
 	char path[128];
 	char *manifest;
 	char *persisted;
-	static BOOL extension;
-
-	if (!extension)
-	{
-		extension = TRUE;
-		warmup_parallel = emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(),
-			"KHR_parallel_shader_compile");
-	}
 	manifest = shader_warmup_fetch(map);
 	shader_persisted_path(map, path, sizeof(path));
 	persisted = shader_warmup_read(path);
@@ -2568,7 +2604,7 @@ static void shader_warmup_build(double budget)
 		{
 			if (emscripten_get_now() - started >= budget)
 				break;
-			if (warmup_parallel)
+			if (web_parallel_compile())
 			{
 				glGetProgramiv(entry->program, 0x91B1 /* GL_COMPLETION_STATUS_KHR */, &status);
 				if (!status)
@@ -2607,14 +2643,58 @@ static BOOL program_finish(struct program_entry *entry)
 	{
 		char log[4096];
 
+		GLuint shaders[2] = { entry->vertex_shader, entry->fragment_shader };
+		int index;
+
+		/* (compiles are not checked on their own in the background) */
+		for (index = 0; index < 2; index++)
+		{
+			glGetShaderiv(shaders[index], GL_COMPILE_STATUS, &status);
+			if (!status)
+			{
+				struct source_entry *source = source_entry_for_shader(shaders[index]);
+
+				glGetShaderInfoLog(shaders[index], sizeof(log), NULL, log);
+				platform_log("cannot compile a shader:\n%s\n%s", log, source ? source->source : "");
+			}
+		}
 		glGetProgramInfoLog(entry->program, sizeof(log), NULL, log);
 		platform_log("cannot link a shader program: %s", log);
 		glDeleteProgram(entry->program);
 		entry->program = 0;
 		return FALSE;
 	}
+	entry->link_started = 0.0;
 	program_setup(entry);
 	return TRUE;
+}
+
+/* a program from a background link, finished once the link has completed
+(its draws are skipped meanwhile; after a second it is waited for) */
+static BOOL program_ready(struct program_entry *entry)
+{
+	double now = emscripten_get_now();
+	double started;
+	BOOL ready;
+
+	if (entry->link_started > 0.0 && web_parallel_compile())
+	{
+		double waited = now - entry->link_started;
+		GLint complete = 0;
+
+		glGetProgramiv(entry->program, 0x91B1 /* GL_COMPLETION_STATUS_KHR */, &complete);
+		if (!complete && waited < 1000.0)
+		{
+			shader_web_statistics.deferred_draws++;
+			return FALSE;
+		}
+		if (waited > shader_web_statistics.wait_milliseconds_maximum)
+			shader_web_statistics.wait_milliseconds_maximum = waited;
+	}
+	started = emscripten_get_now();
+	ready = program_finish(entry);
+	shader_web_count(started);
+	return ready;
 }
 
 static void shader_warmup_start(const char *map)

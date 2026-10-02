@@ -274,6 +274,12 @@ void update_server_input_histogram(
 	csmemcpy(histogram, update_server_input_histogram_counts, sizeof(update_server_input_histogram_counts));
 }
 
+#ifdef HALO_WEB
+/* the browser's feel scorecard (port/linux/game/network_distributed.c) */
+extern void network_web_relayed_update(void);
+extern void network_web_client_tick(void);
+#endif
+
 /* the distributed netcode (port/linux/NETCODE.md): the latest action the
 host relayed for each player, and the buttons of every relayed update since
 this client's last tick */
@@ -669,6 +675,9 @@ static boolean update_client_dequeue_distributed(
 		actions[queue_index].desired_zoom_level = action.desired_zoom_level;
 	}
 	update_client_globals.next_update_number_to_dequeue += 1;
+#ifdef HALO_WEB
+	network_web_client_tick();
+#endif
 	return TRUE;
 }
 
@@ -873,6 +882,9 @@ void update_client_handle_server_update(
 	{
 		short action_index;
 
+#ifdef HALO_WEB
+		network_web_relayed_update();
+#endif
 		for (action_index = 0;
 			action_index < update->action_count && action_index < MAXIMUM_NUMBER_OF_PLAYERS;
 			action_index++)
