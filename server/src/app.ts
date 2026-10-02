@@ -1,7 +1,9 @@
 /* The whole service: the game page, its maps, Discord login and the relay,
    on one origin. */
 
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,12 +28,17 @@ import {
   ACTIVITY_CSP,
   buildFile,
   type Context,
+  type AssetVersions,
+  contentVersion,
   HANDLERS_SCRIPT,
   hostedPage,
   ICONS,
+  IMMUTABLE,
   isolationHeaders,
   LOGIN_SCRIPT,
   mapFile,
+  NO_STORE,
+  REVALIDATE,
   serveFile,
 } from "./static.ts";
 import { verifyToken } from "./tokens.ts";
@@ -65,10 +72,15 @@ const ICON_DIRECTORY = fileURLToPath(new URL("../icons/", import.meta.url));
 function sendBody(request: IncomingMessage, response: ServerResponse, headers: Record<string, string>,
     type: string, body: string): void {
   const bytes = Buffer.from(body);
-  response.writeHead(200, { ...headers, "Content-Type": type, "Cache-Control": "no-cache",
-    "Content-Length": String(bytes.length) });
+  response.writeHead(200, { ...headers, "Content-Type": type, "Content-Length": String(bytes.length) });
   response.end(request.method === "HEAD" ? undefined : bytes);
 }
+
+/* Map bytes are the same for every player, but only signed-in players may
+   have them: "private" keeps every shared cache (Cloudflare's edge, Discord's
+   proxy) from storing them, while the player's own browser may keep them for
+   an hour, which spares the server's upload when a match restarts. */
+const MAP_CACHE = { "Cache-Control": "private, max-age=3600", Vary: "Cookie, Authorization" };
 
 export function createApp(config: Config, discord: DiscordApi | null, log: Log = consoleLog,
     authDeadlineMilliseconds = AUTH_DEADLINE_MILLISECONDS, heartbeatMilliseconds = HEARTBEAT_MILLISECONDS): App {
@@ -82,6 +94,10 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     publicOrigin: config.publicOrigin,
     dev: config.devLogin,
   };
+  const iconVersions = Object.fromEntries(Object.keys(ICONS).map((name) =>
+    [name, contentVersion(readFileSync(join(ICON_DIRECTORY, name)))]));
+  const loginVersion = contentVersion(LOGIN_SCRIPT);
+  const handlersVersion = contentVersion(HANDLERS_SCRIPT);
 
   async function source(): Promise<string | null> {
     try {
@@ -91,19 +107,40 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     }
   }
 
+  /* halo.js and halo.wasm, hashed together; recomputed when either changes. */
+  let app: { key: string; version: string } | null = null;
+  async function appVersion(): Promise<string> {
+    const files = ["halo.js", "halo.wasm"].map((name) => join(config.buildDir, name));
+    const stats = await Promise.all(files.map((file) => stat(file).catch(() => null)));
+    const key = stats.map((info) => info ? `${info.mtimeMs}:${info.size}` : "missing").join("|");
+    if (app?.key !== key) {
+      const hash = createHash("sha256");
+      for (const file of files) hash.update(await readFile(file).catch(() => Buffer.alloc(0)));
+      app = { key, version: hash.digest("hex").slice(0, 16) };
+    }
+    return app.version;
+  }
+
+  async function versions(): Promise<AssetVersions> {
+    return { app: await appVersion(), activity: contentVersion(await activityBundle()), icons: iconVersions };
+  }
+
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://relay.invalid");
     const { context, path } = splitContext(url);
-    const headers = isolationHeaders(context);
+    /* Nothing is cacheable unless a response below says so. */
+    const headers: Record<string, string> = { ...isolationHeaders(context), "Cache-Control": NO_STORE };
+    const requested = url.searchParams.get("v");
+    const cache = (version: string) => ({ ...headers, "Cache-Control": requested === version ? IMMUTABLE : REVALIDATE });
     const notFound = () => response.writeHead(404, { ...headers, "Content-Type": "text/plain" }).end("not found");
     try {
       if (path === "/healthz") {
-        response.writeHead(200, { "Content-Type": "text/plain" }).end("ok");
+        response.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": NO_STORE }).end("ok");
         return;
       }
       if (await auth.handle(request, response, new URL(path + url.search, url))) return;
       if (request.method !== "GET" && request.method !== "HEAD") {
-        response.writeHead(405, { Allow: "GET, HEAD" }).end();
+        response.writeHead(405, { Allow: "GET, HEAD", "Cache-Control": NO_STORE }).end();
         return;
       }
       const room = /^\/v1\/rooms\/([^/]+)$/.exec(path);
@@ -113,19 +150,23 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
           response.writeHead(401, { ...headers, "Content-Type": "text/plain" }).end("login required");
           return;
         }
-        response.writeHead(200, { ...headers, "Content-Type": "application/json", "Cache-Control": "no-store" })
+        response.writeHead(200, { ...headers, "Content-Type": "application/json" })
           .end(JSON.stringify(relay.summary(room[1]!)));
         return;
       }
       /* "/" serves the page itself rather than redirecting, so every URL in
          it stays relative and works behind any proxy mapping. */
       const relative = path === "/" ? "halo.html" : decodeURIComponent(path.slice(1));
-      if (relative === "halo-login.js") return sendBody(request, response, headers, JAVASCRIPT, LOGIN_SCRIPT);
-      if (relative === "halo-handlers.js") return sendBody(request, response, headers, JAVASCRIPT, HANDLERS_SCRIPT);
-      if (relative === "activity.js") return sendBody(request, response, headers, JAVASCRIPT, await activityBundle());
+      if (relative === "halo-login.js") return sendBody(request, response, cache(loginVersion), JAVASCRIPT, LOGIN_SCRIPT);
+      if (relative === "halo-handlers.js") {
+        return sendBody(request, response, cache(handlersVersion), JAVASCRIPT, HANDLERS_SCRIPT);
+      }
+      if (relative === "activity.js") {
+        const bundle = await activityBundle();
+        return sendBody(request, response, cache(contentVersion(bundle)), JAVASCRIPT, bundle);
+      }
       if (Object.hasOwn(ICONS, relative)) {
-        await serveFile(request, response, ICON_DIRECTORY, relative, ICONS[relative]!,
-          { ...headers, "Cache-Control": "public, max-age=86400" }, false);
+        await serveFile(request, response, ICON_DIRECTORY, relative, ICONS[relative]!, cache(iconVersions[relative]!), false);
         return;
       }
       const shell = /^halo-shell-(\d{1,2})\.js$/.exec(relative);
@@ -133,16 +174,17 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         const page = await source();
         const script = page === null ? undefined : hostedPage(page).scripts[Number(shell[1])];
         if (script === undefined) return notFound();
-        return sendBody(request, response, headers, JAVASCRIPT, script);
+        return sendBody(request, response, cache(contentVersion(script)), JAVASCRIPT, script);
       }
       const map = mapFile(relative);
       if (map) {
         if (!requestSession(config, request)) {
-          response.writeHead(401, { ...headers, "Content-Type": "text/plain" }).end("login required");
+          response.writeHead(401, { ...headers, Vary: MAP_CACHE.Vary, "Content-Type": "text/plain" })
+            .end("login required");
           return;
         }
         await serveFile(request, response, config.mapsDir, map, "application/octet-stream",
-          { ...headers, "Cache-Control": "private, max-age=3600" }, true);
+          { ...headers, ...MAP_CACHE }, true);
         return;
       }
       const build = buildFile(relative);
@@ -150,18 +192,19 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         const page = await source();
         if (page === null) return notFound();
         const activity = context === "activity";
-        const { html } = hostedPage(page, activity ? activityPage : null);
+        const { html } = hostedPage(page, activity ? activityPage : null, await versions());
         return sendBody(request, response,
           activity ? { ...headers, "Content-Security-Policy": ACTIVITY_CSP } : headers, build.type, html);
       }
       if (build) {
+        const version = build.file === "halo.js" || build.file === "halo.wasm" ? await appVersion() : null;
         await serveFile(request, response, config.buildDir, build.file, build.type,
-          { ...headers, "Cache-Control": "no-cache" }, false);
+          version ? cache(version) : { ...headers, "Cache-Control": REVALIDATE }, false);
         return;
       }
       response.writeHead(404, { ...headers, "Content-Type": "text/plain" }).end("not found");
     } catch (error) {
-      if (!response.headersSent) response.writeHead(400, { "Content-Type": "text/plain" }).end("bad request");
+      if (!response.headersSent) response.writeHead(400, { "Content-Type": "text/plain", "Cache-Control": NO_STORE }).end("bad request");
       else response.destroy();
       if (!(error instanceof URIError)) log({ event: "http-error", message: (error as Error).message });
     }

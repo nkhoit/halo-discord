@@ -1,8 +1,10 @@
+import vm from "node:vm";
+
 import { describe, expect, it } from "vitest";
 
 import { loadConfig } from "../src/config.ts";
 import { joinBatch, sanitizeName, splitBatch } from "../src/protocol.ts";
-import { buildFile, hostedPage, LOGIN_SCRIPT, mapFile, parseRange } from "../src/static.ts";
+import { buildFile, contentVersion, hostedPage, LOGIN_SCRIPT, mapFile, parseRange } from "../src/static.ts";
 import { issueToken, verifyToken } from "../src/tokens.ts";
 import { PAGE } from "./harness.ts";
 
@@ -17,16 +19,17 @@ describe("the hosted page", () => {
         "<script src=halo.js", "halo-activity"]) {
       expect(html, gone).not.toContain(gone);
     }
-    expect(html).toContain('<script src="halo-login.js"></script>');
-    expect(LOGIN_SCRIPT).toMatch(/fetch\("auth\/session".*s\.src="halo\.js"/);
+    expect(html).toMatch(/<script src="halo-login\.js\?v=[0-9a-f]{16}"><\/script>/);
+    expect(LOGIN_SCRIPT).toMatch(/fetch\("auth\/session"[\s\S]*haloStartGame\(\)/);
   });
 
   it("moves inline scripts and handlers into files, in place and in order", () => {
     const { html, scripts } = hostedPage(PAGE);
     expect(scripts).toEqual(["window.shellRan = true;"]);
     expect(html).toContain('<canvas id=canvas data-halo-oncontextmenu=event.preventDefault() tabindex=-1>');
-    expect(html.indexOf('src="halo-shell-0.js"')).toBeGreaterThan(html.indexOf("<canvas"));
-    expect(html.endsWith('<script src="halo-handlers.js"></script>')).toBe(true);
+    expect(html.indexOf(`src="halo-shell-0.js?v=${contentVersion("window.shellRan = true;")}"`))
+      .toBeGreaterThan(html.indexOf("<canvas"));
+    expect(html).toMatch(/<script src="halo-handlers\.js\?v=[0-9a-f]{16}"><\/script>$/);
     expect(html).not.toMatch(/<script>/);
     expect(hostedPage("<script src=halo.js></script><p>no handlers</p>").html).not.toContain("halo-handlers.js");
   });
@@ -37,6 +40,11 @@ describe("the hosted page", () => {
     expect(html).toContain('<meta name="halo-public-origin" content="https://halo.example">');
     expect(html).toContain('<script src="activity.js"></script>');
     expect(html).not.toContain("halo-login.js");
+    const pinned = hostedPage(PAGE, { clientId: "1555", publicOrigin: "https://halo.example", dev: false },
+      { app: "aaaa", activity: "bbbb", icons: { "favicon.ico": "cccc" } }).html;
+    expect(pinned).toContain('<meta name="halo-asset-version" content="aaaa">');
+    expect(pinned).toContain('<script src="activity.js?v=bbbb"></script>');
+    expect(pinned).toContain('href="favicon.ico?v=cccc"');
     expect(html).not.toContain("halo-activity-dev");
     const quoted = hostedPage(PAGE, { clientId: '"><script>', publicOrigin: "x", dev: true }).html;
     expect(quoted).toContain('content="&quot;>&lt;script>"');
@@ -136,5 +144,41 @@ describe("configuration", () => {
     expect(() => loadConfig({ ...dev, HOST: "0.0.0.0" })).toThrow(/DEV_LOGIN/);
     expect(() => loadConfig({ ...base, TOKEN_SECRET: "short" })).toThrow(/TOKEN_SECRET/);
     expect(() => loadConfig({ ...base, DISCORD_CLIENT_ID: "" })).toThrow(/DISCORD_CLIENT_ID/);
+  });
+});
+
+describe("the game loader", () => {
+  async function run(readyState: string) {
+    const appended: { src?: string }[] = [];
+    const listeners: Record<string, () => void> = {};
+    const context: Record<string, unknown> = {
+      document: {
+        readyState,
+        querySelector: (selector: string) =>
+          selector === 'meta[name="halo-asset-version"]' ? { content: "abc123" } : null,
+        createElement: () => ({}),
+        head: { appendChild: (element: { src?: string }) => appended.push(element) },
+        addEventListener: (type: string, listener: () => void) => { listeners[type] = listener; },
+      },
+      location: { pathname: "/", search: "", hash: "", replace() {} },
+      fetch: async () => ({ status: 200, ok: true }),
+      console,
+    };
+    context.window = context;
+    vm.runInNewContext(LOGIN_SCRIPT, context);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { appended, listeners, context };
+  }
+
+  it("loads halo.js and halo.wasm at the page's version, after the shell", async () => {
+    const waiting = await run("loading");
+    expect(waiting.appended).toEqual([]);
+    waiting.listeners.DOMContentLoaded!();
+    expect(waiting.appended.map((element) => element.src)).toEqual(["halo.js?v=abc123"]);
+    const module = (waiting.context.Module as { locateFile: (path: string, directory: string) => string });
+    expect(module.locateFile("halo.wasm", "https://halo.example/")).toBe("https://halo.example/halo.wasm?v=abc123");
+    expect(module.locateFile("other.data", "https://halo.example/")).toBe("https://halo.example/other.data");
+    const ready = await run("complete");
+    expect(ready.appended.map((element) => element.src)).toEqual(["halo.js?v=abc123"]);
   });
 });

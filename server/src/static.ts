@@ -1,6 +1,7 @@
 /* The game page and its maps. Only an allowlist of files is reachable, and
    maps need a session: the page shell and wasm are public, game data is not. */
 
+import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -79,9 +80,28 @@ export const ICONS: Record<string, string> = {
   "apple-touch-icon.png": "image/png",
 };
 
-const ICON_LINKS = `<link rel="icon" href="favicon.ico" sizes="32x32 64x64">` +
-  `<link rel="icon" type="image/png" sizes="64x64" href="icon-64.png">` +
-  `<link rel="apple-touch-icon" href="apple-touch-icon.png">`;
+/* Caching. Every asset the page loads carries ?v=<content version>; a
+   response for the current version may be cached for good by anyone, any
+   other request revalidates. Pages, sessions and API answers are never
+   stored, and maps stay in the player's own cache (see app.ts). */
+export const IMMUTABLE = "public, max-age=31536000, immutable";
+export const REVALIDATE = "no-cache";
+export const NO_STORE = "no-store";
+
+export function contentVersion(data: string | Uint8Array): string {
+  return createHash("sha256").update(data).digest("hex").slice(0, 16);
+}
+
+export function versioned(url: string, version: string | null | undefined): string {
+  return version ? `${url}?v=${version}` : url;
+}
+
+export interface AssetVersions {
+  /* halo.js and halo.wasm together: the loader asks for both by this version. */
+  app: string;
+  activity: string;
+  icons: Record<string, string>;
+}
 
 function metaPattern(name: string): RegExp {
   return new RegExp(`<meta\\b(?=[^>]*\\bname=(?:["']${name}["']|${name})(?=[\\s>]))[^>]*>`, "g");
@@ -99,11 +119,22 @@ function scriptPattern(source: string): RegExp {
    only once a session exists: a browser checks its session and otherwise
    logs in and returns to the same address, invite fragment included; the
    Activity signs in through the Discord SDK first (activity.js). */
-export const LOGIN_SCRIPT =
+/* Starts the game at the page's asset version: halo.js?v= (whose URL its
+   pthread workers reuse) and, through Module.locateFile, halo.wasm?v=. It
+   waits for the shell script, which defines Module. Shared with activity.js. */
+export const START_GAME =
+  `function haloStartGame(){var m=document.querySelector('meta[name="halo-asset-version"]');` +
+  `var v=m&&m.content?"?v="+encodeURIComponent(m.content):"";` +
+  `var go=function(){var M=window.Module=window.Module||{};` +
+  `M.locateFile=function(p,d){return d+p+(p==="halo.wasm"?v:"")};` +
+  `var s=document.createElement("script");s.src="halo.js"+v;document.head.appendChild(s)};` +
+  `if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",go,{once:true});else go()}\n`;
+
+export const LOGIN_SCRIPT = START_GAME +
   `fetch("auth/session",{credentials:"same-origin",cache:"no-store"}).then(function(r){` +
   `if(r.status===401){location.replace("auth/login?return="+encodeURIComponent(location.pathname+location.search+location.hash));return}` +
   `if(!r.ok)throw new Error("session "+r.status);` +
-  `var s=document.createElement("script");s.src="halo.js";document.head.appendChild(s)})` +
+  `haloStartGame()})` +
   `.catch(function(e){console.error("Halo could not start:",e)});\n`;
 
 /* Binds handlers that were inline attributes (data-halo-on<event>). */
@@ -128,7 +159,8 @@ function attribute(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
-export function hostedPage(page: string, activity: ActivityPageOptions | null = null): HostedPage {
+export function hostedPage(page: string, activity: ActivityPageOptions | null = null,
+    versions: AssetVersions | null = null): HostedPage {
   for (const name of ["halo-signaling-url", "halo-relay-url", "halo-turnstile-sitekey", "halo-transport",
       "halo-activity", "halo-activity-dev", "halo-public-origin"]) {
     page = page.replace(metaPattern(name), "");
@@ -140,22 +172,28 @@ export function hostedPage(page: string, activity: ActivityPageOptions | null = 
   const scripts: string[] = [];
   page = page.replace(/<script>([\s\S]*?)<\/script>/g, (_, content: string) => {
     scripts.push(content);
-    return `<script src="halo-shell-${scripts.length - 1}.js"></script>`;
+    return `<script src="${versioned(`halo-shell-${scripts.length - 1}.js`, contentVersion(content))}"></script>`;
   });
   let handlers = 0;
   page = page.replace(/<[a-zA-Z][^>]*>/g, (tag) => tag.replace(/(\s)on([a-z]+)=/g, (_, space: string, event: string) => {
     handlers++;
     return `${space}data-halo-on${event}=`;
   }));
+  const icons = (name: string) => versioned(name, versions?.icons[name]);
+  const iconLinks = `<link rel="icon" href="${icons("favicon.ico")}" sizes="32x32 64x64">` +
+    `<link rel="icon" type="image/png" sizes="64x64" href="${icons("icon-64.png")}">` +
+    `<link rel="apple-touch-icon" href="${icons("apple-touch-icon.png")}">`;
+  const assetVersion = versions ? `<meta name="halo-asset-version" content="${attribute(versions.app)}">` : "";
   const loader = activity ?
     `<meta name="halo-transport" content="relay-rooms">` +
     `<meta name="halo-activity" content="${attribute(activity.clientId)}">` +
     `<meta name="halo-public-origin" content="${attribute(activity.publicOrigin)}">` +
     (activity.dev ? `<meta name="halo-activity-dev" content="1">` : "") +
-    `<script src="activity.js"></script>` :
-    `<meta name="halo-transport" content="relay-rooms"><script src="halo-login.js"></script>`;
-  page = page.replace(game, ICON_LINKS + loader);
-  if (handlers) page += `<script src="halo-handlers.js"></script>`;
+    `<script src="${versioned("activity.js", versions?.activity)}"></script>` :
+    `<meta name="halo-transport" content="relay-rooms">` +
+    `<script src="${versioned("halo-login.js", contentVersion(LOGIN_SCRIPT))}"></script>`;
+  page = page.replace(game, iconLinks + assetVersion + loader);
+  if (handlers) page += `<script src="${versioned("halo-handlers.js", contentVersion(HANDLERS_SCRIPT))}"></script>`;
   return { html: page, scripts };
 }
 

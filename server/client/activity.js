@@ -138,8 +138,20 @@ async function main() {
   });
 
   await status("Loading Halo…");
+  startGame();
+}
+
+/* Loads the game at the page's asset version: halo.js?v= (whose URL its
+   pthread workers reuse) and halo.wasm?v= through Module.locateFile, so no
+   cache in front of the server can mix builds. Runs after the shell script,
+   which defines Module (status() waited for the document). */
+function startGame() {
+  const version = meta("halo-asset-version");
+  const suffix = version ? `?v=${encodeURIComponent(version)}` : "";
+  const module = window.Module = window.Module || {};
+  module.locateFile = (path, directory) => directory + path + (path === "halo.wasm" ? suffix : "");
   const script = document.createElement("script");
-  script.src = "halo.js";
+  script.src = `halo.js${suffix}`;
   document.head.append(script);
 }
 

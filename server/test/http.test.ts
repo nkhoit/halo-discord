@@ -1,7 +1,11 @@
+import { writeFileSync } from "node:fs";
+import { join as joinPath } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { activityRoomId } from "../src/auth.ts";
-import { join, open, type Running, SECRET, start, token } from "./harness.ts";
+
+import { fixtures, join, open, type Running, SECRET, start, token } from "./harness.ts";
 
 let server: Running;
 beforeEach(async () => { server = await start(); });
@@ -173,14 +177,14 @@ describe("the Discord Activity", () => {
     expect(page.headers.get("content-security-policy")).toMatch(/script-src 'self' 'unsafe-eval' blob:/);
     const html = await page.text();
     expect(html).toContain('<meta name="halo-activity" content="123">');
-    expect(html).toContain('<script src="activity.js"></script>');
+    expect(html).toMatch(/<script src="activity\.js\?v=[0-9a-f]{16}"><\/script>/);
     expect(html).not.toContain("halo-activity-dev");
     expect(html).not.toMatch(/<script>/);
     expect(html).not.toMatch(/\son[a-z]+=/);
     const plain = await get("/");
     expect(plain.headers.get("content-security-policy")).toBeNull();
     expect(plain.headers.get("cross-origin-embedder-policy")).toBe("require-corp");
-    expect(await plain.text()).toContain('<script src="halo-login.js"></script>');
+    expect(await plain.text()).toMatch(/<script src="halo-login\.js\?v=[0-9a-f]{16}"><\/script>/);
     const script = await get("/halo.js?frame_id=f1");
     expect(script.headers.get("cross-origin-resource-policy")).toBe("same-origin");
   });
@@ -198,8 +202,8 @@ describe("the Discord Activity", () => {
     expect([...ico.slice(0, 6)]).toEqual([0, 0, 1, 0, 2, 0]);
     for (const page of ["/", launch]) {
       const html = await (await get(page)).text();
-      expect(html, page).toContain('<link rel="icon" href="favicon.ico" sizes="32x32 64x64">');
-      expect(html, page).toContain('<link rel="apple-touch-icon" href="apple-touch-icon.png">');
+      expect(html, page).toMatch(/<link rel="icon" href="favicon\.ico\?v=[0-9a-f]{16}" sizes="32x32 64x64">/);
+      expect(html, page).toMatch(/<link rel="apple-touch-icon" href="apple-touch-icon\.png\?v=[0-9a-f]{16}">/);
     }
     expect((await get("/icons/favicon.ico")).status).toBe(404);
   });
@@ -219,6 +223,8 @@ describe("the Discord Activity", () => {
     const text = await response.text();
     expect(text).toMatch(/@discord\/embedded-app-sdk@\d/);
     expect(text).toContain("auth/activity");
+    expect(text).toContain("halo-asset-version");
+    expect(text).toContain("locateFile");
   }, 20_000);
 
   it("exchanges an SDK code without a redirect URI, keeping Discord's token on the server", async () => {
@@ -306,5 +312,61 @@ describe("the Discord Activity", () => {
     client.socket.close();
     const other = open(server.base, "room-origin-0001", "host", "both", "https://999.discordsays.com");
     await new Promise<void>((resolve) => other.socket.once("error", () => resolve()));
+  });
+});
+
+describe("caching", () => {
+  const launch = "/?frame_id=f1&instance_id=i-1-gc-2-3";
+  const IMMUTABLE = "public, max-age=31536000, immutable";
+
+  it("pins every asset the page loads to a content version that alone may be cached for good", async () => {
+    for (const page of ["/", launch]) {
+      const html = await (await get(page)).text();
+      const app = /<meta name="halo-asset-version" content="([0-9a-f]{16})">/.exec(html)![1]!;
+      const assets = [...html.matchAll(/(?:src|href)="([^"?]+)\?v=([0-9a-f]{16})"/g)].map((m) => [m[1]!, m[2]!]);
+      const names = assets.map(([name]) => name);
+      expect(names, page).toEqual(expect.arrayContaining(["halo-shell-0.js", "halo-handlers.js", "favicon.ico",
+        "icon-64.png", "apple-touch-icon.png", page === "/" ? "halo-login.js" : "activity.js"]));
+      expect(html, page).not.toMatch(/(?:src|href)="(?!https?:)[^"?]+\.(?:js|png|ico)"/);
+      for (const [file, version] of [...assets, ["halo.js", app], ["halo.wasm", app]]) {
+        const current = await get(`/${file}?v=${version}`);
+        expect(current.status, file).toBe(200);
+        expect(current.headers.get("cache-control"), file).toBe(IMMUTABLE);
+        expect(current.headers.get("cross-origin-resource-policy"), file).toBe("same-origin");
+        expect((await get(`/${file}`)).headers.get("cache-control"), file).toBe("no-cache");
+        expect((await get(`/${file}?v=0000000000000000`)).headers.get("cache-control"), file).toBe("no-cache");
+      }
+    }
+  }, 20_000);
+
+  it("gives a new build a new version", async () => {
+    await server.close();
+    const files = fixtures();
+    server = await start(files);
+    const version = async () =>
+      /<meta name="halo-asset-version" content="([0-9a-f]{16})">/.exec(await (await get("/")).text())![1];
+    const before = await version();
+    writeFileSync(joinPath(files.buildDir, "halo.js"), "// a later build\n");
+    expect(await version()).not.toBe(before);
+  });
+
+  it("never stores pages, sessions, API answers or errors", async () => {
+    const session = { Cookie: `halo_session=${token("9")}` };
+    for (const [path, headers] of [["/", {}], [launch, {}], ["/healthz", {}], ["/auth/session", {}],
+        ["/auth/session", session], ["/v1/rooms/abcdefghijklmnop", {}], ["/v1/rooms/abcdefghijklmnop", session],
+        ["/missing.txt", {}], ["/assets/maps/bloodgulch.map", {}], ["/auth/login", {}]] as const) {
+      const response = await get(path, headers);
+      expect(response.headers.get("cache-control"), `${path} ${JSON.stringify(headers)}`).toBe("no-store");
+    }
+    const refused = await fetch(`${server.base}/auth/activity`, { method: "POST", body: "{}" });
+    expect(refused.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("keeps maps out of shared caches", async () => {
+    const response = await get("/assets/maps/bloodgulch.map", { Cookie: `halo_session=${token("9")}`, Range: "bytes=0-3" });
+    expect(response.status).toBe(206);
+    expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(response.headers.get("vary")).toBe("Cookie, Authorization");
+    expect((await get("/assets/maps/bloodgulch.map")).headers.get("vary")).toBe("Cookie, Authorization");
   });
 });
