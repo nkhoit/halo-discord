@@ -84,6 +84,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     discord: { clientId: "123", clientSecret: "shh", guildIds: ["0"] },
     tokenSecret: SECRET,
     tokenTtlSeconds: 3600,
+    sessionLifetimeSeconds: 86400,
     devLogin: false,
     trustProxy: "none",
     authRateLimitPerMinute: 1000,

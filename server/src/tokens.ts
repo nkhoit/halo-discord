@@ -11,6 +11,10 @@ export interface Session {
   name: string;
   /* Expiry, seconds since the epoch. */
   exp: number;
+  /* When the user signed in with Discord, seconds since the epoch; renewals
+     keep it, so a session cannot be renewed forever. Missing from tokens
+     issued before it existed. */
+  auth?: number;
 }
 
 function sign(secret: string, data: string): string {
@@ -18,8 +22,8 @@ function sign(secret: string, data: string): string {
 }
 
 export function issueToken(secret: string, sub: string, name: string, ttlSeconds: number,
-    now = Date.now()): { token: string; session: Session } {
-  const session: Session = { sub, name: sanitizeName(name), exp: Math.floor(now / 1000) + ttlSeconds };
+    now = Date.now(), auth = Math.floor(now / 1000)): { token: string; session: Session } {
+  const session: Session = { sub, name: sanitizeName(name), exp: Math.floor(now / 1000) + ttlSeconds, auth };
   const payload = Buffer.from(JSON.stringify({ v: 1, ...session })).toString("base64url");
   return { token: `${payload}.${sign(secret, payload)}`, session };
 }
@@ -31,7 +35,7 @@ export function verifyToken(secret: string, token: unknown, now = Date.now()): S
   const expected = Buffer.from(sign(secret, payload));
   const actual = Buffer.from(signature);
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
-  let value: { v?: unknown; sub?: unknown; name?: unknown; exp?: unknown };
+  let value: { v?: unknown; sub?: unknown; name?: unknown; exp?: unknown; auth?: unknown };
   try {
     value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
   } catch {
@@ -39,5 +43,7 @@ export function verifyToken(secret: string, token: unknown, now = Date.now()): S
   }
   if (value.v !== 1 || typeof value.sub !== "string" || !value.sub || typeof value.exp !== "number") return null;
   if (value.exp * 1000 <= now) return null;
-  return { sub: value.sub, name: sanitizeName(value.name), exp: value.exp };
+  const session: Session = { sub: value.sub, name: sanitizeName(value.name), exp: value.exp };
+  if (typeof value.auth === "number" && Number.isFinite(value.auth)) session.auth = value.auth;
+  return session;
 }

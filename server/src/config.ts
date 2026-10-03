@@ -18,6 +18,9 @@ export interface Config {
   discord: { clientId: string; clientSecret: string; guildIds: string[] } | null;
   tokenSecret: string;
   tokenTtlSeconds: number;
+  /* How long after a Discord sign-in a session may still be renewed; then
+     the player signs in again, which re-checks the guild allowlist. */
+  sessionLifetimeSeconds: number;
   /* Development only: /auth/dev-login issues tokens without Discord. */
   devLogin: boolean;
   /* Take the client address from CF-Connecting-IP (behind cloudflared) or
@@ -76,6 +79,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (trustProxy !== "none" && trustProxy !== "cloudflare" && trustProxy !== "forwarded") {
     throw new Error("TRUST_PROXY must be none, cloudflare or forwarded");
   }
+  const sessionLifetimeSeconds = Number(env.SESSION_LIFETIME_SECONDS ?? 86400);
+  if (!Number.isInteger(sessionLifetimeSeconds) || sessionLifetimeSeconds < 1) {
+    throw new Error("SESSION_LIFETIME_SECONDS must be a positive whole number");
+  }
   return {
     port,
     host,
@@ -88,6 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     discord,
     tokenSecret,
     tokenTtlSeconds: Number(env.TOKEN_TTL_SECONDS ?? 3600),
+    sessionLifetimeSeconds,
     devLogin,
     trustProxy,
     authRateLimitPerMinute: Number(env.AUTH_RATE_LIMIT_PER_MINUTE ?? 30),

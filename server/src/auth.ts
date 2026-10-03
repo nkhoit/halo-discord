@@ -216,12 +216,19 @@ export class Auth {
   }
 
   /* Renews a valid session in the cookie it came from: the page keeps its
-     token fresh for relay reconnects, and gets a 401 when it has to log in. */
+     token fresh for relay reconnects, and gets a 401 when it has to log in.
+     Renewals keep the sign-in time, and stop once the session lifetime has
+     passed since it, so guild membership is checked again at least that
+     often; tokens without a sign-in time cannot be renewed. */
   private session(request: IncomingMessage, response: ServerResponse): void {
     const current = findSession(this.config, request);
-    if (!current) return json(response, 401, { error: "login required", loginUrl: "/auth/login" });
+    const now = Date.now();
+    const auth = current?.session.auth;
+    if (!current || auth === undefined || now / 1000 - auth >= this.config.sessionLifetimeSeconds) {
+      return json(response, 401, { error: "login required", loginUrl: "/auth/login" });
+    }
     const { token, session } = issueToken(this.config.tokenSecret, current.session.sub, current.session.name,
-      this.config.tokenTtlSeconds);
+      this.config.tokenTtlSeconds, now, auth);
     json(response, 200, { token, user: { id: session.sub, name: session.name }, expiresAt: session.exp }, {
       "Set-Cookie": cookie(this.config, current.activity ? ACTIVITY_COOKIE : SESSION_COOKIE, token,
         { maxAge: this.config.tokenTtlSeconds, partitioned: current.activity }),

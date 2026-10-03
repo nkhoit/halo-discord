@@ -40,11 +40,11 @@ function element(overrides) {
 }
 
 /* One page: the Discord Activity (HaloActivity set) or the browser page. */
-function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' } }) {
+function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessionStatus }) {
   const page = {
     elements: {}, roomHost: null, inMatch: false, gameState: 2, clientState: 2, intervals: [], timers: [],
     /* (the Activity's first session request finds it expired; a browser page is signed in) */
-    sessionStatus: activity ? [401, 200] : [200], signIns: 0, fetches: [], configured: [], relayOpened: 0, disconnects: 0,
+    sessionStatus: sessionStatus || (activity ? [401, 200] : [200]), signIns: 0, fetches: [], configured: [], relayOpened: 0, disconnects: 0,
     windowListeners: {}, customizations: [], phases: [], replaced: [], assigned: [], configured_matches: [],
     joinable: false, joinablePhases: [], joinInProgress: [], matchJoinable: 0, matchStarting: 0,
   };
@@ -57,6 +57,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' } }) {
   const origin = activity ? 'https://123.discordsays.com' : 'https://halo.example';
   const location = new URL(activity ? `${origin}/?frame_id=f1&instance_id=i-1` : `${origin}/${hash}`);
   page.location = location;
+  location.assign = url => page.assigned.push(String(url));
   const context = {
     console,
     Event: class { constructor(type) { this.type = type; } },
@@ -311,6 +312,29 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   assert.equal(invited.configured.at(-1).relay.roomId, 'Shared-Room-0123456789', 'the address\'s room is joined');
   assert.equal(invited.configured.at(-1).relay.role, 'guest');
   assert.equal(invited.location.hash, '#room=Shared-Room-0123456789', 'the room stays in the address');
+
+  /* ---------- a renewal the server refuses (the session lifetime is over) */
+  const refusedActivity = load({ activity: true, sessionStatus: [401] });
+  refusedActivity.context.HaloOnline.runtimeReady();
+  await refusedActivity.tick();
+  await refusedActivity.context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
+  await settle();
+  assert.equal(refusedActivity.signIns, 1, 'the Activity signs in again through the SDK, once');
+  assert.equal(refusedActivity.relayOpened, 0);
+  assert.match(refusedActivity.status().notice, /Discord sign-in failed/, 'and says so when that does not help');
+  assert.equal(refusedActivity.status().view, 'pick', 'back in the lobby, not stuck');
+  assert.deepEqual(refusedActivity.assigned, [], 'no OAuth redirect inside the Activity');
+
+  const refusedBrowser = load({ activity: false, hash: '#room=Shared-Room-0123456789', sessionStatus: [401] });
+  refusedBrowser.context.HaloOnline.runtimeReady();
+  await refusedBrowser.tick();
+  await refusedBrowser.context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
+  await settle();
+  assert.deepEqual(refusedBrowser.assigned,
+    ['https://halo.example/auth/login?return=%2F%23room%3DShared-Room-0123456789'],
+    'the browser page signs in with Discord once and comes back to the same room');
+  assert.equal(refusedBrowser.relayOpened, 0);
+  assert.equal(refusedBrowser.status().notice, null, 'no error while it leaves for the sign-in');
 
   console.log('online_client hosted lobby tests passed');
 })().catch(error => {

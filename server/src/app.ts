@@ -53,6 +53,13 @@ export interface App {
   sockets: WebSocketServer;
 }
 
+/* Who a relay socket belongs to, for its log lines; known after authentication. */
+interface SocketContext {
+  room: string;
+  user: string | null;
+  id: string | null;
+}
+
 /* The Activity context: Discord launches an Activity by loading the mapped
    root with frame_id, instance_id and so on in the query; a URL mapping may
    also target the /activity prefix. */
@@ -324,6 +331,10 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
 
   const sockets = new WebSocketServer({ noServer: true, maxPayload: MAXIMUM_BATCH_BYTES });
   server.on("upgrade", (request: IncomingMessage, stream: Duplex, head: Buffer) => {
+    /* Node stops watching an upgraded connection for errors, so a client that
+       resets it (while it is refused, say) would end the process; ws watches
+       it again once it accepts the upgrade. */
+    stream.on("error", () => {});
     const reject = (status: number, message: string) => {
       stream.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
@@ -335,14 +346,23 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     if (!ROOM_ID_PATTERN.test(roomId) || !query) return reject(400, "Bad Request");
     if (!origins.has(request.headers.origin ?? "")) return reject(403, "Forbidden");
     sockets.handleUpgrade(request, stream, head, (socket) => {
+      /* ws reports a client's protocol errors (an unmasked frame, a bad
+         opcode, invalid UTF-8, a message over maxPayload) as "error" events,
+         and an "error" nobody listens for ends the process. So listen first,
+         before authentication, for the socket's whole life. */
+      const context: SocketContext = { room: roomId.slice(0, 8), user: null, id: null };
+      socket.on("error", (error: Error & { code?: string }) => {
+        log({ event: "error", ...context, code: error.code ?? null, message: error.message });
+      });
       watch(socket);
-      authenticate(socket, roomId, query);
+      authenticate(socket, roomId, query, context);
     });
   });
 
   /* Browsers cannot set headers on a WebSocket, so the token arrives in the
      first message: {type: "auth", token, id, build}. */
-  function authenticate(socket: WebSocket, roomId: string, query: NonNullable<ReturnType<typeof parseSocketQuery>>) {
+  function authenticate(socket: WebSocket, roomId: string, query: NonNullable<ReturnType<typeof parseSocketQuery>>,
+      context: SocketContext) {
     const deadline = setTimeout(() => socket.close(CloseCode.Unauthorized, "authentication timed out"),
       authDeadlineMilliseconds);
     socket.once("close", () => clearTimeout(deadline));
@@ -363,6 +383,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         socket.close(CloseCode.Unauthorized, "unauthorized");
         return;
       }
+      Object.assign(context, { user: session.sub, id: message.id });
       relay.join(socket, roomId, {
         user: session.sub, name: session.name, id: message.id, role: query.role, kind: query.kind,
       }, message.build);
