@@ -31,6 +31,10 @@
     20: "Rat Race", 21: "Sidewinder", 23: "Wizard",
   };
   var AUDIO_STORAGE = "halo-hosted-audio";
+  /* the sound at first: half volume */
+  var DEFAULT_VOLUME = 0.5;
+  /* the stored record's form: 2 says whether the player chose the volume */
+  var AUDIO_VERSION = 2;
   var BUTTON = { START: 0, A: 1 };
 
   /* Lobby views drawn as a panel over the game, and those drawn as a bar in
@@ -51,13 +55,21 @@
      sound, kept in the browser. */
   function createController(environment) {
     var storage = environment.storage;
-    var audio = { muted: false, volume: 1 };
+    var audio = { muted: false, volume: DEFAULT_VOLUME };
+    /* whether the player set the volume (the slider), rather than only
+       muting at the default */
+    var volumeChosen = false;
     try {
       var saved = JSON.parse(storage.getItem(AUDIO_STORAGE));
       if (saved && typeof saved.muted === "boolean") audio.muted = saved.muted;
-      if (saved && typeof saved.volume === "number" && saved.volume >= 0 && saved.volume <= 1) audio.volume = saved.volume;
+      if (saved && typeof saved.volume === "number" && saved.volume >= 0 && saved.volume <= 1) {
+        /* (a record from before the default was halved, saved by the mute
+        button, has the old default; only a volume the player chose stays) */
+        volumeChosen = saved.version >= AUDIO_VERSION ? saved.volumeChosen === true : saved.volume !== 1;
+        if (volumeChosen) audio.volume = saved.volume;
+      }
     } catch (error) {
-      /* first visit, or storage refused: full volume, sound on */
+      /* first visit, or storage refused: half volume, sound on */
     }
     /* blocked: the browser refused the mouse (some Discord clients do);
        play goes on without mouse look rather than behind the overlay */
@@ -66,7 +78,9 @@
 
     function saveAudio() {
       try {
-        storage.setItem(AUDIO_STORAGE, JSON.stringify(audio));
+        storage.setItem(AUDIO_STORAGE, JSON.stringify({
+          version: AUDIO_VERSION, muted: audio.muted, volume: audio.volume, volumeChosen: volumeChosen,
+        }));
       } catch (error) {
         /* (the choice lasts this visit) */
       }
@@ -110,6 +124,7 @@
       },
       setVolume: function(volume) {
         audio.volume = Math.max(0, Math.min(1, Number(volume) || 0));
+        volumeChosen = true;
         if (audio.volume > 0 && audio.muted) audio.muted = false;
         saveAudio();
       },
