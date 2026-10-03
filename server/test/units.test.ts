@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import vm from "node:vm";
 
 import { describe, expect, it, vi } from "vitest";
@@ -97,6 +98,24 @@ describe("tokens", () => {
     expect(verifyToken(SECRET, `${token}.x`)).toBeNull();
     expect(verifyToken(SECRET, 42)).toBeNull();
   });
+
+  it("carry the sign-in time, which a renewal passes on unchanged", () => {
+    const now = Date.UTC(2026, 0, 1);
+    const first = issueToken(SECRET, "1234", "Chief", 60, now);
+    expect(first.session.auth).toBe(now / 1000);
+    expect(verifyToken(SECRET, first.token, now)?.auth).toBe(now / 1000);
+    const later = now + 3_600_000;
+    const renewed = issueToken(SECRET, "1234", "Chief", 60, later, first.session.auth);
+    expect(verifyToken(SECRET, renewed.token, later)).toMatchObject({ auth: now / 1000, exp: later / 1000 + 60 });
+  });
+
+  it("read tokens from before the sign-in time without one", () => {
+    const payload = Buffer.from(JSON.stringify({ v: 1, sub: "1234", name: "Chief", exp: 9e9 })).toString("base64url");
+    const signature = createHmac("sha256", SECRET).update(payload).digest("base64url");
+    const session = verifyToken(SECRET, `${payload}.${signature}`);
+    expect(session).toMatchObject({ sub: "1234" });
+    expect(session).not.toHaveProperty("auth");
+  });
 });
 
 describe("display names", () => {
@@ -194,6 +213,14 @@ describe("configuration", () => {
     expect(() => loadConfig({ ...dev, HOST: "0.0.0.0" })).toThrow(/DEV_LOGIN/);
     expect(() => loadConfig({ ...base, TOKEN_SECRET: "short" })).toThrow(/TOKEN_SECRET/);
     expect(() => loadConfig({ ...base, DISCORD_CLIENT_ID: "" })).toThrow(/DISCORD_CLIENT_ID/);
+  });
+
+  it("bounds sessions to a whole-second lifetime, 24 h by default", () => {
+    expect(loadConfig(base).sessionLifetimeSeconds).toBe(86400);
+    expect(loadConfig({ ...base, SESSION_LIFETIME_SECONDS: "600" }).sessionLifetimeSeconds).toBe(600);
+    for (const value of ["", "0", "-5", "1.5", "a day"]) {
+      expect(() => loadConfig({ ...base, SESSION_LIFETIME_SECONDS: value }), value).toThrow(/SESSION_LIFETIME_SECONDS/);
+    }
   });
 });
 

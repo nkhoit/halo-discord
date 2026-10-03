@@ -41,10 +41,16 @@ the account on the server host that runs everything from `~/halo-discord`.
   game's first request is a map). Without a session it goes to
   `/auth/login?return=<path#room=...>` and comes back to the same invite.
 - Discord server membership (any server in `DISCORD_GUILD_IDS`, or the legacy
-  `DISCORD_GUILD_ID` fallback) is checked at login only, and each
-  `/auth/session` call extends the session. Someone removed from every
-  allowed Discord server keeps access until they stay away longer than
-  `TOKEN_TTL_SECONDS` (1 h), or until `TOKEN_SECRET` is rotated.
+  `DISCORD_GUILD_ID` fallback) is checked at sign-in. Each `/auth/session`
+  call extends the session, but only until `SESSION_LIFETIME_SECONDS` (24 h)
+  after that sign-in; then the page signs in again, which checks membership
+  again. For a player who has already authorized the app this is silent: the
+  browser page goes through Discord's OAuth redirect with `prompt=none` and
+  comes back to the same address, and the Activity calls the SDK's
+  `authorize` again. Someone removed from every allowed Discord server can
+  start new connections for at most `SESSION_LIFETIME_SECONDS` plus
+  `TOKEN_TTL_SECONDS` (1 h), or until `TOKEN_SECRET` is rotated; a relay
+  socket already open stays open until it closes.
 - The Discord Activity signs in through the Embedded App SDK instead (see
   [Discord Activity](#discord-activity)) and keeps its session in a separate
   `halo_activity` cookie: HttpOnly, SameSite=None, Secure and Partitioned,

@@ -1,9 +1,11 @@
+import { createHmac } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { activityRoomId } from "../src/auth.ts";
+import { issueToken } from "../src/tokens.ts";
 
 import { fixtures, join, open, type Running, SECRET, start, token } from "./harness.ts";
 
@@ -217,6 +219,72 @@ describe("Discord login", () => {
     const response = await get("/auth/session");
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ loginUrl: "/auth/login" });
+  });
+
+  describe("session lifetime", () => {
+    const LIFETIME = 86400;
+    const signInTime = (value: string) =>
+      (JSON.parse(Buffer.from(value.split(".")[0]!, "base64url").toString("utf8")) as { auth?: number }).auth;
+    const signedInAgo = (seconds: number) =>
+      issueToken(SECRET, "4242", "Chief", 3600, Date.now(), Math.floor(Date.now() / 1000) - seconds).token;
+    const renew = (cookie: string) => get("/auth/session", { Cookie: cookie });
+
+    it("renews keeping the sign-in time, so renewals cannot slide the lifetime", async () => {
+      server.discord.users.set("ok", { id: "4242", username: "chief", globalName: null });
+      let current = cookies(await login("ok")).halo_session!;
+      const signedIn = signInTime(current);
+      expect(signedIn).toBeGreaterThan(Date.now() / 1000 - 60);
+      for (let renewal = 0; renewal < 3; renewal++) {
+        const response = await renew(`halo_session=${current}`);
+        expect(response.status).toBe(200);
+        const { token: renewed } = await response.json() as { token: string };
+        expect(signInTime(renewed)).toBe(signedIn);
+        expect(cookies(response).halo_session).toBe(renewed);
+        current = renewed;
+      }
+      const nearlyOver = signedInAgo(LIFETIME - 60);
+      const late = await renew(`halo_session=${nearlyOver}`);
+      expect(late.status).toBe(200);
+      expect(signInTime((await late.json() as { token: string }).token)).toBe(signInTime(nearlyOver));
+    });
+
+    it("refuses a renewal once the lifetime has passed since the sign-in", async () => {
+      const expired = signedInAgo(LIFETIME + 1);
+      const response = await renew(`halo_session=${expired}`);
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ loginUrl: "/auth/login" });
+      expect(response.headers.getSetCookie()).toEqual([]);
+      expect((await renew(`halo_activity=${expired}`)).status).toBe(401);
+      expect((await get("/auth/session", { Authorization: `Bearer ${expired}` })).status).toBe(401);
+      /* The token itself stays good until it expires; only renewing it ends. */
+      expect((await get("/assets/maps/bloodgulch.map", { Cookie: `halo_session=${expired}` })).status).toBe(200);
+    });
+
+    it("cannot renew tokens issued without a sign-in time", async () => {
+      const payload = Buffer.from(JSON.stringify({ v: 1, sub: "4242", name: "Chief", exp: Date.now() / 1000 + 3600 }))
+        .toString("base64url");
+      const old = `${payload}.${createHmac("sha256", SECRET).update(payload).digest("base64url")}`;
+      expect((await get("/assets/maps/bloodgulch.map", { Cookie: `halo_session=${old}` })).status).toBe(200);
+      expect((await renew(`halo_session=${old}`)).status).toBe(401);
+    });
+
+    it("starts again from a new sign-in, which checks the guild again", async () => {
+      server.discord.users.set("sdk", { id: "4242", username: "chief", globalName: null });
+      expect((await renew(`halo_activity=${signedInAgo(LIFETIME + 1)}`)).status).toBe(401);
+      const signIn = await fetch(`${server.base}/auth/activity`, {
+        method: "POST", body: JSON.stringify({ code: "sdk" }), headers: { "Content-Type": "application/json" },
+      });
+      expect(signIn.status).toBe(200);
+      expect(server.discord.membershipChecks.map(({ code }) => code)).toEqual(["sdk"]);
+      const fresh = cookies(signIn).halo_activity!;
+      expect(signInTime(fresh)).toBeGreaterThan(Date.now() / 1000 - 60);
+      expect((await renew(`halo_activity=${fresh}`)).status).toBe(200);
+      server.discord.outsiders.add("sdk");
+      const removed = await fetch(`${server.base}/auth/activity`, {
+        method: "POST", body: JSON.stringify({ code: "sdk" }), headers: { "Content-Type": "application/json" },
+      });
+      expect(removed.status).toBe(403);
+    });
   });
 
   it("has no development login unless configured", async () => {
