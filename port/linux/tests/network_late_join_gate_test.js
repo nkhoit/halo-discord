@@ -45,10 +45,23 @@ try {
     block(manager, 'boolean network_game_join_in_progress_enabled('),
     block(manager, 'static boolean network_game_server_late_joins_enabled('),
     block(manager, 'boolean network_game_server_client_machine_is_loading_in_game('),
+    block(manager, 'boolean network_game_server_client_machine_is_spectator('),
+    block(manager, 'void network_game_server_set_client_machine_spectator('),
+    block(manager, 'long network_game_server_spectator_count('),
+    block(manager, 'boolean network_game_server_joinable_in_game('),
+    block(manager, 'boolean network_game_server_watchable_in_game('),
     block(manager, 'boolean server_needs_more_teams('),
     block(manager, 'boolean server_has_a_player_on_each_machine('),
     block(manager, 'boolean server_has_enough_machines('),
     block(manager, 'boolean server_ok_to_countdown('),
+  ].join('\n\n') + '\n');
+  assert.match(manager, /MAXIMUM_SPECTATOR_MACHINES = 8,/, 'the spectator limit the test assumes');
+  const globals = fs.readFileSync(path.join(root, 'source/networking/network_game_globals.c'), 'utf8')
+    .replace(/\r\n/g, '\n');
+  fs.writeFileSync(path.join(temp, 'late_join_spectator_mark.inc'), [
+    'enum\n{\n' + lines(globals, 'NETWORK_SPECTATOR_MACHINE_NAME_MARK =', '0x5350,') + '\n};',
+    block(globals, 'void network_game_mark_spectator_machine_name('),
+    block(globals, 'boolean network_game_machine_name_marks_spectator('),
   ].join('\n\n') + '\n');
   const engine = fs.readFileSync(path.join(root, 'source/game/game_engine.c'), 'utf8').replace(/\r\n/g, '\n');
   fs.writeFileSync(path.join(temp, 'late_join_end.inc'), block(engine, 'boolean game_engine_should_end_game(') + '\n');

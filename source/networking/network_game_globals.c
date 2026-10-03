@@ -346,6 +346,46 @@ boolean network_game_distributed(
 	return distributed;
 }
 
+/* the platform layer's */
+int config_boolean(char const *name);
+
+enum
+{
+	/* 'S' 'P': a character no machine name of the port's uses */
+	NETWORK_SPECTATOR_MACHINE_NAME_MARK = 0x5350,
+};
+
+static short network_game_spectating_requested = NONE;
+
+void network_game_set_spectating(
+	boolean spectating)
+{
+	network_game_spectating_requested = spectating ? TRUE : FALSE;
+}
+
+boolean network_game_spectating(
+	void)
+{
+	if (network_game_spectating_requested == NONE)
+		network_game_spectating_requested = config_boolean("network.spectate") ? TRUE : FALSE;
+	return network_game_distributed() && network_game_spectating_requested == TRUE;
+}
+
+void network_game_mark_spectator_machine_name(
+	wchar_t *name,
+	long length)
+{
+	name[length - 2] = 0;
+	name[length - 1] = (wchar_t)NETWORK_SPECTATOR_MACHINE_NAME_MARK;
+}
+
+boolean network_game_machine_name_marks_spectator(
+	wchar_t const *name,
+	long length)
+{
+	return name[length - 1] == (wchar_t)NETWORK_SPECTATOR_MACHINE_NAME_MARK;
+}
+
 #endif
 boolean network_game_is_active(
 	void)

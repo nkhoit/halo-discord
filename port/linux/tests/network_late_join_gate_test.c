@@ -6,6 +6,11 @@
    - the lobby counts down to its match (server_ok_to_countdown) with two
      machines, two players and both teams taken, as the Xbox game did; with
      late joins on, a host may start alone;
+   - spectators (machines without a player of their own, which a join
+     request's machine name marks) count only with late joins: they join a
+     full match, up to MAXIMUM_SPECTATOR_MACHINES, and the lobby counts down
+     without a player of theirs; without late joins, a machine without a
+     player keeps the lobby waiting, as before;
    - the lobby's directions line (multiplayer_game_directions) says
      "Waiting for another Xbox console" to a host alone; with late joins on
      it says "Accepting Players", and nothing over its countdown.
@@ -20,10 +25,12 @@ typedef unsigned short word;
 #define FALSE 0
 #define TEST_FLAG(flags, bit) (((flags) >> (bit)) & 1)
 #define SET_FLAG(flags, bit, value) ((value) ? ((flags) |= (1 << (bit))) : ((flags) &= ~(1 << (bit))))
-#define MAXIMUM_NETWORK_MACHINE_COUNT 4
+#define MAXIMUM_NETWORK_MACHINE_COUNT 16
 #define MAXIMUM_NETWORK_PLAYER_COUNT 8
 #define NUMBER_OF_MULTIPLAYER_TEAMS 2
 #define NONE (-1)
+#define MAXIMUM_SPECTATOR_MACHINES 8
+#include <wchar.h>
 
 #include "late_join_enums.inc"
 
@@ -44,10 +51,12 @@ struct network_game_server
 {
 	word state;
 	struct network_game_server_client_machine client_machines[MAXIMUM_NETWORK_MACHINE_COUNT];
+	long late_join_time[MAXIMUM_NETWORK_MACHINE_COUNT];
 	struct
 	{
 		struct { struct { boolean teams; } universal_variant; } variant;
 		char minimum_players;
+		short maximum_players;
 		short player_count;
 		struct network_player players[MAXIMUM_NETWORK_PLAYER_COUNT];
 	} game;
@@ -78,7 +87,11 @@ static boolean network_player_is_valid(struct network_player *player)
 	return player->machine_index >= 0 && player->controller_index >= 0;
 }
 
+static int can_score = 1;
+static boolean game_engine_can_score(void) { return can_score; }
+
 #include "late_join_gate.inc"
+#include "late_join_spectator_mark.inc"
 
 /* game_engine.c's end of a match with one team left */
 static int game_engine_present = 1;
@@ -194,6 +207,7 @@ int main(void)
 	int joined;
 	int lockstep;
 	int setting;
+	int index;
 
 	/* two machines loaded, one joined (validated) and not loaded yet */
 	SET_FLAG(machines[0].flags, _network_client_machine_validated_bit, TRUE);
@@ -276,6 +290,76 @@ int main(void)
 				server.game.players[1].controller_index = 1;
 				server.game.player_count = 2;
 				check(server_ok_to_countdown(&server), "split screen: one machine, two players, may start");
+			}
+		}
+	}
+
+	/* ---------- spectators: only with late joins */
+	{
+		wchar_t name[32];
+		int netcode_index;
+
+		memset(name, 0, sizeof(name));
+		check(!network_game_machine_name_marks_spectator(name, 32), "a zeroed machine name (every other client's) is no spectator's");
+		wcscpy(name, L"WEB-7F3A");
+		network_game_mark_spectator_machine_name(name, 32);
+		check(network_game_machine_name_marks_spectator(name, 32) && !wcscmp(name, L"WEB-7F3A"),
+			"the mark leaves the name as it was");
+
+		for (netcode_index = 0; netcode_index <= 1; netcode_index++)
+		{
+			for (setting = 0; setting <= 1; setting++)
+			{
+				boolean late_joins = netcode_index == 0 && setting;
+
+				distributed = netcode_index == 0;
+				join_in_progress = setting;
+				splitscreen_local = FALSE;
+				/* a host and a spectator machine without a player */
+				lobby(&server, 2, 0);
+				server.game.players[1].machine_index = NONE;
+				server.game.player_count = 1;
+				network_game_server_set_client_machine_spectator(&server.client_machines[1], TRUE);
+				check(network_game_server_client_machine_is_spectator(&server.client_machines[1]) == late_joins,
+					"a machine is a spectator only with late joins");
+				check(server_has_a_player_on_each_machine(&server) == late_joins,
+					late_joins ? "late joins: the spectator needs no player" :
+						"without late joins a machine without a player keeps the lobby waiting, as before");
+				check(server_ok_to_countdown(&server) == late_joins,
+					late_joins ? "late joins: the host and a spectator may start" : "without late joins: as before");
+				check(network_game_server_spectator_count(&server) == (late_joins ? 1 : 0), "the spectators counted");
+				network_game_server_set_client_machine_spectator(&server.client_machines[1], FALSE);
+				check(server_has_a_player_on_each_machine(&server) == FALSE, "a machine without a player, not a spectator, waits");
+
+				/* the running match: full of players */
+				lobby(&server, 2, 0);
+				server.state = _network_game_server_state_ingame;
+				server.game.maximum_players = 2;
+				memset(server.late_join_time, 0, sizeof(server.late_join_time));
+				check(!network_game_server_joinable_in_game(&server), "a full match takes no player");
+				check(network_game_server_watchable_in_game(&server) == late_joins,
+					late_joins ? "late joins: a full match takes a spectator" : "without late joins nobody joins a match");
+				/* a spectator loading the match keeps no player's place */
+				server.game.maximum_players = 3;
+				server.client_machines[2].machine_index = 2;
+				SET_FLAG(server.client_machines[2].flags, _network_client_machine_validated_bit, TRUE);
+				network_game_server_set_client_machine_spectator(&server.client_machines[2], TRUE);
+				server.late_join_time[2] = 1;
+				check(network_game_server_joinable_in_game(&server) == late_joins, "a loading spectator keeps no player's place");
+				network_game_server_set_client_machine_spectator(&server.client_machines[2], FALSE);
+				check(!network_game_server_joinable_in_game(&server), "a loading player's machine does");
+				/* at most MAXIMUM_SPECTATOR_MACHINES */
+				for (index = 2; index < 2 + MAXIMUM_SPECTATOR_MACHINES; index++)
+				{
+					server.client_machines[index].machine_index = (short)index;
+					network_game_server_set_client_machine_spectator(&server.client_machines[index], TRUE);
+				}
+				check(!network_game_server_watchable_in_game(&server), "no more spectators than the limit");
+				for (index = 0; index < MAXIMUM_NETWORK_MACHINE_COUNT; index++)
+					server.client_machines[index].flags = 0;
+				can_score = FALSE;
+				check(!network_game_server_watchable_in_game(&server), "a match that is over takes no spectator");
+				can_score = TRUE;
 			}
 		}
 	}

@@ -523,6 +523,9 @@ enum
 	numbered name or a shared colour after this many tries */
 	MAXIMUM_UNIQUE_NAME_ATTEMPTS = 64,
 	MAXIMUM_UNIQUE_COLOR_ATTEMPTS = 64,
+	/* (late joins) machines watching a match without a player of their own:
+	each takes the host's updates every tick */
+	MAXIMUM_SPECTATOR_MACHINES = 8,
 #endif
 	_client_update_out_of_sync_bit = 31,
 	CLIENT_UPDATE_SEQUENCE_NUMBER_MASK = 0x7FFFFFFF,
@@ -534,6 +537,10 @@ enum
 	_network_client_machine_validated_bit,
 	_network_client_machine_level_loaded_bit,
 	_network_client_machine_precached_bit,
+#ifdef HALO_LINUX
+	/* (late joins) a machine without a player of its own, watching */
+	_network_client_machine_spectator_bit,
+#endif
 	NUMBER_OF_NETWORK_CLIENT_MACHINE_FLAGS,
 	MAXIMUM_NETWORK_MESSAGE_SIZE = 0x800,
 #ifdef HALO_LINUX
@@ -1322,6 +1329,46 @@ void network_game_server_set_start_requested(
 	server->start_requested = requested;
 }
 
+/* Spectators: machines in the match without a player of their own, which
+watch it (late joins only: a join request's machine name marks them,
+network_game_mark_spectator_machine_name). They use machine slots, not
+player slots: a full match still takes them, up to
+MAXIMUM_SPECTATOR_MACHINES, and the lobby counts down without a player of
+theirs (server_has_a_player_on_each_machine). A spectator that adds its
+player is one no more. */
+boolean network_game_server_client_machine_is_spectator(
+	struct network_game_server_client_machine const *client_machine)
+{
+	return network_game_join_in_progress_enabled() &&
+		TEST_FLAG(client_machine->flags, _network_client_machine_spectator_bit);
+}
+
+void network_game_server_set_client_machine_spectator(
+	struct network_game_server_client_machine *client_machine,
+	boolean spectator)
+{
+	SET_FLAG(client_machine->flags, _network_client_machine_spectator_bit, spectator ? TRUE : FALSE);
+}
+
+long network_game_server_spectator_count(
+	struct network_game_server *server)
+{
+	long count = 0;
+	long index;
+
+	for (index = 0; index < MAXIMUM_NETWORK_MACHINE_COUNT; index++)
+	{
+		struct network_game_server_client_machine const *client_machine = &server->client_machines[index];
+
+		if (client_machine->machine_index >= 0 && client_machine->machine_index < MAXIMUM_NETWORK_MACHINE_COUNT &&
+			network_game_server_client_machine_is_spectator(client_machine))
+		{
+			count++;
+		}
+	}
+	return count;
+}
+
 /* whether a machine can join the running match now: not over, and room for
 it besides the machines already loading it */
 boolean network_game_server_joinable_in_game(
@@ -1332,13 +1379,26 @@ boolean network_game_server_joinable_in_game(
 
 	if (!network_game_server_late_joins_enabled(server) || !game_engine_can_score())
 		return FALSE;
-	/* (room for a player for each machine already loading it) */
+	/* (room for a player for each machine already loading it, but a
+	spectator's) */
 	for (index = 0; index < MAXIMUM_NETWORK_MACHINE_COUNT; index++)
 	{
-		if (server->late_join_time[index])
+		if (server->late_join_time[index] &&
+			!network_game_server_client_machine_is_spectator(&server->client_machines[index]))
+		{
 			loading_machines++;
+		}
 	}
 	return server->game.player_count + loading_machines < server->game.maximum_players;
+}
+
+/* whether a spectator can join the running match now: not over, and room
+for another spectator, however many players it has */
+boolean network_game_server_watchable_in_game(
+	struct network_game_server *server)
+{
+	return network_game_server_late_joins_enabled(server) && game_engine_can_score() &&
+		network_game_server_spectator_count(server) < MAXIMUM_SPECTATOR_MACHINES;
 }
 
 /* the lobby has started its match and the machines are loading it (nobody
@@ -2009,6 +2069,22 @@ boolean network_game_server_add_player_to_game(
 				"server added player from machine #%d at controller index #%d to the game",
 				player->machine_index,
 				player->controller_index);
+#ifdef HALO_LINUX
+			/* (a spectator that joins: one no more) */
+			{
+				long index;
+
+				for (index = 0; index < MAXIMUM_NETWORK_MACHINE_COUNT; index++)
+				{
+					if (server->client_machines[index].machine_index == player->machine_index &&
+						TEST_FLAG(server->client_machines[index].flags, _network_client_machine_spectator_bit))
+					{
+						network_event("spectator machine #%d adds a player: it plays now", player->machine_index);
+						network_game_server_set_client_machine_spectator(&server->client_machines[index], FALSE);
+					}
+				}
+			}
+#endif
 		}
 		else
 		{
@@ -2318,6 +2394,11 @@ boolean server_has_a_player_on_each_machine(
 				}
 			}
 
+#ifdef HALO_LINUX
+			/* (late joins) a spectator watches without one */
+			if (!has_a_player && network_game_server_client_machine_is_spectator(client_machine))
+				continue;
+#endif
 			if (!has_a_player)
 				return FALSE;
 		}
