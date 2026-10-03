@@ -455,13 +455,34 @@
   var settingsUi = { open: false, capturing: null, notice: DEFAULT_NOTICE, warning: false, dirty: true,
     swallowClick: false };
 
+  /* The pictures need the session cookie, which the Activity only has once
+     activity.js has signed in, after this script has run: so they load when
+     the picker first shows (after sign-in on both pages). A failed picture
+     gets one more try a little later before only its label remains. */
+  var PICTURE_RETRY_MILLISECONDS = 3000;
   var images = {};
+  var picturesRequested = false;
   function picture(kind, slug, label) {
     var card = element("span", { class: "hosted-card-label", text: label });
-    var image = element("img", { src: "game-ui/" + kind + "/" + slug + ".png", alt: "", draggable: "false" });
-    image.addEventListener("error", function() { image.remove(); });
-    images[kind + slug] = image;
+    var image = element("img", { alt: "", draggable: "false" });
+    var source = "game-ui/" + kind + "/" + slug + ".png";
+    var retried = false;
+    image.addEventListener("error", function() {
+      if (retried) {
+        image.remove();
+        return;
+      }
+      retried = true;
+      global.setTimeout(function() { image.setAttribute("src", source); }, PICTURE_RETRY_MILLISECONDS);
+    });
+    images[kind + slug] = { image: image, source: source };
     return [image, card];
+  }
+
+  function requestPictures() {
+    if (picturesRequested) return;
+    picturesRequested = true;
+    Object.keys(images).forEach(function(key) { images[key].image.setAttribute("src", images[key].source); });
   }
 
   var mapButtons = MAPS.map(function(map, index) {
@@ -979,6 +1000,7 @@
 
     show(panel, surface === "panel");
     show(picker, picking);
+    if (picking && surface === "panel") requestPictures();
     panel.classList.toggle("picking", picking);
     text("hosted-host", nextMatch ? "Start match" : "Host game");
     show(byId("hosted-share"), surface === "panel" && picking && !!status.shareUrl);
