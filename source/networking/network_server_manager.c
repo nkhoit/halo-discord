@@ -748,6 +748,9 @@ struct network_game_server
 	long roster_sequence;
 	unsigned long late_join_time[MAXIMUM_NETWORK_MACHINE_COUNT];
 	long late_join_roster_sequence[MAXIMUM_NETWORK_MACHINE_COUNT];
+	/* a player asked for the match to start (Start, or A in the lobby):
+	alone, only that starts the countdown */
+	boolean start_requested;
 #endif
 };
 
@@ -1295,12 +1298,28 @@ void network_game_server_close_game(
 /* Joining a match in progress (the distributed netcode only: a lockstep
 client must simulate the match from its first tick). The game is closed to
 the lobby's joining while it runs; a machine that joins then loads the map
-and enters the running match, and adds its players as in-game players. */
+and enters the running match, and adds its players as in-game players. With
+players able to come in later, a host also starts its match alone, and a
+match does not end for having one team left (game_engine.c). */
+boolean network_game_join_in_progress_enabled(
+	void)
+{
+	return network_game_distributed() && config_boolean("network.join_in_progress");
+}
+
 static boolean network_game_server_late_joins_enabled(
 	struct network_game_server *server)
 {
 	return server && server->state == _network_game_server_state_ingame &&
-		network_game_distributed() && config_boolean("network.join_in_progress");
+		network_game_join_in_progress_enabled();
+}
+
+/* (while a player's request to start is handled) */
+void network_game_server_set_start_requested(
+	struct network_game_server *server,
+	boolean requested)
+{
+	server->start_requested = requested;
 }
 
 /* whether a machine can join the running match now: not over, and room for
@@ -2228,6 +2247,12 @@ boolean server_needs_more_teams(
 {
 	boolean needs_more_teams = FALSE;
 
+#ifdef HALO_LINUX
+	/* (joining a match in progress) the team that is empty at the start is
+	the next player's (network_game_server_add_player_to_game) */
+	if (network_game_join_in_progress_enabled())
+		return FALSE;
+#endif
 	if (server->game.variant.universal_variant.teams)
 	{
 		short player_count_by_team[NUMBER_OF_MULTIPLAYER_TEAMS] = { 0, 0 };
@@ -2310,6 +2335,12 @@ boolean server_has_enough_machines(
 	long machine_count = 0;
 	long client_machine_index;
 
+#ifdef HALO_LINUX
+	/* (joining a match in progress) the host may start alone */
+	if (network_game_join_in_progress_enabled())
+		minimum_machine_count = 1;
+#endif
+
 	for (client_machine_index = 0;
 		client_machine_index < MAXIMUM_NETWORK_MACHINE_COUNT;
 		client_machine_index++)
@@ -2332,10 +2363,17 @@ boolean server_has_enough_machines(
 boolean server_ok_to_countdown(
 	struct network_game_server *server)
 {
+	long minimum_players = server->game.minimum_players;
+
+#ifdef HALO_LINUX
+	/* (joining a match in progress) the host may start alone */
+	if (network_game_join_in_progress_enabled())
+		minimum_players = 1;
+#endif
 	if (server_has_enough_machines(server) &&
 		server_has_a_player_on_each_machine(server) &&
 		!server_needs_more_teams(server) &&
-		server->game.player_count >= server->game.minimum_players)
+		server->game.player_count >= minimum_players)
 	{
 		return TRUE;
 	}
@@ -3047,7 +3085,12 @@ void network_game_server_update_countdown(
 				else
 				{
 					if (network_game_should_accept_remote_connections() == FALSE ||
-						network_game_server_get_client_machine_count(server) > 1)
+						network_game_server_get_client_machine_count(server) > 1
+#ifdef HALO_LINUX
+						/* (joining a match in progress) alone, when asked to */
+						|| (server->start_requested && network_game_join_in_progress_enabled())
+#endif
+						)
 					{
 						unsigned long countdown;
 
@@ -3055,6 +3098,14 @@ void network_game_server_update_countdown(
 							countdown = NETWORK_GAME_SPLITSCREEN_COUNTDOWN_TIME;
 						else
 							countdown = NETWORK_GAME_COUNTDOWN_TIME;
+#ifdef HALO_LINUX
+						/* (alone) as short as a split-screen game's */
+						if (network_game_join_in_progress_enabled() &&
+							network_game_server_get_client_machine_count(server) <= 1)
+						{
+							countdown = NETWORK_GAME_SPLITSCREEN_COUNTDOWN_TIME;
+						}
+#endif
 
 						server->countdown_state.active = TRUE;
 						countdown_timer_set_time_remaining(

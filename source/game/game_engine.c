@@ -581,6 +581,8 @@ symbols in this file:
 #ifdef HALO_LINUX
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
+/* network_server_manager.c's */
+boolean network_game_join_in_progress_enabled(void);
 /* port/linux/game/network_distributed.c's */
 void network_distributed_player_killed(long *killing_player_index, long *killing_object_index,
 	long dead_player_index, boolean *friendly_fire);
@@ -4579,6 +4581,13 @@ boolean game_engine_should_end_game(
 {
 	boolean should_end_game = FALSE;
 
+#ifdef HALO_LINUX
+	/* (joining a match in progress) the host may play alone, and others
+	join a side that is empty: a match does not end for having one team
+	left (network_server_manager.c) */
+	if (global_network_game_server_get() && network_game_join_in_progress_enabled())
+		return FALSE;
+#endif
 	if (game_engine && !multiple_teams_alive())
 		should_end_game = TRUE;
 

@@ -41,8 +41,13 @@ try {
     'enum\n{\n' + lines(manager, '_network_game_server_state_pregame,', 'NUMBER_OF_NETWORK_GAME_SERVER_STATES') + '\n};',
   ].join('\n\n') + '\n');
   fs.writeFileSync(path.join(temp, 'late_join_gate.inc'), [
+    block(manager, 'boolean network_game_join_in_progress_enabled('),
     block(manager, 'static boolean network_game_server_late_joins_enabled('),
     block(manager, 'boolean network_game_server_client_machine_is_loading_in_game('),
+    block(manager, 'boolean server_needs_more_teams('),
+    block(manager, 'boolean server_has_a_player_on_each_machine('),
+    block(manager, 'boolean server_has_enough_machines('),
+    block(manager, 'boolean server_ok_to_countdown('),
   ].join('\n\n') + '\n');
 
   /* the three broadcasts (unreliable and reliable per-tick state, and the
@@ -60,7 +65,7 @@ try {
   const cc = process.env.CC || 'cc';
   const web = /emcc/.test(path.basename(cc));
   const output = path.join(temp, web ? 'late-join-test.js' : 'late-join-test');
-  const build = spawnSync(cc, ['-O2', '-std=gnu99', '-w', '-iquote', temp,
+  const build = spawnSync(cc, ['-O2', '-std=gnu99', '-w', '-DHALO_LINUX', '-iquote', temp,
     path.join(__dirname, 'network_late_join_gate_test.c'), '-o', output],
     {encoding: 'utf8', shell: process.platform === 'win32'});
   assert.equal(build.status, 0, build.stdout + build.stderr);
