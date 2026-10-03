@@ -7975,6 +7975,72 @@ boolean game_engine_should_spawn_player(
 	return should_spawn;
 }
 
+#ifdef HALO_LINUX
+/* The respawn countdown on a client of the distributed netcode
+(port/linux/NETCODE.md), where game_engine_should_spawn_player does not run:
+the host spawns everyone. A dead player's respawn_timer counts down here, as
+there, and follows the host's (network_distributed.c, every tick); the local
+player hears the 3-2-1 countdown and the respawn sound once each, as the
+timer passes 90, 60, 30 and 1, however host corrections move it. */
+void platform_log(const char *format, ...);
+
+static long client_respawn_previous[HALO_PORT_MAXIMUM_NETWORK_PLAYERS];
+static short client_respawn_next_sound[HALO_PORT_MAXIMUM_NETWORK_PLAYERS];
+
+static short client_respawn_sound_after(
+	short threshold)
+{
+	return threshold > 60 ? 60 : threshold > 30 ? 30 : threshold > 1 ? 1 : 0;
+}
+
+void game_engine_client_respawn_countdown(
+	long player_index)
+{
+	struct player_datum *player;
+	short absolute_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index);
+	long timer;
+
+	if (!game_engine || absolute_index < 0 || absolute_index >= HALO_PORT_MAXIMUM_NETWORK_PLAYERS)
+		return;
+	player = player_get(player_index);
+	if (player->quit_out_of_game == TRUE || player->statistics.deaths == 0 ||
+		game_engine_player_is_out_of_lives(player_index) || game_engine_player_is_odd_man_out(player_index) ||
+		game_engine_globals.postgame_state == _game_engine_postgame_state_rasterize ||
+		game_engine_globals.postgame_state == _game_engine_postgame_state_rasterize_delay)
+	{
+		return;
+	}
+	timer = player->respawn_timer;
+	/* a new countdown (a death, or the host's timer above ours): its first
+	sound is the highest at or below it */
+	if (timer > client_respawn_previous[absolute_index])
+	{
+		client_respawn_next_sound[absolute_index] = timer >= 90 ? 90 : timer >= 60 ? 60 : timer >= 30 ? 30 :
+			timer >= 1 ? 1 : 0;
+	}
+	if (client_respawn_next_sound[absolute_index] && timer <= client_respawn_next_sound[absolute_index])
+	{
+		short crossed;
+
+		do
+		{
+			crossed = client_respawn_next_sound[absolute_index];
+			client_respawn_next_sound[absolute_index] = client_respawn_sound_after(crossed);
+		}
+		while (client_respawn_next_sound[absolute_index] && timer <= client_respawn_next_sound[absolute_index]);
+		if (player->local_player_index != NONE)
+		{
+			game_engine_play_multiplayer_sound(crossed == 1 ?
+				_multiplayer_sound_respawn : _multiplayer_sound_countdown_for_respawn);
+			platform_log("respawn countdown: %s at %ld ticks", crossed == 1 ? "respawn" : "countdown", timer);
+		}
+	}
+	if (timer > 0)
+		player->respawn_timer = --timer;
+	client_respawn_previous[absolute_index] = timer;
+}
+#endif
+
 struct game_engine_place game_engine_get_place(
 	long player_index,
 	enum get_score_type score_type)
