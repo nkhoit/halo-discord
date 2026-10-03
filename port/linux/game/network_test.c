@@ -523,7 +523,7 @@ void network_test_update(
 	if (network_test.mode == _network_test_off)
 	{
 		if ((network_test.shoot_interval > 0.0f || network_test.kill_interval > 0.0f || network_test.end_time > 0.0f ||
-			network_test.ammo_message_interval > 0.0f) &&
+			network_test.ammo_message_interval > 0.0f || network_test.vehicle_time > 0.0f) &&
 			game_in_progress() &&
 			!main_menu_loaded && game_connection() != _game_connection_local &&
 			game_time_get() - network_test.logged_time >= TICKS_PER_SECOND)
@@ -539,6 +539,19 @@ void network_test_update(
 				game_time_get() % (long)(network_test.kill_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)
 			{
 				network_test_kill();
+			}
+			/* (a host the menus made: its last player in a vehicle and out) */
+			if (network_test.vehicle_time > 0.0f && game_connection() == _game_connection_network_server)
+			{
+				long enter_time = (long)(network_test.vehicle_time * TICKS_PER_SECOND);
+
+				if (game_time_get() >= enter_time && game_time_get() - enter_time < TICKS_PER_SECOND)
+					network_test_vehicle(TRUE);
+				if (game_time_get() >= enter_time + 15 * TICKS_PER_SECOND &&
+					game_time_get() - enter_time - 15 * TICKS_PER_SECOND < TICKS_PER_SECOND)
+				{
+					network_test_vehicle(FALSE);
+				}
 			}
 			if (network_test.ammo_message_interval > 0.0f && game_engine_running() &&
 				game_time_get() % (long)(network_test.ammo_message_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)

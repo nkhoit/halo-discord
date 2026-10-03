@@ -146,6 +146,22 @@ The machines' rules for spectators only apply with joining a match in
 progress on; otherwise a machine without a player keeps the lobby waiting,
 as before (`tests/network_late_join_gate_test`).
 
+A spectator's view (`game/spectator.c`) is another player's, from their
+eyes: a random player with a unit at first, the next or previous one when
+the page asks, and one who dies is watched where they fell until they
+respawn. The camera is their eyes and aim a tick behind, interpolated as
+everything else is drawn (`render_interpolation.c`), with a 50 ms low-pass
+on the aim against the remote unit's corrections
+(`debug.spectate_smoothing`). While they are seen from their eyes, they
+stand in as local player 0 for the first-person weapon's and the HUD's
+updates and for the drawing, so the spectator sees their weapon,
+crosshair, shields, ammunition and motion sensor; nothing else takes them
+for local (`tests/spectator_view_test`). A player in a vehicle is seen from
+behind and above it (a seat's own views follow its player's controls). Zoom
+is a player's own input, which no other machine has: the view never zooms.
+With nobody to watch the view holds; on Blood Gulch it starts on a shot of
+the map. Positional audio still follows nobody.
+
 ## Testing
 
 `debug.network_test` (`port/linux/game/network_test.c`) hosts or joins a

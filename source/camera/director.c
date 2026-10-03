@@ -138,6 +138,11 @@ symbols in this file:
 #include "units/unit_definitions.h"
 #include "units/units.h"
 
+#ifdef HALO_LINUX
+/* port/linux/game/spectator.c's */
+boolean spectator_first_person_view(void);
+#endif
+
 /* ---------- constants */
 
 /* ---------- macros */
@@ -298,6 +303,11 @@ director_perspective director_get_perspective(
 {
 	struct director *camera;
 
+#ifdef HALO_LINUX
+	/* (a spectator, drawing its target's view: its eyes, spectator.c) */
+	if (local_player_index == 0 && spectator_first_person_view())
+		return 0;
+#endif
 	camera = director_get(local_player_index);
 
 	if (camera->camera_proc == first_person_camera_update)

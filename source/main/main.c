@@ -670,6 +670,12 @@ typedef char screenshot_and_framerate_globals_size_assert[
 
 #ifdef HALO_LINUX
 void network_test_update(boolean main_menu_loaded, real seconds);
+/* port/linux/game/spectator.c's: a machine watching a match without a player */
+void spectator_update(real seconds);
+struct observer_result const *spectator_camera(real frame_seconds);
+void spectator_log_frame(struct observer_result const *camera);
+boolean spectator_view_begin(void);
+void spectator_view_end(boolean begun);
 #endif
 
 /* ---------- prototypes */
@@ -3021,6 +3027,10 @@ void main_game_render(
 	long player_window_count;
 	long window_count;
 	short last_local_player_index;
+#ifdef HALO_LINUX
+	boolean spectator_view;
+	struct observer_result const *spectator_observer;
+#endif
 
 	lock_global_random_seed();
 	collision_log_continue_period(TRUE);
@@ -3035,6 +3045,12 @@ void main_game_render(
 		window_count = 1;
 		player_window_count = 1;
 	}
+#ifdef HALO_LINUX
+	/* a spectator's view, drawn as its target's when it is seen from its eyes
+	(spectator.c) */
+	spectator_observer = spectator_camera((real)time_delta_since_tick_sec);
+	spectator_view = spectator_view_begin();
+#endif
 
 	for (window_index = 0; window_index < player_window_count; window_index++)
 	{
@@ -3069,6 +3085,15 @@ void main_game_render(
 			observer = observer_get_camera(window->local_player_index);
 #ifdef HALO_LINUX
 			observer = render_interpolation_camera(window->local_player_index, observer);
+			if (window_index == 0 && spectator_observer)
+			{
+				/* (as film playback: a player's window, without a player of its
+				own) */
+				observer = spectator_observer;
+				window->local_player_index = 0;
+			}
+			if (window_index == 0)
+				spectator_log_frame(observer);
 #endif
 		}
 		else
@@ -3104,6 +3129,9 @@ void main_game_render(
 	{
 		screenshot_render(global_screenshot_count.windows);
 	}
+#ifdef HALO_LINUX
+	spectator_view_end(spectator_view);
+#endif
 
 	collision_log_end_period();
 	unlock_global_random_seed();
@@ -3217,6 +3245,7 @@ static boolean main_loop_iteration(
 #ifdef HALO_LINUX
 			/* automated system link tests (port/linux/game/network_test.c) */
 			network_test_update(main_globals.main_menu_scenario_loaded, main_globals.seconds_elapsed);
+			spectator_update(main_globals.seconds_elapsed);
 #endif
 #ifdef HALO_WEB
 			/* Invite links request menu changes from the browser thread through an

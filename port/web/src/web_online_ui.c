@@ -60,6 +60,9 @@ int config_write_boolean(const char *name, int value);
 void network_game_set_spectating(unsigned char spectating);
 unsigned char network_game_spectating(void);
 short local_player_count(void);
+/* port/linux/game/spectator.c's */
+void spectator_request_cycle(short direction);
+int spectator_target_name_character(int index);
 void platform_log(const char *format, ...);
 
 enum
@@ -118,6 +121,9 @@ add its player after watching (0): -1 none yet */
 static atomic_int web_online_requested_spectate = ATOMIC_VAR_INIT(-1);
 /* (a client) it watches a match without a player of its own */
 static atomic_int web_online_spectating = ATOMIC_VAR_INIT(0);
+/* (a spectator) the name of the player watched, a character each; 0 ends it */
+#define WEB_ONLINE_SPECTATE_NAME_CHARACTERS 12
+static atomic_int web_online_spectate_name[WEB_ONLINE_SPECTATE_NAME_CHARACTERS];
 /* (the host) whether a machine could join its match now */
 static atomic_int web_online_match_joinable = ATOMIC_VAR_INIT(0);
 /* (the host) its lobby has started the match, which is loading */
@@ -245,6 +251,22 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_set_spectate(int spectate)
 EMSCRIPTEN_KEEPALIVE int platform_web_online_spectating(void)
 {
 	return atomic_load_explicit(&web_online_spectating, memory_order_acquire);
+}
+
+/* (a spectator) watch the next (+1) or previous (-1) player with a unit */
+EMSCRIPTEN_KEEPALIVE int platform_web_spectate_cycle(int direction)
+{
+	spectator_request_cycle(direction < 0 ? -1 : 1);
+	return 1;
+}
+
+/* (a spectator) the watched player's name, a character at a time: 0 past its
+end, or when it watches nobody */
+EMSCRIPTEN_KEEPALIVE int platform_web_spectate_target_name(int index)
+{
+	if (index < 0 || index >= WEB_ONLINE_SPECTATE_NAME_CHARACTERS)
+		return 0;
+	return atomic_load_explicit(&web_online_spectate_name[index], memory_order_acquire);
 }
 
 /* (the host) whether a machine joining now would enter the running match:
@@ -669,6 +691,19 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 		atomic_store_explicit(&web_online_spectating,
 			web_online.command == _web_online_command_join && network_game_spectating() && local_player_count() == 0,
 			memory_order_release);
+	}
+	{
+		/* (the watched player's name, for the page's label) */
+		int index;
+		int ended = 0;
+
+		for (index = 0; index < WEB_ONLINE_SPECTATE_NAME_CHARACTERS; index++)
+		{
+			int character = ended ? 0 : spectator_target_name_character(index);
+
+			ended = ended || !character;
+			atomic_store_explicit(&web_online_spectate_name[index], character, memory_order_release);
+		}
 	}
 	atomic_store_explicit(&web_online_match_joinable,
 		global_network_game_server_get() &&

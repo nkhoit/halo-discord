@@ -184,6 +184,12 @@ struct game_options;
 #include "units/units.h"
 #include "units/vehicles.h"
 
+#ifdef HALO_LINUX
+/* port/linux/game/spectator.c's: a spectator's target as local player 0 */
+boolean spectator_view_begin(void);
+void spectator_view_end(boolean begun);
+#endif
+
 /* ---------- constants */
 
 /* ---------- macros */
@@ -458,7 +464,17 @@ void game_tick(
 	effects_update(seconds_per_tick);
 	lock_global_random_seed();
 	rumble_update();
+#ifdef HALO_LINUX
+	{
+		/* (a spectator: its target's first-person weapon) */
+		boolean spectator_view = spectator_view_begin();
+
+		first_person_weapons_update();
+		spectator_view_end(spectator_view);
+	}
+#else
 	first_person_weapons_update();
+#endif
 	unlock_global_random_seed();
 	game_engine_update();
 	editor_update();
@@ -466,7 +482,17 @@ void game_tick(
 	recorded_animations_update();
 	objects_update();
 	players_update_after_game();
+#ifdef HALO_LINUX
+	{
+		/* (a spectator: its target's HUD and motion sensor) */
+		boolean spectator_view = spectator_view_begin();
+
+		hud_update();
+		spectator_view_end(spectator_view);
+	}
+#else
 	hud_update();
+#endif
 	player_effect_update();
 
 	profile_exit(game_update_section);

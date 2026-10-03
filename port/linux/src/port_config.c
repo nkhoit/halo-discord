@@ -185,6 +185,12 @@ static const struct config_setting config_settings[] =
 		"machines of twice it), to test the netcode as over the internet; 0 none." },
 	{ "debug.network_loss", _config_real, "0.0", "HALO_NETWORK_LOSS", _environment_value, _platform_all,
 		"Percent of datagrams received that are dropped, for the same; 0 none." },
+	{ "debug.spectate_smoothing", _config_real, "50.0", "HALO_SPECTATE_SMOOTHING", _environment_value, _platform_all,
+		"Milliseconds a spectator's view of its target's aim takes to follow it (a\n"
+		"low-pass against the remote unit's corrections; port/linux/game/spectator.c); 0 none." },
+	{ "debug.spectate_log", _config_real, "0.0", "HALO_SPECTATE_LOG", _environment_value, _platform_all,
+		"Seconds of camera logs, a spectator's view or a player's own, for measuring\n"
+		"the spectator's smoothness; 0 none." },
 	{ "debug.test_input", _config_string, "\"\"", "HALO_TEST_INPUT", _environment_value, _platform_all,
 		"\"bot:<seed>\" plays controller 1 with a scripted pattern (automated\n"
 		"network tests); empty for none." },
