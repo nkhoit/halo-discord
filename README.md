@@ -20,7 +20,7 @@ works in a desktop browser, with a room link to share.
 - **Netcode:** the distributed netcode
   ([port/linux/NETCODE.md](port/linux/NETCODE.md)). Each machine moves its own
   player at once and the host decides the rest. Players can join a match in
-  progress, and a host can start alone.
+  progress, or watch it first as spectators, and a host can start alone.
 
 ## Self-hosting
 

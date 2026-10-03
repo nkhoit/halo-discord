@@ -383,7 +383,61 @@
   var NOTICE_MILLISECONDS = 15000;
   var CLIENT_STATE = Object.freeze({ PREGAME: 2, INGAME: 3, POSTGAME: 4 });
   var hostedLobby = { timer: 0, view: null, summary: null, roomId: null, retryAt: 0, notice: null, noticeAt: 0,
-    joiningMatch: false, pendingJoin: false };
+    joiningMatch: false, pendingJoin: false, spectateNext: false };
+  /* (a guest) it watches the match without a player of its own (#52): the
+     game's word (web_online_ui.c), which the room's relay is told too */
+  var spectating = { page: false };
+
+  function callModule(name) {
+    var fn = global.Module && global.Module[name];
+    if (typeof fn !== "function") return undefined;
+    try {
+      return fn.apply(null, Array.prototype.slice.call(arguments, 1));
+    } catch (error) {
+      return undefined;
+    }
+  }
+
+  /* (before joining) whether to watch the match: a running match is watched
+     by default, a lobby is joined to play */
+  function setSpectating(spectate) {
+    spectating.page = !!spectate;
+    callModule("_platform_web_online_set_spectate", spectate ? 1 : 0);
+  }
+
+  function gameSpectating() {
+    return session.active && session.role === "guest" && callModule("_platform_web_online_spectating") === 1;
+  }
+
+  /* the watched player's name, for the page's label */
+  function spectatedName() {
+    var characters = [];
+    for (var index = 0; index < 12; index++) {
+      var character = callModule("_platform_web_spectate_target_name", index);
+      if (!character) break;
+      characters.push(character);
+    }
+    return characters.length ? String.fromCharCode.apply(null, characters) : null;
+  }
+
+  /* (a spectator) add its player to the match, as a late joiner's is (or to
+     the lobby's next match): from then on it plays as everyone does */
+  function spectatorJoin() {
+    if (!session.active || session.role !== "guest" || !spectating.page) return false;
+    spectating.page = false;
+    callModule("_platform_web_online_set_spectate", 0);
+    if (global.HaloWebTransport && typeof global.HaloWebTransport.setRelaySpectating === "function") {
+      global.HaloWebTransport.setRelaySpectating(false);
+    }
+    return true;
+  }
+
+  /* (a spectator) watch the next (+1) or previous (-1) player */
+  function spectateCycle(direction) {
+    if (!gameSpectating()) return false;
+    callModule("_platform_web_spectate_cycle", direction < 0 ? -1 : 1);
+    return true;
+  }
 
   function hostedPage() {
     var mode = typeof document.querySelector === "function" &&
@@ -455,7 +509,7 @@
     hostedLobby.summary = summary;
     if (!summary.host) {
       hostedLobby.view = "pick";
-    } else if (summary.inMatch && !summary.joinable) {
+    } else if (summary.inMatch && !summary.joinable && !summary.watchable) {
       hostedLobby.view = "wait-match";
     } else if (Date.now() < hostedLobby.retryAt) {
       hostedLobby.view = "wait-retry";
@@ -464,6 +518,8 @@
       hostedLobby.view = summary.inMatch ? "joining-match" : "joining";
       hostedLobby.joiningMatch = !!summary.inMatch;
       hostedLobby.retryAt = Date.now() + JOIN_RETRY_MILLISECONDS;
+      /* (a running match is watched first: Join adds the player) */
+      hostedLobby.spectateNext = !!summary.inMatch;
       join("room:" + hostedLobby.roomId);
     }
   }
@@ -493,10 +549,11 @@
     hostedLobby.roomId = room.roomId;
     hostedLobby.joiningMatch = room.state === "match";
     hostedLobby.summary = { host: typeof room.host === "string" ? room.host : null, players: room.players || 0,
-      inMatch: hostedLobby.joiningMatch, joinable: !!room.joinable };
+      inMatch: hostedLobby.joiningMatch, joinable: !!room.joinable, watchable: !!room.watchable };
     hostedLobby.view = hostedLobby.joiningMatch ? "joining-match" : "joining";
     /* (join() leaves first, which would restart this channel's lobby) */
     hostedLobby.pendingJoin = true;
+    hostedLobby.spectateNext = hostedLobby.joiningMatch;
     join("room:" + room.roomId);
     return true;
   }
@@ -509,6 +566,7 @@
         phase.inMatch ? "starting" : "lobby",
       map: settings.mapIndex,
       mode: settings.modeIndex,
+      watchable: !!phase.watchable,
     };
     var channel = activity() && typeof activity().channelName === "function" ? activity().channelName() : null;
     if (typeof channel === "string" && channel) details.channel = channel.slice(0, 64);
@@ -561,6 +619,7 @@
     return {
       inMatch: clientState === CLIENT_STATE.INGAME || call("_platform_web_online_match_starting"),
       joinable: joinable,
+      watchable: clientState === CLIENT_STATE.INGAME && call("_platform_web_online_match_watchable"),
     };
   }
 
@@ -569,8 +628,9 @@
      "joining-match" (joining the host's match as it runs), "wait-match"
      (the host's match is loading, over or full), "wait-retry" (a join
      failed), "host-starting", "hosting" (the host's Halo lobby), "joined" (a
-     guest in the host's lobby), "match" or "postgame" (a match's results,
-     until the host goes back to the lobby). */
+     guest in the host's lobby), "match", "spectating" (a guest watching the
+     match without a player, #52) or "postgame" (a match's results, until the
+     host goes back to the lobby). */
   function hostedStatus() {
     var state = -1;
     try { state = session.runtimeReady ? gameState() : -1; } catch (error) { /* starting */ }
@@ -581,7 +641,7 @@
         (session.inMatch ? "match" : session.inPostgame ? "postgame" : "hosting") : "host-starting";
     } else if (session.active) {
       view = state === GAME_STATE.JOINED ?
-        (session.inMatch ? "match" : session.inPostgame ? "postgame" : "joined") :
+        (session.inMatch ? (gameSpectating() ? "spectating" : "match") : session.inPostgame ? "postgame" : "joined") :
         (hostedLobby.joiningMatch ? "joining-match" : "joining");
     } else view = hostedLobby.view || "checking";
     if (hostedLobby.notice && Date.now() - hostedLobby.noticeAt > NOTICE_MILLISECONDS) hostedLobby.notice = null;
@@ -599,6 +659,11 @@
       notice: hostedLobby.notice,
       settings: session.hostSettings || readHostSettings(),
       shareUrl: activity() || !hostedPage() ? null : global.location.href,
+      spectating: gameSpectating(),
+      /* (Join pressed: the game adds the player in a moment) */
+      spectatorJoining: gameSpectating() && !spectating.page,
+      spectated: gameSpectating() ? spectatedName() : null,
+      spectators: session.active ? 0 : (summary.spectators || 0),
     };
   }
 
@@ -1382,6 +1447,7 @@
         auth: {
           getToken: function() { return relayAuth.token; },
           build: buildId(),
+          spectator: function() { return session.role === "guest" && spectating.page; },
         },
       } : null,
       onRelayPeer: registerRelayPeer,
@@ -1920,6 +1986,7 @@
     saveHostSettings(settings);
     savePlayerProfile(profile);
     await leave(false);
+    setSpectating(false);
     var operation = ++session.operationGeneration;
     session.active = true;
     session.role = "host";
@@ -1977,6 +2044,9 @@
     savePlayerProfile(profile);
     await leave(false);
     hostedLobby.pendingJoin = false;
+    /* (hosted pages: a running match is watched first, a lobby is joined) */
+    setSpectating(hostedPage() && hostedLobby.spectateNext);
+    hostedLobby.spectateNext = false;
     var operation = ++session.operationGeneration;
     var invite;
     var recoveredVerification = false;
@@ -2570,6 +2640,8 @@
     defaultFrameCap: defaultFrameCap,
     status: hostedStatus,
     configure: configureNextMatch,
+    spectatorJoin: spectatorJoin,
+    spectateCycle: spectateCycle,
     startMatch: startMatch,
     guildRooms: guildRooms,
     joinGuildRoom: joinGuildRoom,

@@ -32,6 +32,9 @@ export interface Member {
   id: string;
   role: Role;
   kind: SocketKind;
+  /* (a guest) it watches the match without a player of its own (#52): it
+     joined to watch, until it says it plays */
+  spectator: boolean;
   since: number;
 }
 
@@ -63,11 +66,26 @@ export interface GuildRoom {
   mode: number | null;
   state: MatchState;
   players: number;
+  /* machines watching without a player */
+  spectators: number;
   capacity: number;
   joinable: boolean;
   /* Why it is not joinable: "full", "version" (another build) or "match"
      (a match that takes nobody now). */
   reason: "full" | "version" | "match" | null;
+  /* its running match takes spectators (another build's never) */
+  watchable: boolean;
+}
+
+/* Who is in a room (GET /v1/rooms/<id>). */
+export interface RoomSummary {
+  host: string | null;
+  players: number;
+  spectators: number;
+  inMatch: boolean;
+  joinable: boolean;
+  /* its running match takes spectators, even when it takes no player */
+  watchable: boolean;
 }
 
 export type Log = (entry: Record<string, unknown>) => void;
@@ -81,6 +99,8 @@ class Room {
      returns, unless its match takes players as it runs (joinable). */
   inMatch = false;
   joinable = false;
+  /* (the host's word too) its running match takes spectators */
+  watchable = false;
   /* A Discord Activity instance's room, and the server and voice channel it
      belongs to (learned from its members' sessions). */
   activity = false;
@@ -214,21 +234,25 @@ export class Relay {
   }
 
   /* Who is in a room, for a lobby that has to choose between hosting and
-     joining: the host's display name, if any, and the number of players. */
-  summary(roomId: string): { host: string | null; players: number; inMatch: boolean; joinable: boolean } {
+     joining: the host's display name, if any, the players and the
+     spectators. Spectators' sockets count against the room's, as their
+     machines do against the host's. */
+  summary(roomId: string): RoomSummary {
     const room = this.rooms.get(roomId);
-    if (!room) return { host: null, players: 0, inMatch: false, joinable: false };
+    if (!room) return { host: null, players: 0, spectators: 0, inMatch: false, joinable: false, watchable: false };
     let host: string | null = null;
     const players = new Set<string>();
+    const spectators = new Set<string>();
     for (const member of room.members.values()) {
       if (!carries(member.kind, true)) continue;
-      players.add(member.id);
+      (member.spectator ? spectators : players).add(member.id);
       if (member.role === "host") host = member.name;
     }
     /* (a full room takes nobody, whatever the host's match would) */
     const roomFull = room.members.size >= MAXIMUM_ROOM_SOCKETS;
-    return { host, players: players.size, inMatch: host !== null && room.inMatch,
-      joinable: host !== null && room.inMatch && room.joinable && !roomFull };
+    return { host, players: players.size, spectators: spectators.size, inMatch: host !== null && room.inMatch,
+      joinable: host !== null && room.inMatch && room.joinable && !roomFull,
+      watchable: host !== null && room.inMatch && room.watchable && !roomFull };
   }
 
   /* The rooms of Activity instances in a Discord server that have a host, but
@@ -244,7 +268,8 @@ export class Relay {
         summary.inMatch && !summary.joinable ? "match" : null;
       rooms.push({
         roomId: room.id, host: summary.host, channel: room.channelName, map: room.map, mode: room.mode,
-        state: room.state, players: summary.players, capacity: MAXIMUM_PLAYERS, joinable: reason === null, reason,
+        state: room.state, players: summary.players, spectators: summary.spectators, capacity: MAXIMUM_PLAYERS,
+        joinable: reason === null, reason, watchable: summary.watchable && reason !== "version",
       });
     }
     return rooms.sort((a, b) => a.host.localeCompare(b.host));
@@ -271,15 +296,17 @@ export class Relay {
     if (member.role === "host" && ![...room.members.values()].some((other) => other.role === "host")) {
       room.inMatch = false;
       room.joinable = false;
+      room.watchable = false;
       room.state = "lobby";
     }
     if (!room.members.size) this.rooms.delete(room.id);
   }
 
   /* The one text message after "auth": the host's
-     {"type":"phase","inMatch":boolean,"joinable"?:boolean}, and for the
-     server-wide list, optionally "state" (MatchState), "map" and "mode"
-     (the hosted page's indices) and "channel" (its voice channel's name). */
+     {"type":"phase","inMatch":boolean,"joinable"?:boolean,"watchable"?:boolean},
+     and for the server-wide list, optionally "state" (MatchState), "map" and
+     "mode" (the hosted page's indices) and "channel" (its voice channel's
+     name). */
   private control(room: Room, sender: Member, data: RawData): boolean {
     const message = data instanceof Buffer ? data : Buffer.concat(data as Buffer[]);
     if (message.byteLength > 512) return false;
@@ -289,10 +316,11 @@ export class Relay {
     } catch {
       return false;
     }
-    const value = parsed as { type?: unknown; inMatch?: unknown; joinable?: unknown; state?: unknown;
-      map?: unknown; mode?: unknown; channel?: unknown } | null;
+    const value = parsed as { type?: unknown; inMatch?: unknown; joinable?: unknown; watchable?: unknown;
+      state?: unknown; map?: unknown; mode?: unknown; channel?: unknown } | null;
     if (!value || value.type !== "phase" || typeof value.inMatch !== "boolean") return false;
     if (value.joinable !== undefined && typeof value.joinable !== "boolean") return false;
+    if (value.watchable !== undefined && typeof value.watchable !== "boolean") return false;
     const index = (field: unknown) => typeof field === "number" && Number.isInteger(field) && field >= 0 && field < 64;
     if ((value.state !== undefined && (typeof value.state !== "string" || !MATCH_STATES.has(value.state))) ||
         (value.map !== undefined && !index(value.map)) || (value.mode !== undefined && !index(value.mode)) ||
@@ -308,6 +336,29 @@ export class Relay {
     }
     room.inMatch = value.inMatch;
     room.joinable = joinable;
+    room.watchable = value.inMatch && value.watchable === true;
+    return true;
+  }
+
+  /* A guest's text message: {"type":"spectating","value":boolean}, when a
+     spectator joins with a player (or watches again). */
+  private memberControl(room: Room, sender: Member, data: RawData): boolean {
+    const message = data instanceof Buffer ? data : Buffer.concat(data as Buffer[]);
+    if (message.byteLength > 128) return false;
+    let value: { type?: unknown; value?: unknown } | null;
+    try {
+      value = JSON.parse(message.toString("utf8"));
+    } catch {
+      return false;
+    }
+    if (!value || value.type !== "spectating" || typeof value.value !== "boolean") return false;
+    if (sender.spectator !== value.value) {
+      this.log({ event: "spectating", room: room.id.slice(0, 8), user: sender.user, id: sender.id,
+        spectating: value.value });
+    }
+    for (const member of room.members.values()) {
+      if (member.id === sender.id && member.user === sender.user) member.spectator = value.value;
+    }
     return true;
   }
 
@@ -315,7 +366,7 @@ export class Relay {
     const sender = room.members.get(socket);
     if (!sender) return;
     if (!isBinary) {
-      if (sender.role === "host" && this.control(room, sender, data)) return;
+      if (sender.role === "host" ? this.control(room, sender, data) : this.memberControl(room, sender, data)) return;
       return close(socket, CloseCode.UnsupportedData, "binary frames only");
     }
     const message = data instanceof Buffer ? data : Buffer.concat(data as Buffer[]);

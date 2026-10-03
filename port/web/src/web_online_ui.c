@@ -52,6 +52,7 @@ unsigned char network_game_client_has_local_player(
 	struct network_game_client *client,
 	short local_player_index);
 unsigned char network_game_server_joinable_in_game(struct network_game_server *server);
+unsigned char network_game_server_watchable_in_game(struct network_game_server *server);
 unsigned char network_game_server_match_starting(struct network_game_server *server);
 unsigned char network_game_server_countdown_active(struct network_game_server *server);
 int config_boolean(const char *name);
@@ -126,6 +127,8 @@ static atomic_int web_online_spectating = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_spectate_name[WEB_ONLINE_SPECTATE_NAME_CHARACTERS];
 /* (the host) whether a machine could join its match now */
 static atomic_int web_online_match_joinable = ATOMIC_VAR_INIT(0);
+/* (the host) whether a spectator could join its match now */
+static atomic_int web_online_match_watchable = ATOMIC_VAR_INIT(0);
 /* (the host) its lobby has started the match, which is loading */
 static atomic_int web_online_match_starting = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_public_state = ATOMIC_VAR_INIT(_web_online_state_idle);
@@ -274,6 +277,14 @@ the match is on, not over, and has room */
 EMSCRIPTEN_KEEPALIVE int platform_web_online_match_joinable(void)
 {
 	return atomic_load_explicit(&web_online_match_joinable, memory_order_acquire);
+}
+
+/* (the host) whether a spectator joining now would enter the running match:
+the match is on, not over, and has room for another spectator, whether or
+not it has room for another player */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_match_watchable(void)
+{
+	return atomic_load_explicit(&web_online_match_watchable, memory_order_acquire);
 }
 
 /* (the host) its match has started and is loading: nobody can join yet */
@@ -708,6 +719,10 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 	atomic_store_explicit(&web_online_match_joinable,
 		global_network_game_server_get() &&
 			network_game_server_joinable_in_game(global_network_game_server_get()) ? 1 : 0,
+		memory_order_release);
+	atomic_store_explicit(&web_online_match_watchable,
+		global_network_game_server_get() &&
+			network_game_server_watchable_in_game(global_network_game_server_get()) ? 1 : 0,
 		memory_order_release);
 	atomic_store_explicit(&web_online_match_starting,
 		global_network_game_server_get() &&

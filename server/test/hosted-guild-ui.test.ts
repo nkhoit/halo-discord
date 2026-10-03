@@ -3,7 +3,8 @@
 /* The server-wide lobby's list (client/hosted.js in a DOM): polled only
    while nobody hosts here and the picker shows, each match with its host,
    channel, map, game type, players and state, joined with its button, and
-   full or other-version matches shown but not joinable. */
+   full or other-version matches shown but not joinable; a running match
+   with room for spectators watched (#52). */
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
 
@@ -42,6 +43,9 @@ const BOB = { roomId: "BobRoom0123456789abcd", host: "Bob", channel: null, map: 
   players: 16, capacity: 16, joinable: false, reason: "full" };
 const CAROL = { roomId: "CarolRoom0123456789ab", host: "Carol", channel: "Late", map: 3, mode: 0, state: "lobby",
   players: 1, capacity: 16, joinable: false, reason: "version" };
+/* (#52) a match with no room for players, but for spectators: watched */
+const DANA = { roomId: "DanaRoom0123456789abc", host: "Dana", channel: null, map: 9, mode: 0, state: "match",
+  players: 12, spectators: 2, capacity: 16, joinable: false, reason: "match", watchable: true };
 
 const entries = () => [...document.querySelectorAll<HTMLElement>("#hosted-guild-list li")].map((item) => ({
   host: item.querySelector(".hosted-guild-host")!.textContent,
@@ -81,7 +85,7 @@ describe("the server-wide lobby", () => {
   });
 
   it("lists the server's matches, and shows full or other-version ones as not joinable", async () => {
-    rooms = [ALICE, BOB, CAROL];
+    rooms = [ALICE, BOB, CAROL, DANA];
     polls.shift()!();
     await tick();
     expect(requests).toHaveLength(2);
@@ -91,6 +95,7 @@ describe("the server-wide lobby", () => {
       { host: "Alice · Squad A", what: "Blood Gulch · Team Slayer", players: "2/16", state: "In lobby", button: "Join", disabled: false },
       { host: "Bob", what: "Battle Creek · Capture the Flag", players: "16/16", state: "In match", button: "Full", disabled: true },
       { host: "Carol · Late", what: "Rat Race · Slayer", players: "1/16", state: "In lobby", button: "Different version", disabled: true },
+      { host: "Dana", what: "Blood Gulch · Slayer", players: "12/16 · 2 watching", state: "In match", button: "Watch", disabled: false },
     ]);
   });
 

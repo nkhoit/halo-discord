@@ -239,12 +239,78 @@ describe("membership", () => {
   });
 });
 
+describe("spectators (#52)", () => {
+  it("count apart from players, say when they play, and still reach the host", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST, { name: "Chief" });
+    await join(server.base, room, "guest", "user-a", GUEST_A);
+    const watcher = await join(server.base, room, "guest", "user-b", GUEST_B, { spectator: true });
+    expect(server.app.relay.summary(room)).toMatchObject({ players: 2, spectators: 1 });
+    host.socket.send(frame(Channel.Reliable, GUEST_B, undefined, 9));
+    await until(() => watcher.frames.length === 1);
+    watcher.socket.send(frame(Channel.Reliable, HOST, undefined, 4));
+    await until(() => host.frames.some((bytes) => bytes[7 + 8] === 4 || bytes[7] === 4));
+    watcher.socket.send(JSON.stringify({ type: "spectating", value: false }));
+    await until(() => server.app.relay.summary(room).spectators === 0);
+    expect(server.app.relay.summary(room)).toMatchObject({ players: 3, spectators: 0 });
+    expect(server.logs.find((entry) => entry.event === "spectating")).toMatchObject({ user: "user-b", spectating: false });
+    expect(watcher.socket.readyState).toBe(watcher.socket.OPEN);
+  });
+
+  it("are told by the host whether its running match takes them, until it ends or the host goes", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST, { name: "Chief" });
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: false, watchable: true }));
+    await until(() => server.app.relay.summary(room).watchable);
+    expect(server.app.relay.summary(room)).toMatchObject({ inMatch: true, joinable: false, watchable: true });
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: false, watchable: true }));
+    await until(() => !server.app.relay.summary(room).inMatch);
+    expect(server.app.relay.summary(room).watchable, "a lobby is joined, not watched").toBe(false);
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true, watchable: true }));
+    await until(() => server.app.relay.summary(room).watchable);
+    host.socket.close();
+    await until(() => server.app.relay.summary(room).host === null);
+    expect(server.app.relay.summary(room).watchable).toBe(false);
+  });
+
+  it("refuse the host's spectating and malformed spectating", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST);
+    const guest = await join(server.base, room, "guest", "user-a", GUEST_A, { spectator: true });
+    host.socket.send(JSON.stringify({ type: "spectating", value: true }));
+    expect((await host.closed).code).toBe(1003);
+    guest.socket.send(JSON.stringify({ type: "spectating", value: "yes" }));
+    expect((await guest.closed).code).toBe(1003);
+    const hostAgain = await join(server.base, room, "host", "user-h", HOST, { spectator: true });
+    expect(hostAgain.texts[0]).toMatchObject({ type: "ready" });
+    expect(server.app.relay.summary(room).spectators, "a host never watches").toBe(0);
+  });
+
+  it("use the room's sockets: a full room takes no spectator either", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST);
+    for (let index = 1; index < MAXIMUM_ROOM_SOCKETS; index++) {
+      await join(server.base, room, "guest", `user-${index}`, (0x030000000000 + index).toString(16).padStart(12, "0"),
+        { spectator: index % 2 === 0 });
+    }
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: true, watchable: true }));
+    await until(() => server.app.relay.summary(room).inMatch);
+    expect(server.app.relay.summary(room)).toMatchObject({ joinable: false, watchable: false,
+      players: MAXIMUM_ROOM_SOCKETS / 2 + 1, spectators: MAXIMUM_ROOM_SOCKETS / 2 - 1 });
+    const late = open(server.base, room, "guest");
+    await new Promise((resolve) => late.socket.once("open", resolve));
+    late.socket.send(JSON.stringify({ type: "auth", token: token("late"), id: "040000000000", build: "b1", spectator: true }));
+    expect(await late.closed).toEqual({ code: 4409, reason: "room full" });
+  });
+});
+
 describe("the host's phase", () => {
   it("lets the host say it is in a match, for the room's status", async () => {
     const room = newRoom();
     const host = await join(server.base, room, "host", "user-h", HOST, { name: "Chief" });
     const guest = await join(server.base, room, "guest", "user-a", GUEST_A);
-    expect(server.app.relay.summary(room)).toEqual({ host: "Chief", players: 2, inMatch: false, joinable: false });
+    expect(server.app.relay.summary(room)).toEqual({ host: "Chief", players: 2, spectators: 0, inMatch: false,
+      joinable: false, watchable: false });
     host.socket.send(JSON.stringify({ type: "phase", inMatch: true }));
     await until(() => server.app.relay.summary(room).inMatch);
     host.socket.send(frame(Channel.Reliable, GUEST_A, undefined, 7));
@@ -264,7 +330,8 @@ describe("the host's phase", () => {
     await join(server.base, room, "guest", "user-a", GUEST_A);
     host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: true }));
     await until(() => server.app.relay.summary(room).joinable);
-    expect(server.app.relay.summary(room)).toEqual({ host: "Chief", players: 2, inMatch: true, joinable: true });
+    expect(server.app.relay.summary(room)).toEqual({ host: "Chief", players: 2, spectators: 0, inMatch: true,
+      joinable: true, watchable: false });
     host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: false }));
     await until(() => !server.app.relay.summary(room).joinable);
     expect(server.app.relay.summary(room).inMatch).toBe(true);
