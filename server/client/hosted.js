@@ -179,6 +179,15 @@
   ].map(function(entry, index) {
     return { id: entry[0], label: entry[1], defaults: entry[2], index: index };
   });
+  /* The Discord Activity's defaults where they differ: Crouch on Left Ctrl
+     too, as in the desktop builds (Discord has no tab for Ctrl+W to close).
+     The page sets them through input.bindings; the game keeps its web
+     defaults. */
+  var ACTIVITY_DEFAULTS = { crouch: [224, 6] };
+
+  function defaultsOf(control, activity) {
+    return (activity && ACTIVITY_DEFAULTS[control.id] || control.defaults).slice();
+  }
 
   /* KeyboardEvent.code -> SDL scancode, and what the page calls the key */
   var KEYS = {};
@@ -230,8 +239,9 @@
     return KEY_LABELS[code] || "Key " + code;
   }
 
-  /* what a key, button or wheel turn would bind: { input } or { refused } */
-  function inputFromEvent(event) {
+  /* what a key, button or wheel turn would bind: { input } or { refused }. In
+     the Discord Activity, Ctrl alone binds; combinations never do. */
+  function inputFromEvent(event, activity) {
     if (!event) return { refused: "Nothing pressed" };
     if (event.type === "wheel") return { input: WHEEL };
     if (event.type === "mousedown" || event.type === "pointerdown") {
@@ -239,6 +249,9 @@
       return button >= 0 && button <= 4 ? { input: MOUSE_BUTTON + button + 1 } : { refused: "That button is not supported" };
     }
     var code = String(event.code || "");
+    if (activity && (code === "ControlLeft" || code === "ControlRight") && !event.metaKey && !event.altKey) {
+      return { input: KEYS[code].scancode };
+    }
     if (RESERVED_KEYS[code]) return { refused: RESERVED_KEYS[code] };
     if (event.ctrlKey || event.metaKey || event.altKey) return { refused: "Combinations with Ctrl, Alt or Cmd belong to the browser" };
     if (!KEYS[code]) return { refused: "That key is not supported" };
@@ -266,9 +279,13 @@
   }
 
   /* The settings, without the DOM (tests drive it). environment: storage,
-     and module(name) for the game's exports (none while it loads). */
+     module(name) for the game's exports (none while it loads), and
+     activity() (true in the Discord Activity: its defaults). A control's
+     inputs are stored only while they differ from the page's defaults, so a
+     player who never changed one follows the defaults of where they play. */
   function createInputSettings(environment) {
     var settings = { sensitivity: SENSITIVITY.fallback, invert: false, bindings: {} };
+    function activity() { return !!(environment.activity && environment.activity()); }
     try {
       var saved = JSON.parse(environment.storage.getItem(INPUT_STORAGE));
       if (saved && typeof saved === "object") {
@@ -298,7 +315,7 @@
     function inputsOf(id) {
       var control = CONTROLS.filter(function(entry) { return entry.id === id; })[0];
       if (!control) return [];
-      return (settings.bindings[id] || control.defaults).slice();
+      return (settings.bindings[id] || defaultsOf(control, activity())).slice();
     }
 
     /* the controls an input drives */
@@ -310,8 +327,9 @@
     function setInputs(id, inputs) {
       var control = CONTROLS.filter(function(entry) { return entry.id === id; })[0];
       if (!control) return;
-      var same = inputs.length === control.defaults.length &&
-        inputs.every(function(input, index) { return input === control.defaults[index]; });
+      var defaults = defaultsOf(control, activity());
+      var same = inputs.length === defaults.length &&
+        inputs.every(function(input, index) { return input === defaults[index]; });
       if (same) delete settings.bindings[id];
       else settings.bindings[id] = inputs.slice(0, MAXIMUM_BINDINGS);
     }
@@ -321,8 +339,11 @@
       var apply = environment.module("platform_web_apply_input_bindings");
       if (!bind || !apply) return false;
       CONTROLS.forEach(function(control) {
-        if (!settings.bindings[control.id]) return;
-        var inputs = settings.bindings[control.id].concat([0, 0, 0, 0]);
+        /* (the game has its web defaults: stage what differs from them) */
+        var inputs = settings.bindings[control.id] ||
+          (activity() && ACTIVITY_DEFAULTS[control.id] ? defaultsOf(control, true) : null);
+        if (!inputs) return;
+        inputs = inputs.concat([0, 0, 0, 0]);
         bind(control.index, inputs[0], inputs[1], inputs[2], inputs[3]);
       });
       return !!apply();
@@ -402,7 +423,7 @@
   global.HaloHostedUI = { createController: createController, surfaceFor: surfaceFor, MAPS: MAPS, MODES: MODES,
     isLockCooldown: isLockCooldown, pointerLock: null, createInputSettings: createInputSettings,
     inputFromEvent: inputFromEvent, inputLabel: inputLabel, sensitivityFromSlider: sensitivityFromSlider,
-    sliderFromSensitivity: sliderFromSensitivity, CONTROLS: CONTROLS };
+    sliderFromSensitivity: sliderFromSensitivity, CONTROLS: CONTROLS, ACTIVITY_DEFAULTS: ACTIVITY_DEFAULTS };
 
   var document = global.document;
   if (!document || typeof document.createElement !== "function" || !document.documentElement ||
@@ -445,9 +466,17 @@
 
   /* ---------- the DOM */
 
+  /* The Discord Activity's page (asked late: its meta follows this script) */
+  function activityPage() {
+    var location = global.location || {};
+    return !!(global.HaloActivity || document.querySelector('meta[name="halo-activity"]') ||
+      /[?&]frame_id=/.test(String(location.search || "")) || /^\/activity(\/|$)/.test(String(location.pathname || "")));
+  }
+
   var inputSettings = global.HaloHostedUI.inputSettings = createInputSettings({
     storage: global.localStorage,
     module: module,
+    activity: activityPage,
   });
   var DEFAULT_NOTICE = "Click + to add a key or mouse button to a control, or a key to remove it.";
   /* open: the overlay shows Settings; capturing: the control taking the next
@@ -562,7 +591,7 @@
     element("progress", { id: "hosted-map-loading-progress", max: "100", value: "0" }),
   ]);
   var lockNotice = element("div", { id: "hosted-lock-notice", hidden: true, role: "status" }, [
-    element("span", { text: global.HaloActivity || /[?&]frame_id=/.test(String(global.location && global.location.search)) ?
+    element("span", { text: activityPage() ?
       "Mouse capture was blocked by this Discord client; fully restart Discord (Quit from the tray) " +
         "and relaunch. Playing without mouse look." :
       "The browser refused mouse capture. Playing without mouse look." }),
@@ -604,6 +633,16 @@
   global.addEventListener("keyup", function(event) {
     if (event.key === "Escape" || event.code === "Escape" || event.key === "F11") event.stopImmediatePropagation();
   }, true);
+  /* (the Activity, the game holding the mouse, or played without it after
+     a refused capture) Ctrl crouches there, so no Ctrl combination may do
+     anything in the frame. The game still sees the keys. On Windows,
+     Discord's menu accelerators (Ctrl+R reloads Discord, Ctrl+Q quits it)
+     run only for keys the page leaves unhandled. */
+  global.addEventListener("keydown", function(event) {
+    if (event.ctrlKey && (document.pointerLockElement || controller.state.blocked) && activityPage()) {
+      event.preventDefault();
+    }
+  }, true);
 
   function toggleFullscreen() {
     try {
@@ -638,7 +677,7 @@
 
   function captured(event) {
     var id = settingsUi.capturing;
-    var result = inputFromEvent(event);
+    var result = inputFromEvent(event, activityPage());
     if (result.refused) {
       settingsUi.notice = result.refused + ". Pick another for " + controlLabel(id) + " (Esc cancels)";
       settingsUi.warning = true;

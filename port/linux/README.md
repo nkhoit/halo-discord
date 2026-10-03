@@ -119,7 +119,9 @@ to 4.
 One movement of the mouse wheel changes the weapon one time. A second
 movement after a short pause changes it again.
 
-These are the defaults. The setting `input.bindings` gives a control other
+These are the defaults. The web build crouches on C only (Ctrl+W closes a
+browser tab); the hosted page adds left ctrl back in the Discord Activity.
+The setting `input.bindings` gives a control other
 keys or mouse buttons (the hosted web page sets it from Settings in its
 Escape menu, and keeps it in the browser).
 
