@@ -16,8 +16,14 @@ one origin:
   batching.
 
 Nothing depends on how it is exposed: cloudflared, Caddy or a plain public
-port in front of `127.0.0.1:8090` all work. Design notes and measurements are
-in [websocket-relay-spike.md](websocket-relay-spike.md).
+port in front of `127.0.0.1:8090` all work. The design and its measurements are
+in [networking.md](networking.md).
+
+The commands below use these placeholders: `<your-domain>` for the public
+hostname (for example `halo.example.com`), `<APP_ID>` for the Discord
+application's ID (its `DISCORD_CLIENT_ID`), `<GUILD_ID>` for a Discord
+server's ID, `<TUNNEL_ID>` for the Cloudflare tunnel's ID, and `<user>` for
+the account on the server host that runs everything from `~/halo-discord`.
 
 ## How sessions travel
 
@@ -75,9 +81,9 @@ in [websocket-relay-spike.md](websocket-relay-spike.md).
 
   ```sh
   node tools/web/extract-ui-images.mjs ~/halo-discord/maps/ui.map ~/halo-discord/maps/ui
-  # on forge (no Node on the host), in any Node 22 image:
+  # on a host without Node, in any Node 22 image:
   sudo docker run --rm --user $(id -u):$(id -g) -v ~/halo-discord/maps:/maps \
-    -v "$PWD/tools/web":/tools --entrypoint node halo-lab /tools/extract-ui-images.mjs /maps/ui.map /maps/ui
+    -v "$PWD/tools/web":/tools --entrypoint node node:22 /tools/extract-ui-images.mjs /maps/ui.map /maps/ui
   ```
 - `server/.env`, copied from [`server/example.env`](../server/example.env).
   Never commit it.
@@ -95,9 +101,11 @@ chrome they hide; local development keeps upstream's shell as it is):
 - The room is the Activity instance's, or in a browser the address's
   `#room=` (made up on first visit, so the address is the invite link).
   The lobby polls the room: nobody hosting shows the map and game type
-  picker; a host in its lobby is joined at once, under the Discord name;
-  a host in a match shows "<host> is in a match; you'll join when it ends"
-  (the host tells the relay when its match starts and ends).
+  picker; a host in its lobby, or in a match that takes players, is joined
+  at once, under the Discord name ("Joining <host>'s match..." while the map
+  loads); while the host's match is starting or full the page shows
+  "<host> is in a match" (the host tells the relay when its match starts,
+  whether it takes players, and when it ends). The host can start alone.
 - In Halo's lobby a bar shows the room (the host's "Start match" presses A
   for it). In a match, whenever the game does not have the mouse an overlay
   offers Play/Resume, sound on/off and volume (kept in the browser), Game
@@ -155,39 +163,65 @@ or `docker compose -f compose.example.yaml up -d --build` (expects
 `DEV_LOGIN` does not work in a container (its `HOST` is not loopback), so a
 containerised server needs the Discord settings.
 
-On forge everything lives under `~/halo-discord` (`build/`, `maps/`,
-`server/`), the container is `halo-server` on network `halo-net`, and only
-those named resources are touched.
+A layout that works: everything under `~/halo-discord` (`build/`, `maps/`,
+`server/` with its `.env`), the container `halo-server` on the network
+`halo-net`. Other services on the host are never touched.
+
+## Update
+
+A new web build needs no restart: the page's asset versions are content
+hashes, so copying `halo.html`, `halo.js` and `halo.wasm` into
+`~/halo-discord/build/` is enough. A new server version (anything under
+`server/`, including `server/client/`) needs the image rebuilt and the
+container recreated with the same `.env`, mounts and settings:
+
+```sh
+cd ~/halo-discord/server                  # a copy of the repository's server/
+docker build -t halo-server .
+docker rm -f halo-server
+docker run -d --name halo-server --network halo-net --restart unless-stopped \
+  --env-file ~/halo-discord/server/.env -e HOST=0.0.0.0 -e PORT=8090 \
+  -e BUILD_DIR=/data/build -e MAPS_DIR=/data/maps \
+  -v ~/halo-discord/build:/data/build:ro -v ~/halo-discord/maps:/data/maps:ro \
+  -p 127.0.0.1:8090:8090 halo-server
+docker image prune -f                     # or remove the old image by its ID
+```
+
+Recreating the container closes every room; do it when nobody is playing
+(with `-e NETSTATS_UPLOAD=1`, the pages report a `netstats` line every five
+seconds to `docker logs halo-server`, which shows who is). Afterwards
+check `GET /healthz`, that the page answers 200, that the maps and
+`/v1/rooms/<id>` answer 401 without a session, and that the startup log line
+reads `"discord":true,"devLogin":false`.
 
 ## Discord application
 
-Reuse the probe application (1555066217545605222) or create a new one at
-<https://discord.com/developers/applications>.
+Create an application at <https://discord.com/developers/applications>.
 
-1. OAuth2 > Redirects: add `https://halo.runtimeexception.net/auth/callback`
+1. OAuth2 > Redirects: add `https://<your-domain>/auth/callback`
    (`PUBLIC_ORIGIN` + `/auth/callback`, exactly).
 2. OAuth2 > Client information: copy the Client ID; Reset Secret and copy
    it. Put them in `.env` as `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`.
 3. The Discord servers whose members may play: Discord > User Settings >
    Advanced > Developer Mode on, then right-click each server icon > Copy
-   Server ID. Set `DISCORD_GUILD_IDS` to those decimal IDs, comma-separated;
+   Server ID. Set `DISCORD_GUILD_IDS` to those decimal IDs
+   (`<GUILD_ID>,<GUILD_ID>`), comma-separated;
    whitespace is trimmed and duplicates are ignored. If that variable is
    unset, the legacy `DISCORD_GUILD_ID` accepts one server. A set-but-empty or
    malformed `DISCORD_GUILD_IDS` is an error and does not fall back.
 4. Installation: install the app to the Discord server (guild install), not
    to users. A user-installed app fails in servers with more than 25 members
    with "User-installed Apps require verification to use activities in
-   servers with more than 25 members". The probe app is guild-installed to
-   server 657604704875970560.
+   servers with more than 25 members".
 5. For the Activity: Activities > URL Mappings, root prefix `/` to target
-   `halo.runtimeexception.net` (the site root; Activity launches are told
-   apart by their `frame_id` query). The server allows the relay origin
-   `https://<DISCORD_CLIENT_ID>.discordsays.com` by itself.
+   `<your-domain>` (the site root; Activity launches are told apart by their
+   `frame_id` query). The server allows the relay origin
+   `https://<APP_ID>.discordsays.com` by itself.
 
 Production `.env` additions: `NODE_ENV=production`, `DEV_LOGIN=0`,
-`PUBLIC_ORIGIN=https://halo.runtimeexception.net`, a fresh `TOKEN_SECRET`
-(`openssl rand -base64 48`), and `TRUST_PROXY` to match the front end. On
-forge this file is `~/halo-discord/server/.env` (mode 600).
+`PUBLIC_ORIGIN=https://<your-domain>`, a fresh `TOKEN_SECRET`
+(`openssl rand -base64 48`), and `TRUST_PROXY` to match the front end. Keep
+the file at `~/halo-discord/server/.env` with mode 600.
 
 ## Discord Activity
 
@@ -250,9 +284,8 @@ browser profiles with the same `instance_id` play one match.
 
 ## Expose it: Cloudflare Tunnel (named, locally managed)
 
-No inbound ports; `cloudflared` dials out to Cloudflare. This is how forge is
-set up (cloudflared 2026.9.3 from Cloudflare's apt repo), following
-Cloudflare's
+No inbound ports; `cloudflared` dials out to Cloudflare. Install it from
+Cloudflare's apt repository and follow Cloudflare's
 [locally-managed tunnel guide](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/create-local-tunnel/):
 
 ```sh
@@ -261,34 +294,33 @@ curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
 sudo apt-get update && sudo apt-get install cloudflared
 
-cloudflared tunnel login                  # prints a URL; pick the runtimeexception.net zone
-cloudflared tunnel create halo            # note the UUID and credentials path
-cloudflared tunnel route dns halo halo.runtimeexception.net
+cloudflared tunnel login                  # prints a URL; pick the zone of <your-domain>
+cloudflared tunnel create halo            # note the tunnel ID and credentials path
+cloudflared tunnel route dns halo <your-domain>
 
 cat > ~/.cloudflared/halo.yml <<EOF
-tunnel: <UUID>
-credentials-file: /home/forge/.cloudflared/<UUID>.json
+tunnel: <TUNNEL_ID>
+credentials-file: /home/<user>/.cloudflared/<TUNNEL_ID>.json
 ingress:
-  - hostname: halo.runtimeexception.net
+  - hostname: <your-domain>
     service: http://127.0.0.1:8090
   - service: http_status:404
 EOF
 ```
 
-On forge the tunnel `halo` has id `58bb6d7a-2b1b-43bb-9abb-7a5eadcac383`.
-It runs under its own unit, `/etc/systemd/system/halo-cloudflared.service`,
+Run the tunnel under its own unit, `/etc/systemd/system/halo-cloudflared.service`,
 rather than the default `cloudflared.service`, so it cannot collide with
-other tunnels:
+other tunnels on the host:
 
 ```ini
 [Unit]
-Description=cloudflared tunnel for halo.runtimeexception.net
+Description=cloudflared tunnel for <your-domain>
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=forge
-ExecStart=/usr/bin/cloudflared --no-autoupdate --config /home/forge/.cloudflared/halo.yml tunnel run
+User=<user>
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /home/<user>/.cloudflared/halo.yml tunnel run
 Restart=on-failure
 RestartSec=5
 
@@ -311,7 +343,7 @@ which the server's 30 s protocol pings prevent.
 Point an A/AAAA record at the machine, open 80 and 443, and run Caddy with:
 
 ```
-halo.runtimeexception.net {
+<your-domain> {
 	reverse_proxy 127.0.0.1:8090
 }
 ```
@@ -367,14 +399,12 @@ docker rm -f halo-server && docker network rm halo-net && docker rmi halo-server
 rm -rf ~/halo-discord                      # build, maps, server copy and .env
 sudo systemctl disable --now halo-cloudflared && sudo rm /etc/systemd/system/halo-cloudflared.service && sudo systemctl daemon-reload
 cloudflared tunnel delete halo
-rm ~/.cloudflared/halo.yml ~/.cloudflared/58bb6d7a-2b1b-43bb-9abb-7a5eadcac383.json
+rm ~/.cloudflared/halo.yml ~/.cloudflared/<TUNNEL_ID>.json
 ```
 
-Then delete the `halo` CNAME in the runtimeexception.net DNS zone. The
-account has other tunnels (`unraid`, `runtimeexception.net`,
-`momobot-spectator`) and `~/.cloudflared` may hold their files: delete only
-the `halo` tunnel and the two files above, never the whole directory or
-`cert.pem`.
+Then delete the CNAME for `<your-domain>` in its DNS zone. If the account has
+other tunnels, `~/.cloudflared` may hold their files: delete only the `halo`
+tunnel and the two files above, never the whole directory or `cert.pem`.
 
 In the Discord Developer Portal remove the redirect URI (and the URL mapping
 if one was added), and reset the client secret.
