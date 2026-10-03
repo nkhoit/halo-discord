@@ -26,8 +26,9 @@ game's text uses outside of its own font tables.
 /* The optimizer recognizes a loop counting to a terminator as wcslen and
 calls the C library's, which counts the host's 32-bit wchar_t whatever
 -fshort-wchar says: lengths came out wrong in the web build (an icon name of
-8 characters measured 52, so "%b-button" never matched; #34). Functions with
-such a loop are kept from becoming library calls. */
+8 characters measured 52, so "%b-button" never matched, #34; a formatted
+number ran on past its end, so "Picked up 8 rounds for..." stopped at the
+8, #32). Functions with such a loop are kept from becoming library calls. */
 #if defined(__clang__)
 #define WIDE_NO_BUILTIN __attribute__((no_builtin))
 #elif defined(__GNUC__)

@@ -41,6 +41,9 @@ try {
     block(wide, 'wint_t msvc_towlower'),
     block(wide, 'int msvc_wcsnicmp'),
     '#define wcslen msvc_wcslen',
+    'typedef int BOOL;\n#define TRUE 1\n#define FALSE 0',
+    block(wide, 'static size_t narrow_to_wide'),
+    between(wide, '/* ---------- formatted output */', 'int msvc_vswprintf').replace(/int msvc_vswprintf$/, ''),
   ].join('\n\n') + '\n');
   const widget = fs.readFileSync(path.join(root, 'source/interface/ui_widget.c'), 'utf8').replace(/\r\n/g, '\n');
   const names = between(widget, 'static wchar_t const *icon_names[NUMBER_OF_ICON_TYPES] =', '};')
@@ -54,7 +57,8 @@ try {
   const cc = process.env.CC || 'cc';
   const web = /emcc/.test(path.basename(cc));
   const output = path.join(temp, web ? 'wide-test.js' : 'wide-test');
-  const build = spawnSync(cc, ['-O2', '-fshort-wchar', '-std=gnu99', '-w', '-iquote', temp,
+  const build = spawnSync(cc, ['-O2', '-fshort-wchar', '-std=gnu11', '-fms-extensions', '-fno-strict-aliasing', '-fwrapv',
+    '-fno-delete-null-pointer-checks', '-ffp-contract=off', '-w', '-iquote', temp,
     path.join(__dirname, 'msvc_wide_test.c'), '-o', output], {encoding: 'utf8', shell: process.platform === 'win32'});
   assert.equal(build.status, 0, build.stdout + build.stderr);
   const run = spawnSync(web ? process.execPath : output, web ? [output] : [], {encoding: 'utf8'});
