@@ -27,6 +27,7 @@ interface Controller {
 interface HostedUi {
   createController(environment: { storage: Storage; applyAudio(muted: boolean, volume: number): void }): Controller;
   surfaceFor(view: string): string;
+  isLockCooldown(error: unknown): boolean;
 }
 
 function load(): HostedUi {
@@ -85,6 +86,19 @@ describe("the overlay", () => {
     expect(controller.lock).toEqual({ requests: 2, successes: 1, failures: 1 });
     controller.pointerLock(false);
     expect(controller.overlay()).toBe("paused");
+  });
+
+  it("tells Chrome's re-lock cooldown after Escape from a refusal", () => {
+    const { isLockCooldown } = load();
+    const error = (name: string, message: string) => Object.assign(new Error(message), { name });
+    expect(isLockCooldown(error("SecurityError",
+      "Pointer lock cannot be acquired immediately after the user has exited the lock."))).toBe(true);
+    expect(isLockCooldown(error("NotAllowedError", "denied"))).toBe(false);
+    expect(isLockCooldown(error("WrongDocumentError", "The root document of this element is not valid for pointer lock.")))
+      .toBe(false);
+    expect(isLockCooldown(error("SecurityError", "The user has exited the lock before this request was completed.")))
+      .toBe(false);
+    expect(isLockCooldown(null)).toBe(false);
   });
 
   it("puts the lobby's views on a panel or a bar", () => {
