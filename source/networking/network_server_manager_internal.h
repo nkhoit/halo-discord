@@ -115,6 +115,11 @@ void network_game_server_late_machine_joined(
 boolean network_game_server_late_machine_loaded(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *client_machine);
+void network_game_server_set_start_requested(
+	struct network_game_server *server,
+	boolean requested);
+boolean network_game_join_in_progress_enabled(
+	void);
 #endif
 /* ---------- globals */
 

@@ -2232,7 +2232,13 @@ static boolean network_game_server_handle_message_client_game_start_request(
 			&packet_version,
 			_network_game_packet_class_client_pregame))
 		{
+#ifdef HALO_LINUX
+			network_game_server_set_start_requested(server, TRUE);
+#endif
 			network_game_server_update_countdown(server, game_start_request.request_type);
+#ifdef HALO_LINUX
+			network_game_server_set_start_requested(server, FALSE);
+#endif
 		}
 		else
 		{
