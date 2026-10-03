@@ -65,7 +65,7 @@ describe("the server-wide lobby", () => {
     await until(() => server.app.relay.rooms.get(alice.roomId)?.map === 3);
     expect((await list(bob.token)).rooms).toEqual([{
       roomId: alice.roomId, host: "alice", channel: "Alpha squad", map: 3, mode: 1, state: "lobby",
-      players: 1, capacity: 16, joinable: true, reason: null,
+      players: 1, spectators: 0, capacity: 16, joinable: true, reason: null, watchable: false,
     }]);
     expect((await list(alice.token)).rooms, "not your own room").toEqual([]);
 
@@ -74,9 +74,15 @@ describe("the server-wide lobby", () => {
     await until(() => host.texts.some((text) => text.type === "peer-up"));
     expect((await list(bob.token)).rooms[0]).toMatchObject({ players: 2 });
 
-    phase(host, { inMatch: true, joinable: true, state: "match", map: 3, mode: 1 });
+    phase(host, { inMatch: true, joinable: true, watchable: true, state: "match", map: 3, mode: 1 });
     await until(() => server.app.relay.rooms.get(alice.roomId)?.state === "match");
-    expect((await list(bob.token)).rooms[0]).toMatchObject({ state: "match", joinable: true, channel: null });
+    expect((await list(bob.token)).rooms[0]).toMatchObject({ state: "match", joinable: true, watchable: true, channel: null });
+    const dave = await signIn("dave", B);
+    await connect(alice.roomId, "guest", dave.token, "020000000004");
+    phase(host, { inMatch: true, joinable: false, watchable: true, state: "match" });
+    await until(() => !server.app.relay.rooms.get(alice.roomId)?.joinable);
+    expect((await list(bob.token)).rooms[0], "a full match is still watched").toMatchObject({ joinable: false,
+      reason: "match", watchable: true });
     phase(host, { inMatch: true, joinable: false, state: "starting" });
     await until(() => server.app.relay.rooms.get(alice.roomId)?.state === "starting");
     expect((await list(bob.token)).rooms[0]).toMatchObject({ state: "starting", joinable: false, reason: "match" });

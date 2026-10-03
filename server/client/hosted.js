@@ -43,6 +43,8 @@
      next match's picker. */
   var PANEL_VIEWS = ["checking", "pick", "joining", "joining-match", "wait-match", "wait-retry", "host-starting"];
   var BAR_VIEWS = ["hosting", "joined", "postgame"];
+  /* (a spectator stays in the room through these) */
+  var WATCHED_VIEWS = ["spectating", "match", "joined", "postgame"];
 
   function surfaceFor(view, playedMatch) {
     if (view === "hosting" && playedMatch) return "panel";
@@ -73,7 +75,8 @@
     }
     /* blocked: the browser refused the mouse (some Discord clients do);
        play goes on without mouse look rather than behind the overlay */
-    var state = { presented: false, view: "booting", locked: false, everLocked: false, blocked: false };
+    var state = { presented: false, view: "booting", locked: false, everLocked: false, blocked: false,
+      spectateMenu: false, watched: false };
     var lock = { requests: 0, successes: 0, failures: 0 };
 
     function saveAudio() {
@@ -94,6 +97,9 @@
          (released: Escape, a switch to another window, a dialog). In Halo's
          lobby the bar is the UI and a click on the game takes the mouse. */
       overlay: function() {
+        /* (a spectator, #52: the mouse stays free, clicks pick whom to watch;
+           its menu offers Join, and comes back on Escape) */
+        if (state.view === "spectating") return state.presented && state.spectateMenu ? "spectate" : "none";
         if (!state.presented || state.view !== "match" || state.locked || state.blocked) return "none";
         return state.everLocked ? "paused" : "play";
       },
@@ -108,8 +114,17 @@
       showMenu: function() { state.blocked = false; },
       update: function(presented, view) {
         state.presented = !!presented;
+        /* (first watching a match in this room: its menu, Join or Spectate;
+           the next matches only on Escape, the lobby's bar has Join) */
+        if (view === "spectating" && !state.watched) {
+          state.spectateMenu = true;
+          state.watched = true;
+        } else if (WATCHED_VIEWS.indexOf(view) < 0) {
+          state.watched = false;
+        }
         state.view = view;
       },
+      spectateMenu: function(open) { state.spectateMenu = !!open; },
       pointerLock: function(locked) {
         if (locked && !state.locked) lock.successes++;
         state.locked = !!locked;
@@ -544,6 +559,7 @@
     element("span", { id: "hosted-bar-text" }),
     element("button", { type: "button", id: "hosted-start", class: "primary", hidden: true, text: "Start match" }),
     element("button", { type: "button", id: "hosted-next", class: "primary", hidden: true, text: "Next match" }),
+    element("button", { type: "button", id: "hosted-bar-join", class: "primary", hidden: true, text: "Join" }),
     element("button", { type: "button", id: "hosted-bar-share", hidden: true, text: "Copy invite link" }),
     element("button", { type: "button", id: "hosted-bar-leave", text: "Leave" }),
   ]);
@@ -551,6 +567,8 @@
     "aria-labelledby": "hosted-overlay-title" }, [
     element("div", { class: "hosted-overlay-card", id: "hosted-overlay-main" }, [
       element("h2", { id: "hosted-overlay-title", text: "Click to play" }),
+      element("p", { id: "hosted-overlay-text", hidden: true }),
+      element("button", { type: "button", id: "hosted-spectate-join", class: "primary", hidden: true, text: "Join" }),
       element("button", { type: "button", id: "hosted-resume", class: "primary", text: "Play" }),
       element("div", { class: "hosted-audio" }, [
         element("button", { type: "button", id: "hosted-mute", "aria-pressed": "false", text: "Sound on" }),
@@ -561,7 +579,7 @@
         element("button", { type: "button", id: "hosted-settings-open", text: "Settings" }),
         element("button", { type: "button", id: "hosted-leave", text: "Leave game" }),
       ]),
-      element("p", { class: "hosted-hint", text: "Esc releases the mouse · F11 full screen · F8 frame cap" }),
+      element("p", { id: "hosted-overlay-hint", class: "hosted-hint" }),
     ]),
     element("div", { class: "hosted-overlay-card hosted-settings", id: "hosted-settings", hidden: true,
       role: "group", "aria-labelledby": "hosted-settings-title" }, [
@@ -590,6 +608,10 @@
     element("span", { id: "hosted-map-loading-label" }),
     element("progress", { id: "hosted-map-loading-progress", max: "100", value: "0" }),
   ]);
+  var spectateLabel = element("div", { id: "hosted-spectate", hidden: true, role: "status" }, [
+    element("span", { id: "hosted-spectate-name" }),
+    element("span", { class: "hosted-hint", text: "Click: next player · Right-click: previous · Esc: menu" }),
+  ]);
   var lockNotice = element("div", { id: "hosted-lock-notice", hidden: true, role: "status" }, [
     element("span", { text: activityPage() ?
       "Mouse capture was blocked by this Discord client; fully restart Discord (Quit from the tray) " +
@@ -598,7 +620,7 @@
     element("button", { type: "button", id: "hosted-lock-retry", text: "Retry" }),
     element("button", { type: "button", id: "hosted-lock-menu", text: "Menu" }),
   ]);
-  var root = element("div", { id: "hosted-ui" }, [panel, bar, overlay, mapLoading, lockNotice]);
+  var root = element("div", { id: "hosted-ui" }, [panel, bar, overlay, mapLoading, spectateLabel, lockNotice]);
 
   function byId(id) { return document.getElementById(id); }
 
@@ -622,6 +644,9 @@
         render();
       } else if (controller.state.blocked && !event.repeat) {
         controller.showMenu();
+        render();
+      } else if (status.view === "spectating" && !event.repeat) {
+        controller.spectateMenu(!controller.state.spectateMenu);
         render();
       }
     } else if (event.key === "F11" && !event.repeat) {
@@ -855,12 +880,26 @@
     }
   }
 
+  function resumeAudio() {
+    controller.applyAudio();
+    if (!controller.audio.muted && typeof global.resumeBrowserAudio === "function") global.resumeBrowserAudio();
+  }
+
   function play() {
     lockAttempt.retried = false;
     global.clearTimeout(lockAttempt.retryTimer);
     requestLock();
-    controller.applyAudio();
-    if (!controller.audio.muted && typeof global.resumeBrowserAudio === "function") global.resumeBrowserAudio();
+    resumeAudio();
+  }
+
+  /* (a spectator) its player joins the match (or its lobby's next one): from
+     then on it plays as everyone does */
+  function spectatorJoin() {
+    if (!global.HaloOnline || typeof global.HaloOnline.spectatorJoin !== "function") return;
+    controller.spectateMenu(false);
+    if (global.HaloOnline.spectatorJoin() && status.view === "spectating") play();
+    else resumeAudio();
+    render();
   }
 
   /* (the host) the match starts: Halo's own start request, whatever its lobby
@@ -924,7 +963,14 @@
       render();
     });
     byId("hosted-next").addEventListener("click", function() { press(BUTTON.A); });
-    byId("hosted-resume").addEventListener("click", play);
+    byId("hosted-resume").addEventListener("click", function() {
+      if (status.view !== "spectating") return play();
+      controller.spectateMenu(false);
+      resumeAudio();
+      render();
+    });
+    byId("hosted-spectate-join").addEventListener("click", spectatorJoin);
+    byId("hosted-bar-join").addEventListener("click", spectatorJoin);
     byId("hosted-menu").addEventListener("click", function() {
       play();
       global.setTimeout(function() { press(BUTTON.START); }, 100);
@@ -951,7 +997,23 @@
     byId("hosted-share").addEventListener("click", function(event) { share(status.shareUrl, event.currentTarget); });
     byId("hosted-bar-share").addEventListener("click", function(event) { share(status.shareUrl, event.currentTarget); });
     var canvas = byId("canvas");
-    if (canvas) canvas.addEventListener("click", function() { if (!document.pointerLockElement) play(); });
+    if (canvas) {
+      canvas.addEventListener("click", function() {
+        if (status.view !== "spectating" && !document.pointerLockElement) play();
+      });
+      /* (a spectator) left: the next player, right: the previous */
+      canvas.addEventListener("mousedown", function(event) {
+        if (status.view !== "spectating" || (event.button !== 0 && event.button !== 2)) return;
+        if (global.HaloOnline && typeof global.HaloOnline.spectateCycle === "function") {
+          global.HaloOnline.spectateCycle(event.button === 2 ? -1 : 1);
+        }
+        resumeAudio();
+        render();
+      });
+      canvas.addEventListener("contextmenu", function(event) {
+        if (status.view === "spectating") event.preventDefault();
+      });
+    }
     document.addEventListener("pointerlockchange", function() {
       var locked = document.pointerLockElement === canvas;
       if (locked) {
@@ -1044,9 +1106,11 @@
     var list = byId("hosted-guild-list");
     while (list.firstChild) list.removeChild(list.firstChild);
     guildList.rooms.forEach(function(room) {
-      var reason = room.joinable ? null : (GUILD_REASONS[room.reason] || "Can't join now");
+      /* (a running match is watched first, #52: Join adds the player there) */
+      var watch = room.state === "match" && (room.joinable || room.watchable);
+      var reason = room.joinable || watch ? null : (GUILD_REASONS[room.reason] || "Can't join now");
       var join = element("button", { type: "button", class: "hosted-guild-join" + (reason ? "" : " primary"),
-        text: reason || "Join" });
+        text: reason || (watch ? "Watch" : "Join") });
       join.disabled = !!reason;
       if (reason) join.title = reason;
       join.addEventListener("click", function() {
@@ -1059,7 +1123,8 @@
         element("span", { class: "hosted-guild-host",
           text: String(room.host || "Someone") + (room.channel ? " · " + room.channel : "") }),
         element("span", { class: "hosted-guild-what", text: guildRoomLabel(room) }),
-        element("span", { class: "hosted-guild-players", text: (room.players || 0) + "/" + (room.capacity || 16) }),
+        element("span", { class: "hosted-guild-players", text: (room.players || 0) + "/" + (room.capacity || 16) +
+          (room.spectators ? " · " + room.spectators + " watching" : "") }),
         element("span", { class: "hosted-guild-state", text: GUILD_STATES[room.state] || "" }),
         join,
       ]));
@@ -1155,11 +1220,15 @@
     if (status.view === "hosting") {
       text("hosted-bar-text", "Your lobby · " + settingsLabel(status.settings) + " · " + players(status.playerCount || 1));
     } else if (status.view === "joined") {
-      text("hosted-bar-text", lobby.playedMatch ? "Waiting for " + host + " to pick the next match…" :
-        "In " + host + "'s lobby · waiting for " + host + " to start");
+      text("hosted-bar-text", (status.spectating ? "Spectating · " : "") +
+        (lobby.playedMatch ? "Waiting for " + host + " to pick the next match…" :
+          "In " + host + "'s lobby · waiting for " + host + " to start"));
     } else if (status.view === "postgame") {
-      text("hosted-bar-text", status.role === "host" ? "Match over" : "Match over · waiting for " + host);
+      text("hosted-bar-text", status.role === "host" ? "Match over" :
+        (status.spectating ? "Spectating · " : "") + "Match over · waiting for " + host);
     }
+    show(byId("hosted-bar-join"), !!status.spectating && !status.spectatorJoining &&
+      (status.view === "joined" || status.view === "postgame"));
     show(byId("hosted-start"), status.view === "hosting");
     show(byId("hosted-next"), status.view === "postgame" && status.role === "host");
     show(byId("hosted-bar-share"), status.view === "hosting" && !!status.shareUrl);
@@ -1175,9 +1244,20 @@
     show(byId("hosted-settings"), settingsUi.open);
     if (settingsUi.open) renderSettings();
     show(lockNotice, controller.state.blocked && status.view === "match");
-    text("hosted-overlay-title", mode === "paused" ? "Paused" : "Click to play");
-    text("hosted-resume", mode === "paused" ? "Resume" : "Play");
+    var watching = mode === "spectate";
+    text("hosted-overlay-title", watching ? host + "'s match" : mode === "paused" ? "Paused" : "Click to play");
+    show(byId("hosted-overlay-text"), watching);
+    text("hosted-overlay-text", status.spectatorJoining ? "Joining the match…" :
+      "You're spectating. Join to play, or keep watching.");
+    show(byId("hosted-spectate-join"), watching && !status.spectatorJoining);
+    text("hosted-resume", watching ? "Spectate" : mode === "paused" ? "Resume" : "Play");
+    byId("hosted-resume").classList.toggle("primary", !watching);
+    text("hosted-overlay-hint", watching ? "Esc shows this menu · F11 full screen" :
+      "Esc releases the mouse · F11 full screen · F8 frame cap");
     show(byId("hosted-menu"), status.view === "match");
+    show(spectateLabel, presented && status.view === "spectating" && !watching);
+    text("hosted-spectate-name", status.spectatorJoining ? "Joining the match…" :
+      status.spectated ? "Spectating " + status.spectated : "Spectating");
     show(byId("hosted-leave"), status.role === "host" || status.role === "guest");
     text("hosted-leave", status.role === "host" ? "End game" : "Leave game");
     var mute = byId("hosted-mute");

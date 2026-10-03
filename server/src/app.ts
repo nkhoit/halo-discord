@@ -394,7 +394,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
   });
 
   /* Browsers cannot set headers on a WebSocket, so the token arrives in the
-     first message: {type: "auth", token, id, build}. */
+     first message: {type: "auth", token, id, build, spectator?}. */
   function authenticate(socket: WebSocket, roomId: string, query: NonNullable<ReturnType<typeof parseSocketQuery>>,
       context: SocketContext) {
     const deadline = setTimeout(() => socket.close(CloseCode.Unauthorized, "authentication timed out"),
@@ -402,7 +402,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     socket.once("close", () => clearTimeout(deadline));
     socket.once("message", (data, isBinary) => {
       clearTimeout(deadline);
-      let message: { type?: unknown; token?: unknown; id?: unknown; build?: unknown } | null = null;
+      let message: { type?: unknown; token?: unknown; id?: unknown; build?: unknown; spectator?: unknown } | null = null;
       if (!isBinary) {
         try {
           message = JSON.parse(data.toString());
@@ -420,6 +420,8 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       Object.assign(context, { user: session.sub, id: message.id });
       relay.join(socket, roomId, {
         user: session.sub, name: session.name, id: message.id, role: query.role, kind: query.kind,
+        /* (a guest that joins to watch) */
+        spectator: query.role === "guest" && message.spectator === true,
       }, message.build, accessOf(session, roomId));
     });
   }

@@ -287,6 +287,19 @@ with `frame_id`, `instance_id` and friends in the query; that document gets:
   ids stay unguessable HMACs; the list shows them only to members of the same
   server. Activity participation itself is not verified with Discord (any
   member of the server who learns an instance id gets its room).
+- Spectators: whoever opens a room (or picks it from the server's list)
+  while its match runs watches it first, with Join (add their player, as a
+  late joiner's) or Spectate. A spectator sees the watched player's own
+  view and HUD under "Spectating <name>"; the mouse stays free, a left or
+  right click watches the next or previous player, and Escape brings the
+  menu back. Between matches the lobby's bar offers Join too. On the relay
+  a spectator is a guest whose auth message says `"spectator": true`, and
+  `{"type":"spectating","value":false}` once it joins. The room counts
+  players and spectators separately (`GET /v1/rooms/<id>`, the server's
+  list), and a spectator still takes one of the room's connections. The
+  host's phase message says whether its match takes spectators now
+  (`watchable`: running, and fewer than 8 spectators), so a match full of
+  players can still be watched.
 
 Expectations and limits:
 

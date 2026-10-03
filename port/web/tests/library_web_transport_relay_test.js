@@ -251,6 +251,29 @@ const states = [];
   HaloWebTransport.disconnectAll();
   assert.equal(batching, 0);
 
+  // (#52) A spectator says so in its auth, and tells the room when it plays.
+  let watching = true;
+  HaloWebTransport.configure({
+    relay: { url: 'https://relay.test/', sockets: 2, roomId: 'room-3', role: 'guest', rooms: true,
+      auth: { getToken: () => 'session-token', build: 'web-1', spectator: () => watching } },
+    onRelayPeer() {},
+  });
+  HaloWebTransport.setRelaySpectating(false);
+  HaloWebTransport.openRelay();
+  const [watchReliable, watchUnreliable] = sockets.slice(-2);
+  watchReliable.open();
+  watchUnreliable.open();
+  assert.deepEqual(watchReliable.texts, [{ type: 'auth', token: 'session-token', id: HOST, build: 'web-1', spectator: true }]);
+  assert.equal(watchUnreliable.texts[0].spectator, true, 'on each socket');
+  watchReliable.text({ type: 'ready', self: { id: HOST }, peers: [] });
+  watching = false;
+  HaloWebTransport.setRelaySpectating(false);
+  assert.deepEqual(watchReliable.texts.at(-1), { type: 'spectating', value: false });
+  assert.equal(watchUnreliable.texts.length, 1, 'once, on the reliable socket');
+  HaloWebTransport.disconnectAll();
+  HaloWebTransport.setRelaySpectating(true);
+  assert.equal(watchReliable.texts.length, 2, 'nothing without a room');
+
   console.log('library_web_transport relay tests passed');
 })().catch(error => {
   console.error(error);

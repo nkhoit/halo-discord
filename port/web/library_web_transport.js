@@ -1199,9 +1199,10 @@ addToLibrary({
              first message, and the relay answers it with "ready". */
           var auth = relay.options.auth;
           if (auth) {
-            socket.send(JSON.stringify({
-              type: 'auth', token: auth.getToken(), id: identifier, build: auth.build,
-            }));
+            var hello = { type: 'auth', token: auth.getToken(), id: identifier, build: auth.build };
+            /* (a guest that watches the match without a player, #52) */
+            if (typeof auth.spectator === 'function' && auth.spectator()) hello.spectator = true;
+            socket.send(JSON.stringify(hello));
           }
           runtime.relaySyncAll();
         };
@@ -1749,6 +1750,17 @@ addToLibrary({
           relay.phaseDetails = details || null;
           relay.phaseDetailsKey = detailsKey;
           runtime.relaySendPhase(relay);
+        },
+        /* (a spectator) it plays now (false), or watches again (true): the
+           room counts it so (the next connection says so in its auth) */
+        setRelaySpectating: function(spectating) {
+          var relay = runtime.relay;
+          if (!relay || !relay.ready || !relay.reliable) return;
+          try {
+            relay.reliable.send(JSON.stringify({ type: 'spectating', value: !!spectating }));
+          } catch (error) {
+            /* closing: the next connection's auth says it */
+          }
         },
         addPeer: function(options) { return runtime.addPeer(options); },
         handleSignal: function(peerId, signal) { return runtime.handleSignal(peerId, signal); },

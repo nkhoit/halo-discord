@@ -48,6 +48,8 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
     windowListeners: {}, customizations: [], phases: [], replaced: [], assigned: [], configured_matches: [],
     joinable: false, joinablePhases: [], joinInProgress: [], matchJoinable: 0, matchStarting: 0,
     guildRooms: [], details: [], delays: [],
+    watchable: false, matchWatchable: 0, spectate: [], gameSpectating: 0, spectated: 'Alice', cycles: [],
+    relaySpectating: [],
   };
   const elements = page.elements;
   const styleInputs = ['sage', 'red'].map(value => element({ checked: value === 'sage', value }));
@@ -74,7 +76,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
       page.fetches.push(String(url));
       if (/\/v1\/rooms\//.test(url)) {
         return json(200, { host: page.roomHost, players: page.roomHost ? 1 : 0, inMatch: page.inMatch,
-          joinable: page.joinable });
+          joinable: page.joinable, watchable: page.watchable });
       }
       if (/\/v1\/guild-rooms\?build=test-build$/.test(url)) return json(200, { rooms: page.guildRooms });
       if (/\/auth\/session$/.test(url)) {
@@ -107,6 +109,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
         if (page.joinablePhases.at(-1) !== joinable) page.joinablePhases.push(joinable);
         if (JSON.stringify(page.details.at(-1)) !== JSON.stringify(details)) page.details.push(details);
       },
+      setRelaySpectating(value) { page.relaySpectating.push(value); },
     },
     history: { replaceState(state, title, url) { page.replaced.push(url); location.hash = url; } },
     localStorage: { getItem: () => null, setItem() {} },
@@ -123,6 +126,11 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
       _platform_web_online_set_join_in_progress: enabled => { page.joinInProgress.push(enabled); return 1; },
       _platform_web_online_match_joinable: () => page.matchJoinable,
       _platform_web_online_match_starting: () => page.matchStarting,
+      _platform_web_online_match_watchable: () => page.matchWatchable,
+      _platform_web_online_set_spectate: value => { page.spectate.push(value); return 1; },
+      _platform_web_online_spectating: () => page.gameSpectating,
+      _platform_web_spectate_target_name: index => page.spectated.charCodeAt(index) || 0,
+      _platform_web_spectate_cycle: direction => { page.cycles.push(direction); return 1; },
     },
     navigator: {},
     URL,
@@ -196,6 +204,8 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   assert.equal(guest.relay.role, 'guest');
   assert.equal(guest.relay.url, 'https://123.discordsays.com');
   assert.equal(guest.relay.auth.getToken(), 'session-token');
+  assert.deepEqual(page.spectate, [0], 'a lobby is joined to play');
+  assert.equal(guest.relay.auth.spectator(), false);
   assert(!page.fetches.some(url => /auth\/login/.test(url)), 'no OAuth redirect inside the Activity');
   assert.equal(page.status().view, 'joining');
   assert.equal(page.elements['online-dialog'].open, false);
@@ -277,19 +287,44 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   await settle();
   assert.equal(late.status().view, 'wait-match', 'a match that takes nobody now is waited for');
   assert.equal(late.relayOpened, 0);
-  late.joinable = true;
+  /* (#52) a match full of players, with room for a spectator: watched */
+  late.watchable = true;
   await late.tick();
   await settle();
-  assert.equal(late.relayOpened, 1, 'a match that takes players is joined at once');
+  assert.equal(late.relayOpened, 1, 'a running match is joined at once');
   assert.equal(late.status().view, 'joining-match', '"Joining Alice\'s match…" while it loads');
   assert.equal(late.status().host, 'Alice');
+  assert.deepEqual(late.spectate, [1], 'a running match is watched first');
   const lateGuest = late.configured.at(-1);
+  assert.equal(lateGuest.relay.auth.spectator(), true, 'the relay counts it as a spectator');
   lateGuest.onRelayPeer({ peerId: 'relay-020000000002', identifier: '020000000002', name: 'Alice', role: 'host' });
   lateGuest.onStateChange({ peerId: 'relay-020000000002', state: 'connected' });
   late.gameState = 6;
   late.clientState = 3;
+  late.gameSpectating = 1;
+  late.poll();
+  assert.equal(late.status().view, 'spectating', 'watching the match without a player');
+  assert.equal(late.status().spectating, true);
+  assert.equal(late.status().spectated, 'Alice', 'whom it watches, for the label');
+  assert.equal(late.status().spectatorJoining, false);
+  assert.equal(late.context.HaloOnline.spectateCycle(-1), true);
+  assert.equal(late.context.HaloOnline.spectateCycle(1), true);
+  assert.deepEqual(late.cycles, [-1, 1], 'clicks pick whom to watch');
+  assert.equal(late.context.HaloOnline.spectatorJoin(), true, 'Join adds its player');
+  assert.deepEqual(late.spectate, [1, 0]);
+  assert.deepEqual(late.relaySpectating, [false], 'the relay counts it as a player from now on');
+  assert.equal(lateGuest.relay.auth.spectator(), false, 'and a reconnection says so');
+  assert.equal(late.status().spectatorJoining, true, '"Joining the match…" until the game adds the player');
+  assert.equal(late.context.HaloOnline.spectatorJoin(), false, 'once');
+  late.gameSpectating = 0;
   late.poll();
   assert.equal(late.status().view, 'match', 'in the match once its player is in');
+  assert.equal(late.status().spectating, false);
+  assert.equal(late.context.HaloOnline.spectateCycle(1), false, 'a player cycles nobody');
+
+  /* the host never watches */
+  await late.context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
+  assert.deepEqual(late.spectate, [1, 0, 0]);
 
   const hosting = load({ activity: true });
   hosting.context.HaloOnline.runtimeReady();
@@ -303,6 +338,7 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   hosting.matchStarting = 0;
   hosting.clientState = 3;
   hosting.matchJoinable = 1;
+  hosting.matchWatchable = 1;
   hosting.poll();
   hosting.matchJoinable = 0;
   hosting.poll();
@@ -314,7 +350,10 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   assert.deepEqual(hosting.details.map(details => details.state), ['lobby', 'starting', 'match', 'postgame'],
     'the server-wide list follows the host\'s match');
   assert.deepEqual(JSON.parse(JSON.stringify(hosting.details[0])),
-    { state: 'lobby', map: 0, mode: 0, channel: 'Squad A' }, 'with its map, game type and voice channel');
+    { state: 'lobby', map: 0, mode: 0, watchable: false, channel: 'Squad A' },
+    'with its map, game type and voice channel');
+  assert.deepEqual(hosting.details.map(details => details.watchable), [false, false, true, false],
+    'spectators may join while the match runs');
 
   /* ---------- the server-wide lobby (#21) */
   const visitor = load({ activity: true });
@@ -338,6 +377,8 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   const visiting = visitor.configured.at(-1);
   assert.equal(visiting.relay.roomId, listed.roomId, 'the other channel\'s room');
   assert.equal(visiting.relay.role, 'guest');
+  assert.deepEqual(visitor.spectate, [1], 'its running match is watched first');
+  assert.equal(visiting.relay.auth.spectator(), true);
   assert.equal(visitor.status().roomId, listed.roomId);
   assert.equal(visitor.context.HaloOnline.joinGuildRoom(listed), false, 'only from the lobby');
   visiting.onRelayPeer({ peerId: 'relay-020000000002', identifier: '020000000002', name: 'Bea', role: 'host' });

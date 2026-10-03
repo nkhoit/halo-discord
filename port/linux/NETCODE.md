@@ -140,7 +140,13 @@ character, which every other client leaves zero), so the host knows at once:
   waits for a player on every machine), and it loads into the next match
   still watching;
 - it adds its player later through the same in-game add (Join), and from
-  then it is a player like any other.
+  then it is a player like any other. Going back to watching is not
+  supported.
+
+The hosted page tells the room's relay too (a spectator's auth, then a
+`spectating` message on Join), so a room's summary counts players and
+spectators apart; the host reports whether its match takes another
+spectator (`platform_web_online_match_watchable`).
 
 The machines' rules for spectators only apply with joining a match in
 progress on; otherwise a machine without a player keeps the lobby waiting,
