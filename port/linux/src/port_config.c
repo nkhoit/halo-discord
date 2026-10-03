@@ -150,6 +150,9 @@ static const struct config_setting config_settings[] =
 		"Seconds after hosting that an automated test game starts." },
 	{ "debug.network_test_kill", _config_real, "0.0", "HALO_NETWORK_TEST_KILL", _environment_value, _platform_all,
 		"Every this many seconds an automated test host kills its last player; 0 never." },
+	{ "debug.network_test_ammo_message", _config_real, "0.0", "HALO_NETWORK_TEST_AMMO_MESSAGE", _environment_value, _platform_all,
+		"Every this many seconds the local player is shown an ammunition pickup\n"
+		"message for the weapon in hand; 0 never." },
 	{ "debug.network_test_end", _config_real, "0.0", "HALO_NETWORK_TEST_END", _environment_value, _platform_all,
 		"This many seconds into a game a test host ends it (its results, then its\n"
 		"lobby); 0 never." },

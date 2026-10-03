@@ -22,9 +22,24 @@ game's text uses outside of its own font tables.
 #include <time.h>
 #include <wchar.h>
 
+
+/* The optimizer recognizes a loop counting to a terminator as wcslen and
+calls the C library's, which counts the host's 32-bit wchar_t whatever
+-fshort-wchar says: lengths came out wrong in the web build (an icon name of
+8 characters measured 52, so "%b-button" never matched, #34; a formatted
+number ran on past its end, so "Picked up 8 rounds for..." stopped at the
+8, #32). Functions with such a loop are kept from becoming library calls. */
+#if defined(__clang__)
+#define WIDE_NO_BUILTIN __attribute__((no_builtin))
+#elif defined(__GNUC__)
+#define WIDE_NO_BUILTIN __attribute__((optimize("no-tree-loop-distribute-patterns")))
+#else
+#define WIDE_NO_BUILTIN
+#endif
+
 /* ---------- strings */
 
-size_t msvc_wcslen(const wchar_t *string)
+WIDE_NO_BUILTIN size_t msvc_wcslen(const wchar_t *string)
 {
 	const wchar_t *cursor = string;
 
@@ -540,7 +555,8 @@ static void output_padding(struct wide_output *output, long count)
 		output_character(output, ' ');
 }
 
-static void output_wide(struct wide_output *output, const wchar_t *string, long precision, long width, BOOL left)
+WIDE_NO_BUILTIN static void output_wide(struct wide_output *output, const wchar_t *string, long precision, long width,
+	BOOL left)
 {
 	long length = 0;
 	long index;

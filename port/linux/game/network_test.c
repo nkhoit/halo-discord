@@ -29,6 +29,7 @@ Called from the main loop every frame (main.c).
 
 #include "cseries.h"
 #include "main/main.h"
+#include "interface/hud.h"
 #include "interface/player_ui.h"
 #include "interface/ui_widget.h"
 #include "networking/network_game_globals.h"
@@ -88,6 +89,8 @@ static struct
 	boolean team_set;
 	real kill_interval;
 	real end_time;
+	boolean ended;
+	real ammo_message_interval;
 	real shoot_interval;
 	real vehicle_time;
 	real pickup_time;
@@ -121,6 +124,7 @@ static void network_test_read_settings(
 	network_test.start_delay = (real)config_real("debug.network_test_start");
 	network_test.kill_interval = (real)config_real("debug.network_test_kill");
 	network_test.end_time = (real)config_real("debug.network_test_end");
+	network_test.ammo_message_interval = (real)config_real("debug.network_test_ammo_message");
 	network_test.shoot_interval = (real)config_real("debug.network_test_shoot");
 	network_test.vehicle_time = (real)config_real("debug.network_test_vehicle");
 	network_test.pickup_time = (real)config_real("debug.network_test_pickup");
@@ -489,6 +493,22 @@ static void network_test_kill(
 	}
 }
 
+/* the local player is shown "Picked up 8 rounds for <the weapon in hand>" */
+static void network_test_ammo_message(
+	void)
+{
+	long player_index = local_player_get_player_index(0);
+	struct player_datum *player = player_index != NONE ? player_try_and_get(player_index) : NULL;
+	struct unit_datum *unit = player && player->unit_index != NONE ? unit_get(player->unit_index) : NULL;
+	long weapon_index = unit && unit->unit.current_weapon_index != NONE ?
+		unit->unit.weapon_object_indices[unit->unit.current_weapon_index] : NONE;
+
+	if (weapon_index == NONE)
+		return;
+	platform_log("network test: an ammunition pickup message");
+	hud_picked_up_ammunition(0, object_get(weapon_index)->definition_index, 8);
+}
+
 void network_test_update(
 	boolean main_menu_loaded,
 	real seconds)
@@ -499,7 +519,8 @@ void network_test_update(
 	the players logged every second) */
 	if (network_test.mode == _network_test_off)
 	{
-		if ((network_test.shoot_interval > 0.0f || network_test.kill_interval > 0.0f || network_test.end_time > 0.0f) &&
+		if ((network_test.shoot_interval > 0.0f || network_test.kill_interval > 0.0f || network_test.end_time > 0.0f ||
+			network_test.ammo_message_interval > 0.0f) &&
 			game_in_progress() &&
 			!main_menu_loaded && game_connection() != _game_connection_local &&
 			game_time_get() - network_test.logged_time >= TICKS_PER_SECOND)
@@ -516,13 +537,21 @@ void network_test_update(
 			{
 				network_test_kill();
 			}
-			/* (once a game: the clock starts over with the next; a match only,
-			not Halo's lobby, whose clock runs too) */
-			if (network_test.end_time > 0.0f && game_connection() == _game_connection_network_server &&
-				game_engine_running() &&
-				game_time_get() >= (long)(network_test.end_time * TICKS_PER_SECOND) &&
-				game_time_get() - (long)(network_test.end_time * TICKS_PER_SECOND) < TICKS_PER_SECOND)
+			if (network_test.ammo_message_interval > 0.0f && game_engine_running() &&
+				game_time_get() % (long)(network_test.ammo_message_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)
 			{
+				network_test_ammo_message();
+			}
+			/* (once a game: the clock starts over with the next; a match only,
+			not Halo's lobby, whose clock runs too. These checks run a second
+			apart by the frames' clock, so a window of exactly a second can be
+			stepped over.) */
+			if (game_time_get() < (long)(network_test.end_time * TICKS_PER_SECOND))
+				network_test.ended = FALSE;
+			else if (network_test.end_time > 0.0f && !network_test.ended &&
+				game_connection() == _game_connection_network_server && game_engine_running())
+			{
+				network_test.ended = TRUE;
 				platform_log("network test: the host ends the game");
 				game_engine_end_game();
 			}
