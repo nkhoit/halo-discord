@@ -2829,6 +2829,11 @@ static boolean network_game_client_idle_joining(
 
 				csmemset(&join_game_request, 0, sizeof(join_game_request));
 				network_game_generate_local_machine_name(join_game_request.machine_name);
+#ifdef HALO_LINUX
+				/* (the distributed netcode) a machine that only watches */
+				if (network_game_spectating())
+					network_game_mark_spectator_machine_name(join_game_request.machine_name, MAXIMUM_MACHINE_NAME_LENGTH);
+#endif
 				csmemcpy(
 					join_game_request.join_token,
 					client->join_parameters.join_token,

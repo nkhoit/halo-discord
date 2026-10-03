@@ -81,6 +81,21 @@ boolean network_game_distributed(
 	void);
 boolean network_game_distributed_client(
 	void);
+/* (the distributed netcode) a machine that joins a match without a player
+of its own, to watch it: the page asks for it before joining, and clears it
+to add its player (network.spectate sets it at start) */
+void network_game_set_spectating(
+	boolean spectating);
+boolean network_game_spectating(
+	void);
+/* the join request's mark of a spectator: the machine name's last
+character, which every other client leaves zero */
+void network_game_mark_spectator_machine_name(
+	wchar_t *name,
+	long length);
+boolean network_game_machine_name_marks_spectator(
+	wchar_t const *name,
+	long length);
 #endif
 
 /* ---------- globals */

@@ -133,6 +133,9 @@ static const struct config_setting config_settings[] =
 		_platform_all,
 		"(Distributed netcode only) A host lets players join\n"
 				"its match while it runs, not only in its lobby (port/linux/NETCODE.md)." },
+	{ "network.spectate", _config_boolean, "false", "HALO_NET_SPECTATE", _environment_value, _platform_all,
+		"(Distributed netcode only) Join a running match without a player, to\n"
+		"watch it; the host must let players join its match as it runs." },
 	{ "network.tunnel_port", _config_integer, "0", "HALO_NET_TUNNEL_PORT", _environment_value, _platform_all,
 		"The UDP port internet play uses; 0 picks one. A fixed one can be\n"
 		"forwarded on the router, for networks whose NAT stops connections." },

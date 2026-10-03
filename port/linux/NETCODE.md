@@ -127,6 +127,25 @@ first tick.
   time: the units, objects, inventories, statistics and the game type's
   state.
 
+### Spectators
+
+A machine can also join without a player of its own, to watch the match
+(`network.spectate`, which the hosted pages set for whoever opens a match
+already running). It marks its join request (the machine name's last
+character, which every other client leaves zero), so the host knows at once:
+
+- a spectator takes a machine slot, not a player's: a full match still takes
+  it, up to 8 spectators, and it keeps no player's place while it loads;
+- the lobby counts down without a player of its own (Halo's lobby otherwise
+  waits for a player on every machine), and it loads into the next match
+  still watching;
+- it adds its player later through the same in-game add (Join), and from
+  then it is a player like any other.
+
+The machines' rules for spectators only apply with joining a match in
+progress on; otherwise a machine without a player keeps the lobby waiting,
+as before (`tests/network_late_join_gate_test`).
+
 ## Testing
 
 `debug.network_test` (`port/linux/game/network_test.c`) hosts or joins a

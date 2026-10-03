@@ -56,6 +56,10 @@ unsigned char network_game_server_match_starting(struct network_game_server *ser
 unsigned char network_game_server_countdown_active(struct network_game_server *server);
 int config_boolean(const char *name);
 int config_write_boolean(const char *name, int value);
+/* network_game_globals.c's: a machine that watches a match without a player */
+void network_game_set_spectating(unsigned char spectating);
+unsigned char network_game_spectating(void);
+short local_player_count(void);
 void platform_log(const char *format, ...);
 
 enum
@@ -109,6 +113,11 @@ static atomic_int web_online_requested_start = ATOMIC_VAR_INIT(0);
 /* the page's choice whether a host lets players join its running match
 (network.join_in_progress): -1 none yet, else 0 or 1 */
 static atomic_int web_online_requested_join_in_progress = ATOMIC_VAR_INIT(-1);
+/* the page's choice to watch a running match without a player (1), or to
+add its player after watching (0): -1 none yet */
+static atomic_int web_online_requested_spectate = ATOMIC_VAR_INIT(-1);
+/* (a client) it watches a match without a player of its own */
+static atomic_int web_online_spectating = ATOMIC_VAR_INIT(0);
 /* (the host) whether a machine could join its match now */
 static atomic_int web_online_match_joinable = ATOMIC_VAR_INIT(0);
 /* (the host) its lobby has started the match, which is loading */
@@ -221,6 +230,21 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_set_join_in_progress(int enabled)
 {
 	atomic_store_explicit(&web_online_requested_join_in_progress, enabled ? 1 : 0, memory_order_release);
 	return 1;
+}
+
+/* Whether this machine joins a running match as a spectator, without a
+player (1, before joining), or adds its player after watching (0): the
+in-game add a late joiner's player takes. The distributed netcode only. */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_set_spectate(int spectate)
+{
+	atomic_store_explicit(&web_online_requested_spectate, spectate ? 1 : 0, memory_order_release);
+	return 1;
+}
+
+/* (a client) it is in a match, or its lobby, watching without a player */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_spectating(void)
+{
+	return atomic_load_explicit(&web_online_spectating, memory_order_acquire);
 }
 
 /* (the host) whether a machine joining now would enter the running match:
@@ -583,6 +607,12 @@ static void update_join(float seconds)
 		client_state == _network_client_ingame ||
 		client_state == _network_client_postgame)
 	{
+		/* (a spectator joins without a player: Join adds it later) */
+		if (!web_online.player_added && network_game_spectating())
+		{
+			web_online.player_added = WEB_TRUE;
+			platform_log("web online: joining as a spectator, without a player");
+		}
 		add_primary_player_when_ready(client, seconds);
 		if (!web_online.player_added)
 		{
@@ -618,6 +648,27 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 	{
 		config_write_boolean("network.join_in_progress", join_in_progress);
 		platform_log("web online: joining a match in progress %s", join_in_progress ? "on" : "off");
+	}
+	{
+		int spectate = atomic_exchange_explicit(&web_online_requested_spectate, -1, memory_order_acq_rel);
+
+		if (spectate >= 0 && (spectate != 0) != (network_game_spectating() != 0))
+		{
+			network_game_set_spectating(spectate ? 1 : 0);
+			platform_log("web online: %s", spectate ? "spectating" : "joining with a player after watching");
+			/* (a spectator in a match or its lobby: its player is added
+			as a late joiner's is) */
+			if (!spectate && web_online.command == _web_online_command_join && web_online.player_added &&
+				local_player_count() == 0)
+			{
+				web_online.player_added = WEB_FALSE;
+				web_online.player_request_sent = WEB_FALSE;
+				web_online.player_retry_seconds = 0.0f;
+			}
+		}
+		atomic_store_explicit(&web_online_spectating,
+			web_online.command == _web_online_command_join && network_game_spectating() && local_player_count() == 0,
+			memory_order_release);
 	}
 	atomic_store_explicit(&web_online_match_joinable,
 		global_network_game_server_get() &&

@@ -1679,6 +1679,28 @@ static boolean network_game_server_begin_game_for_late_machine(
 }
 #endif
 
+#ifdef HALO_LINUX
+/* (late joins) whether a join request is a spectator's (its machine name's
+mark, network_game_mark_spectator_machine_name), read before the request
+is handled */
+static boolean network_game_server_join_request_is_spectator(
+	word *message,
+	short message_size)
+{
+	struct message_client_join_game_request request;
+	short size = (short)(message_size - sizeof(word));
+	short type = _message_client_join_game_request;
+	short version = NETWORK_GAME_MESSAGE_VERSION;
+
+	if (!network_game_join_in_progress_enabled())
+		return FALSE;
+	csmemset(&request, 0, sizeof(request));
+	return decode_network_game_message(&request, message + 1, &size, &type, &version,
+			_network_game_packet_class_client_pregame) &&
+		network_game_machine_name_marks_spectator(request.machine_name, MAXIMUM_MACHINE_NAME_LENGTH);
+}
+#endif
+
 static boolean network_game_server_handle_message_client_join_game_request(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *server_client_machine,
@@ -1686,10 +1708,16 @@ static boolean network_game_server_handle_message_client_join_game_request(
 	short message_size)
 {
 	boolean result = TRUE;
+#ifdef HALO_LINUX
+	/* (a spectator takes a machine slot, not a player's: a full match still
+	takes it) */
+	boolean spectator = network_game_server_join_request_is_spectator(message, message_size);
+	boolean late_join = network_game_server_joinable_in_game(server) ||
+		(spectator && network_game_server_watchable_in_game(server));
+#endif
 
 #ifdef HALO_LINUX
-	if (network_game_server_get_state(server, NULL) == _network_game_server_state_pregame ||
-		network_game_server_joinable_in_game(server))
+	if (network_game_server_get_state(server, NULL) == _network_game_server_state_pregame || late_join)
 #else
 	if (network_game_server_get_state(server, NULL) == _network_game_server_state_pregame)
 #endif
@@ -1720,7 +1748,7 @@ static boolean network_game_server_handle_message_client_join_game_request(
 			if ((network_game_server_get_state(server, NULL) == _network_game_server_state_pregame &&
 				network_game_server_game_is_open(server))
 #ifdef HALO_LINUX
-				|| network_game_server_joinable_in_game(server)
+				|| late_join
 #endif
 				)
 			{
@@ -1794,6 +1822,13 @@ static boolean network_game_server_handle_message_client_join_game_request(
 						if (network_game_server_accept_client_machine_into_game(server, server_client_machine))
 						{
 							struct message_server_machine_accepted acceptance;
+#ifdef HALO_LINUX
+							if (spectator)
+							{
+								network_event("machine '%s' joins as a spectator", join_game_request.machine_name);
+								network_game_server_set_client_machine_spectator(server_client_machine, TRUE);
+							}
+#endif
 							struct network_message *reply;
 							struct network_machine *client_machine;
 							long machine_index = NONE;
@@ -1842,7 +1877,7 @@ static boolean network_game_server_handle_message_client_join_game_request(
 								if (result == TRUE)
 								{
 #ifdef HALO_LINUX
-									if (network_game_server_joinable_in_game(server))
+									if (late_join)
 									{
 										result = network_game_server_begin_game_for_late_machine(server, server_client_machine);
 										if (result)
