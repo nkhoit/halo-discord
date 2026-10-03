@@ -118,11 +118,11 @@ describe("the overlay", () => {
 });
 
 describe("the sound", () => {
-  it("is on at full volume at first, and keeps the player's choice", () => {
+  it("is on at half volume at first, and keeps the player's choice", () => {
     const store = storage();
     const applied: [boolean, number][] = [];
     const first = load().createController({ storage: store, applyAudio: (muted, volume) => void applied.push([muted, volume]) });
-    expect(first.audio).toEqual({ muted: false, volume: 1 });
+    expect(first.audio).toEqual({ muted: false, volume: 0.5 });
     first.setMuted(true);
     first.setVolume(0.4);
     expect(applied.at(-1), "raising the volume unmutes").toEqual([false, 0.4]);
@@ -131,13 +131,35 @@ describe("the sound", () => {
     expect(again.audio).toEqual({ muted: true, volume: 0.4 });
     again.setVolume(7);
     expect(again.audio.volume).toBe(1);
+    const full = load().createController({ storage: store, applyAudio() {} });
+    expect(full.audio.volume, "full volume, chosen, stays").toBe(1);
+  });
+
+  it("keeps only the mute when the player never moved the volume", () => {
+    const store = storage();
+    load().createController({ storage: store, applyAudio() {} }).setMuted(true);
+    expect(JSON.parse(store.values.get("halo-hosted-audio")!)).toEqual(
+      { version: 2, muted: true, volume: 0.5, volumeChosen: false });
+    expect(load().createController({ storage: store, applyAudio() {} }).audio).toEqual({ muted: true, volume: 0.5 });
+  });
+
+  it("moves an old record's untouched full volume to half, keeping real choices", () => {
+    const old = (record: object) => load().createController({
+      storage: storage({ "halo-hosted-audio": JSON.stringify(record) }), applyAudio() {},
+    }).audio;
+    expect(old({ muted: true, volume: 1 }), "the old default, saved by the mute button").toEqual({ muted: true, volume: 0.5 });
+    expect(old({ muted: false, volume: 1 })).toEqual({ muted: false, volume: 0.5 });
+    expect(old({ muted: false, volume: 0.3 }), "a volume the player set").toEqual({ muted: false, volume: 0.3 });
+    expect(old({ muted: true, volume: 0 })).toEqual({ muted: true, volume: 0 });
+    expect(old({ version: 2, muted: false, volume: 0.8, volumeChosen: false }), "never chosen: the default")
+      .toEqual({ muted: false, volume: 0.5 });
   });
 
   it("ignores a damaged stored choice", () => {
     const controller = load().createController({
       storage: storage({ "halo-hosted-audio": "{not json" }), applyAudio() {},
     });
-    expect(controller.audio).toEqual({ muted: false, volume: 1 });
+    expect(controller.audio).toEqual({ muted: false, volume: 0.5 });
   });
 });
 
