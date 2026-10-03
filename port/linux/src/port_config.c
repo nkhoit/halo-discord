@@ -123,8 +123,8 @@ static const struct config_setting config_settings[] =
 		"comes to the front." },
 	{ "network.join_in_progress", _config_boolean, "false", "HALO_NET_JOIN_IN_PROGRESS", _environment_value,
 		_platform_all,
-		"(Work in progress, distributed netcode only) A host lets players join\n"
-		"its match while it runs, not only in its lobby." },
+		"(Distributed netcode only) A host lets players join\n"
+				"its match while it runs, not only in its lobby (port/linux/NETCODE.md)." },
 	{ "network.tunnel_port", _config_integer, "0", "HALO_NET_TUNNEL_PORT", _environment_value, _platform_all,
 		"The UDP port internet play uses; 0 picks one. A fixed one can be\n"
 		"forwarded on the router, for networks whose NAT stops connections." },
