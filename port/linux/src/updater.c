@@ -6,7 +6,9 @@ itself in Java, port/android).
 
 A build of the main branch made by GitHub Actions knows its build number
 (HALO_BUILD_NUMBER, the workflow's run number, which names its release:
-build-<number>); other builds have none and never look for updates. When
+build-<number>); other builds have none and never look for updates, and no
+build does while UPDATE_REPOSITORY is empty (this repository publishes no
+releases). When
 update.auto in config.toml is true (the default), the game asks GitHub for
 the latest release when it starts, on a thread of its own: the game starts
 meanwhile, and nothing happens if the release is not newer or cannot be
@@ -46,7 +48,10 @@ update.h's: posix_update.c on Linux, win32_update.c on Windows.
 #define HALO_BUILD_FLAVOR "release"
 #endif
 
-#define UPDATE_REPOSITORY "cybersecurity/halo-ce-universal"
+/* the GitHub repository whose releases are the updates: none, since this
+repository (halo-discord) publishes no releases, so no build looks for
+updates; "owner/name" turns the check on */
+#define UPDATE_REPOSITORY ""
 #ifdef _WIN32
 #define UPDATE_PLATFORM "windows"
 #define PATH_SEPARATOR "\\"
@@ -519,9 +524,9 @@ void updater_start(void)
 		return;
 	*slash = 0;
 	updater_clean_up();
-	/* (not for builds without a number, the player's no, or runs nobody is
-	watching, but for a test with its answer) */
-	if (HALO_BUILD_NUMBER <= 0 || !config_boolean("update.auto") ||
+	/* (not without a repository or a build number, after the player's no, or
+	for runs nobody is watching, but for a test with its answer) */
+	if (!UPDATE_REPOSITORY[0] || HALO_BUILD_NUMBER <= 0 || !config_boolean("update.auto") ||
 		(!config_string("debug.update_answer")[0] && (config_boolean("debug.hidden_window") ||
 			config_real("debug.exit_after") > 0.0 || config_string("debug.network_test")[0])))
 	{

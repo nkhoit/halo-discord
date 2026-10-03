@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Point a generated build/web/halo.html at local development services.
 
-The source shell names the production signaling service and Turnstile site
-key.  This rewrites only the generated page, so a local build never contacts
-either.  Run it again after every ``ninja web``, which regenerates the page.
+The source shell names no signaling service or Turnstile site key; this
+writes the local signaling service into the generated page (and drops a site
+key if one is there).  Run it again after every ``ninja web``, which
+regenerates the page.
 """
 
 from __future__ import annotations
@@ -28,7 +29,10 @@ def configure(page: str, signaling_url: str, relay_url: str | None = None) -> st
     page = meta_pattern("halo-relay-url").sub("", page)
     page, count = meta_pattern("halo-signaling-url").subn(signaling, page, count=1)
     if count != 1:
-        raise ValueError("halo-signaling-url metadata is missing")
+        page, count = meta_pattern("halo-build-id").subn(
+            lambda match: match.group(0) + signaling, page, count=1)
+    if count != 1:
+        raise ValueError("halo-build-id metadata is missing")
     page = meta_pattern("halo-turnstile-sitekey").sub("", page)
     return page
 

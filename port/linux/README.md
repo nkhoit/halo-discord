@@ -189,10 +189,18 @@ Mesa. To stop this, set the environment variable `mesa_glthread=false`.
 
 ## Updates
 
-The builds from GitHub Actions (refer to the main [README](../../README.md#download))
-can update themselves. At start-up, the game asks GitHub for the latest
-release. The game does not wait for the answer. If the latest release is not
-newer, the game does nothing.
+This repository publishes no releases, so no build looks for updates. The
+updater stays in the code (`src/updater.c`, `src/posix_update.c`,
+`../windows/src/win32_update.c`) and is off while `UPDATE_REPOSITORY` in
+`src/updater.c` is empty. To use it again, set it to a GitHub repository
+(`"owner/name"`) whose releases are named `build-<number>` and hold
+`halo-<platform>-<release|debug>.zip`, and build with a build number
+(`tools/ci_build.py` gives builds of `main` in GitHub Actions the workflow's
+run number).
+
+With a repository set, a build with a build number asks GitHub for the
+latest release at start-up. The game does not wait for the answer. If the
+latest release is not newer, the game does nothing.
 
 If the latest release is newer, the game asks: "Do you want to update?"
 

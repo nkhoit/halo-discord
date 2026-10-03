@@ -17,12 +17,6 @@ const webPlatform = fs.readFileSync(
   path.join(webDirectory, 'src', 'web_platform.c'), 'utf8');
 const webOnlineUi = fs.readFileSync(
   path.join(webDirectory, 'src', 'web_online_ui.c'), 'utf8');
-const worker = fs.readFileSync(
-  path.join(repository, 'services', 'web', 'src', 'index.js'), 'utf8');
-const wrangler = fs.readFileSync(
-  path.join(repository, 'services', 'web', 'wrangler.jsonc'), 'utf8');
-const stageCloudflare = fs.readFileSync(
-  path.join(repository, 'tools', 'web_stage_cloudflare.py'), 'utf8');
 
 const loading = shell.match(/<section id="loading"[\s\S]*?<\/section>/);
 assert(loading, 'missing loading overlay');
@@ -78,10 +72,12 @@ assert.match(shell, /<dt>A<\/dt>[\s\S]*?<dd>- Space<\/dd>[\s\S]*?<dt>B<\/dt>[\s\
   'the high-resolution Duke legend must document the complete keyboard mapping');
 assert.doesNotMatch(shell, /<figcaption>Duke<\/figcaption>/,
   'the controller image must not carry a redundant Duke caption');
-assert.match(shell, /Made by[\s\S]*mitchellhynes\.com[\s\S]*Mitchell Hynes[\s\S]*id="about-open"[\s\S]*Learn more[\s\S]*ko-fi\.com\/mitchellhynes[\s\S]*Buy me a coffee/,
-  'the under-screen row must include the compact creator credit');
-assert.match(shell, /id="about-dialog"[\s\S]*mitchell-jester-card\.svg[\s\S]*github\.com\/bnunu\/halo-ce-universal[\s\S]*github\.com\/cybersecurity\/halo-ce-universal[\s\S]*independently hosted[\s\S]*mitchellhynes\.com[\s\S]*responsible for this website[\s\S]*ko-fi\.com\/mitchellhynes[\s\S]*kofi-support-dark\.png/,
-  'Learn more must disclose sources, independence, support link, and Joker card');
+assert.match(shell, /<span class="site-credit"><button id="about-open" type="button">About this build<\/button><\/span>/,
+  'the under-screen row must keep a way to the credits');
+assert.match(shell, /id="about-dialog"[\s\S]*Discord Activity[\s\S]*github\.com\/punpckhdq\/halo[\s\S]*github\.com\/bnunu\/halo-1[\s\S]*github\.com\/cybersecurity\/halo-ce-universal[\s\S]*github\.com\/ecumene\/web-halo[\s\S]*not affiliated with or responsible for this build/,
+  'About must credit the projects this build comes from');
+assert.doesNotMatch(shell, /ko-fi|kofi|mitchell-jester|otherness-bugs|halo-turnstile-sitekey|challenges\.cloudflare\.com/,
+  'no support links, Joker card, Cloudflare signaling or Turnstile in the shell');
 assert.match(shell, /onlineDialog\.open \|\| aboutDialog\.open/,
   'the creator dialog must own keyboard focus instead of controlling Halo');
 assert.match(shell, /addEventListener\("pointerlockchange"/);
@@ -136,9 +132,6 @@ assert.match(shell,
 assert.match(shell,
   /audioCallbacks:[\s\S]*?audioLateCallbacks:[\s\S]*?audioMaximumGapMs:/,
   'performance summaries must include audio underrun counters');
-assert.match(worker,
-  /audio_running[\s\S]*?audio_suspended[\s\S]*?audio_blocked[\s\S]*?audioMaximumGapMs/,
-  'the Worker must accept audio state and underrun telemetry');
 assert.match(terminal, /terminal_render_enable \|\| terminal_globals\.input_state/,
   'backquote console output must be visible while its input is active');
 assert.match(webPlatform, /platform_web_map_load_progress/);
@@ -147,10 +140,6 @@ assert.match(webOnlineUi, /platform_web_online_get_client_state/);
 assert.match(shell,
   /function sendRuntimeTelemetry\([\s\S]*?\/v1\/telemetry\/runtime[\s\S]*?function updateRuntimeTelemetry\([\s\S]*?map_load_stalled/,
   'startup, online and map-load milestones must reach runtime telemetry');
-assert.match(worker, /RUNTIME_ROUTE = "\/v1\/telemetry\/runtime"[\s\S]*?RUNTIME_TELEMETRY/,
-  'the Worker must accept runtime telemetry');
-assert.match(wrangler, /"binding": "RUNTIME_TELEMETRY"[\s\S]*?"dataset": "halo_web_runtime"/,
-  'runtime telemetry needs an Analytics Engine binding');
 assert.match(shell,
   /function sendRuntimeFailure\([\s\S]*?runtimeFirstFailureSent[\s\S]*?errorFingerprint[\s\S]*?errorTopFrame/,
   'runtime failures must be deduplicated and fingerprinted before upload');
@@ -160,19 +149,11 @@ assert.match(shell,
 assert.doesNotMatch(shell,
   /errorMessage:\s*|errorStack:\s*/,
   'runtime telemetry must never upload raw messages or stack traces');
-assert.match(worker,
-  /env\.RUNTIME_TELEMETRY\.writeDataPoint\([\s\S]*?errorCategory,[\s\S]*?errorFingerprint,[\s\S]*?errorTopFrame,[\s\S]*?hardwareConcurrency, deviceMemoryGb/,
-  'the Worker must persist crash fingerprints and capability context');
-assert.match(stageCloudflare,
-  /asset_build_id[\s\S]*?sha256[\s\S]*?stamp_build_id[\s\S]*?halo-build-id/,
-  'staged deployments must carry a content-addressed build ID');
 assert.match(webPlatform,
   /new URL\("assets\/maps", scriptDirectory\)\.href/,
   'map downloads must resolve from the loaded script when hosted below /halo/');
 assert.match(shell, /<script src="coi-serviceworker\.js"><\/script>/,
   'static hosting must bootstrap cross-origin isolation before Halo loads');
-assert.match(stageCloudflare, /coi-serviceworker\.js/,
-  'the staged browser build must include the isolation service worker');
 
 const normalizerSource = shell.match(
   /function normalizeTelemetryError\(value\) \{[\s\S]*?\n    \}/);

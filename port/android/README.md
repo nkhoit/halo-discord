@@ -42,8 +42,8 @@ ninja) and these items:
 
 The game needs the `maps/` folder from an Xbox disc image of any version of
 the game. The app cannot extract the disc image. Extract `maps/` with the
-Linux or Windows version (refer to the main
-[README](../../README.md#game-data)), then copy it to the phone. The app
+Linux or Windows version (refer to "Start the game" in
+[port/linux/README.md](../linux/README.md#start-the-game)), then copy it to the phone. The app
 keeps the data in `/sdcard/Android/data/com.halo.decomp/files`.
 
 To install the data with the app:
@@ -130,9 +130,12 @@ To join a game, do one of these steps:
 
 ## Updates
 
-The app from GitHub Actions can update itself, as on Linux (refer to
-"Updates" in [port/linux/README.md](../linux/README.md#updates)). When you
-select "Yes":
+This repository publishes no releases, so the app never looks for updates.
+The updater stays in the code and is off while `REPOSITORY` in
+`Updater.java` is empty (refer to "Updates" in
+[port/linux/README.md](../linux/README.md#updates)). With a repository set,
+a build from GitHub Actions updates itself as on Linux. When you select
+"Yes":
 
 1. The app downloads the new version.
 2. The package installer of Android opens. At the first update, Android asks
