@@ -141,6 +141,8 @@ word network_damage_entry_size(byte type);
 /* the browser's feel scorecard (network_distributed.c) */
 void network_web_hit_reported(long object_index);
 void network_web_hit_confirmed(long object_index);
+int network_web_trigger_down(void);
+long network_web_own_corrections(void);
 #endif
 
 #endif // __NETWORK_DISTRIBUTED_H

@@ -22,6 +22,7 @@ and the debug keyboard that the game's console reads.
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -64,6 +65,15 @@ static struct
 	double raf_last;
 	double raf_interval_maximum;
 	double raf_late_maximum;
+	/* the animation frames rendered: the last one's timestamp (the frame cap
+	measures from it), and this window's intervals between them (their sum
+	and count) and how much each differed from the one before (frame pacing
+	evenness: 8 ms, 12 ms, 8 ms... differs by 4 ms a frame) */
+	double raf_rendered;
+	double raf_rendered_interval;
+	double raf_interval_sum;
+	double raf_change_sum;
+	double raf_interval_count;
 	/* frames per second to render at most, 0 for the display's rate (a
 	measurement switch: the simulation stays at 30 ticks a second) */
 	int frame_cap;
@@ -544,6 +554,27 @@ void platform_web_frame_begin(void)
 			if (late > web_frame_meter.raf_late_maximum)
 				web_frame_meter.raf_late_maximum = late;
 			web_frame_meter.raf_last = timestamp;
+			if (web_frame_meter.raf_rendered > 0.0 && timestamp > web_frame_meter.raf_rendered)
+			{
+				double interval = timestamp - web_frame_meter.raf_rendered;
+
+				/* (not across a stall: a frame over 100 ms is a gap, counted apart) */
+				if (interval < 100.0)
+				{
+					if (web_frame_meter.raf_rendered_interval > 0.0)
+					{
+						web_frame_meter.raf_change_sum += fabs(interval - web_frame_meter.raf_rendered_interval);
+						web_frame_meter.raf_interval_sum += interval;
+						web_frame_meter.raf_interval_count++;
+					}
+					web_frame_meter.raf_rendered_interval = interval;
+				}
+				else
+				{
+					web_frame_meter.raf_rendered_interval = 0.0;
+				}
+			}
+			web_frame_meter.raf_rendered = timestamp;
 		}
 	}
 	web_frame_meter.last_start = now;
@@ -630,10 +661,11 @@ that drew a program for the first time, [6] after one that overflowed the
 transient buffer pool, [7] the longest time between one callback's end and
 the next one's start, [8] the longest interval between the worker's animation
 frames, [9] the longest delay from an animation frame's timestamp to the game
-frame starting */
+frame starting, [10] the mean interval between rendered animation frames,
+[11] the mean change from one such interval to the next (both ms) */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_profile_take_frame_times(void)
 {
-	static double values[10];
+	static double values[12];
 	static double sorted[4096];
 	unsigned long count = web_frame_meter.window_gap_count;
 	unsigned long index;
@@ -655,6 +687,14 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_profile_take_frame_times(void)
 	values[7] = web_frame_meter.outside_maximum;
 	values[8] = web_frame_meter.raf_interval_maximum;
 	values[9] = web_frame_meter.raf_late_maximum;
+	if (web_frame_meter.raf_interval_count > 0.0)
+	{
+		values[10] = web_frame_meter.raf_interval_sum / web_frame_meter.raf_interval_count;
+		values[11] = web_frame_meter.raf_change_sum / web_frame_meter.raf_interval_count;
+	}
+	web_frame_meter.raf_interval_sum = 0.0;
+	web_frame_meter.raf_change_sum = 0.0;
+	web_frame_meter.raf_interval_count = 0.0;
 	web_frame_meter.outside_maximum = 0.0;
 	web_frame_meter.raf_interval_maximum = 0.0;
 	web_frame_meter.raf_late_maximum = 0.0;
@@ -675,10 +715,19 @@ EMSCRIPTEN_KEEPALIVE int platform_web_frame_cap(void)
 }
 
 /* whether this animation frame should be skipped to stay under the cap */
+/* Measured on the animation frames' timestamps, which fall on the display's
+refresh: the time a callback starts wanders with the worker's load, and
+measured so, two refreshes at 240 Hz (8.3 ms) sometimes looked shorter than a
+cap of 123's 7.1 ms and became three (12.5 ms), alternating 8/12 ms. */
 int platform_web_frame_skip(void)
 {
+	double timestamp;
+
 	if (web_frame_meter.frame_cap <= 0 || web_frame_meter.last_start <= 0.0)
 		return 0;
+	timestamp = EM_ASM_DOUBLE({ return self.haloRafTime || 0; });
+	if (timestamp > 0.0 && web_frame_meter.raf_rendered > 0.0)
+		return timestamp - web_frame_meter.raf_rendered < 1000.0 / web_frame_meter.frame_cap - 1.5;
 	return emscripten_get_now() - web_frame_meter.last_start < 1000.0 / web_frame_meter.frame_cap - 1.0;
 }
 

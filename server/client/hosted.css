@@ -188,6 +188,25 @@ html.halo-hosted #loading::after { display: none; }
 .hosted-overlay-actions button { flex: 1; }
 .hosted-hint { margin: 0; color: #7f9db3; font-size: .78rem; text-align: center; }
 
+/* the browser refused the mouse: playing on, with a way back */
+#hosted-lock-notice {
+  position: fixed;
+  left: .75rem;
+  bottom: .75rem;
+  z-index: 17;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+  max-width: min(36rem, calc(100% - 1.5rem));
+  padding: .5rem .75rem;
+  border: 1px solid rgba(255, 190, 120, .5);
+  border-radius: .4rem;
+  background: rgba(30, 16, 4, .9);
+  font-size: .85rem;
+}
+#hosted-lock-notice span { flex: 1 1 18rem; }
+
 #hosted-map-loading {
   position: fixed;
   left: 50%;

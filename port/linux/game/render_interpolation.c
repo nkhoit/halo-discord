@@ -38,6 +38,14 @@ on top of it, fading each tick.
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef HALO_WEB
+#include <emscripten.h>
+#include "units/units.h"
+
+static void web_snap_frame(short local_player_index, struct observer_result const *drawn, boolean cut);
+static double web_tick_time;
+#endif
+
 /* ---------- constants */
 
 #define MAXIMUM_INTERPOLATED_OBJECTS (MAXIMUM_OBJECTS_PER_MAP * 5)
@@ -50,9 +58,12 @@ well beyond any vehicle, short of any teleport */
 #define CORRECTION_DECAY 0.6f
 /* ... and small enough to be none */
 #define CORRECTION_NEGLIGIBLE 0.001f
-/* a camera cut: a jump or turn no player or scripted camera makes in 33 ms */
+/* a camera cut: a jump no player makes in 33 ms, or a turn to nearly the
+opposite way. (A turn past 60 degrees in a tick used to cut too, but a fast
+mouse flick turns that much: the frame drew the latest tick unblended, a tick
+ahead, and the aim jumped back as soon as blending resumed.) */
 #define CAMERA_CUT_DISTANCE 3.0f
-#define CAMERA_CUT_COSINE 0.5f
+#define CAMERA_CUT_COSINE -0.866f
 
 /* ---------- structures */
 
@@ -285,6 +296,9 @@ void render_interpolation_tick(void)
 	struct object_datum *object;
 	long previous_tick = interpolation_tick++;
 
+#ifdef HALO_WEB
+	web_tick_time = emscripten_get_now();
+#endif
 	if (!halo_interpolation_enabled())
 		return;
 	if (!interpolated_objects)
@@ -471,7 +485,24 @@ void render_interpolation_correct_object(long object_index, real_vector3d const 
 
 /* ---------- camera */
 
+static struct observer_result const *interpolated_camera(
+	short local_player_index,
+	struct observer_result const *observer);
+
 struct observer_result const *render_interpolation_camera(
+	short local_player_index,
+	struct observer_result const *observer)
+{
+	struct observer_result const *drawn = interpolated_camera(local_player_index, observer);
+
+#ifdef HALO_WEB
+	if (interpolation_rendering && drawn && local_player_index == 0)
+		web_snap_frame(local_player_index, drawn, drawn == observer);
+#endif
+	return drawn;
+}
+
+static struct observer_result const *interpolated_camera(
 	short local_player_index,
 	struct observer_result const *observer)
 {
@@ -597,3 +628,149 @@ real render_interpolation_game_time_sec(long ticks)
 	time = ((real)ticks - 1.0f + interpolation_fraction) * (1.0f / TICKS_PER_SECOND);
 	return time > 0.0f ? time : 0.0f;
 }
+
+#ifdef HALO_WEB
+/* ---------- the browser's snap detector
+
+What the player sees of their own movement: each frame, the camera drawn
+against the path the last two ticks lay out. A snap is a frame whose camera
+moved back against that path, further or turned further than the time drawn
+since the last frame allows, or drawn at an earlier point of the game clock
+than the last; camera cuts (render_interpolation_camera's teleports and
+turns past CAMERA_CUT_COSINE in a tick) are counted too. The worst snap of
+a measurement window keeps its context. */
+
+extern int halo_linux_camera_assist_enabled(short gamepad_index);
+extern int network_web_trigger_down(void);
+extern long network_web_own_corrections(void);
+
+/* how much more than the path allows, and the least, before it is a snap */
+#define SNAP_STEP_FACTOR 1.5f
+#define SNAP_STEP_SLACK 0.03f
+#define SNAP_TURN_SLACK_DEGREES 3.0f
+
+static struct
+{
+	boolean valid;
+	real_point3d position;
+	real_vector3d forward;
+	long tick;
+	real fraction;
+	double time;
+	long corrections;
+} snap_last;
+
+static struct
+{
+	double frames, snaps, backward, clock_backward, cuts;
+	double maximum_step, maximum_degrees;
+	double worst_excess;
+	/* the worst: step, allowed, degrees, allowed, ticks run that frame,
+	fraction before and now, frame ms, ms since the tick, firing, crouching,
+	controller aiming, an own correction that frame, a camera cut */
+	double worst[14];
+} snap_window;
+
+static real snap_degrees(real_vector3d const *a, real_vector3d const *b)
+{
+	real dot = a->i * b->i + a->j * b->j + a->k * b->k;
+
+	return (real)(acos(dot < -1.0f ? -1.0f : dot > 1.0f ? 1.0f : dot) * 180.0 / 3.14159265358979);
+}
+
+static void web_snap_frame(short local_player_index, struct observer_result const *drawn, boolean cut)
+{
+	struct interpolated_camera *camera = &interpolated_cameras[local_player_index];
+	double now = emscripten_get_now();
+	long corrections = network_web_own_corrections();
+
+	if (snap_last.valid && camera->valid && camera->has_previous)
+	{
+		long ticks = interpolation_tick - snap_last.tick;
+		real advance = (real)ticks + interpolation_fraction - snap_last.fraction;
+		real_vector3d path, step;
+		real speed, distance, allowed, degrees, allowed_degrees, along;
+		boolean backward, snap;
+
+		path.i = camera->latest.position.x - camera->previous.position.x;
+		path.j = camera->latest.position.y - camera->previous.position.y;
+		path.k = camera->latest.position.z - camera->previous.position.z;
+		step.i = drawn->position.x - snap_last.position.x;
+		step.j = drawn->position.y - snap_last.position.y;
+		step.k = drawn->position.z - snap_last.position.z;
+		speed = vector_length(&path);
+		distance = vector_length(&step);
+		along = path.i * step.i + path.j * step.j + path.k * step.k;
+		allowed = speed * (advance > 0.0f ? advance : 0.0f) * SNAP_STEP_FACTOR + SNAP_STEP_SLACK;
+		degrees = snap_degrees(&snap_last.forward, &drawn->forward);
+		allowed_degrees = snap_degrees(&camera->previous.forward, &camera->latest.forward) *
+			(advance > 0.0f ? advance : 0.0f) * SNAP_STEP_FACTOR + SNAP_TURN_SLACK_DEGREES;
+		backward = speed > 0.005f && distance > 0.01f && along < 0.0f;
+		snap = backward || distance > allowed || degrees > allowed_degrees || advance < -0.001f || cut;
+		snap_window.frames++;
+		if (distance > snap_window.maximum_step)
+			snap_window.maximum_step = distance;
+		if (degrees > snap_window.maximum_degrees)
+			snap_window.maximum_degrees = degrees;
+		if (snap)
+		{
+			/* (the worst: past what was allowed, a world unit counted as 30 degrees) */
+			double excess = (distance - allowed > 0.0f ? distance - allowed : 0.0f) * 30.0 +
+				(degrees - allowed_degrees > 0.0f ? degrees - allowed_degrees : 0.0f) + (backward ? distance * 30.0 : 0.0);
+			struct player_datum *player = local_player_get_player_index(0) != NONE ?
+				player_try_and_get(local_player_get_player_index(0)) : NULL;
+			struct unit_datum *unit = player && player->unit_index != NONE ?
+				(struct unit_datum *)object_try_and_get_and_verify_type(player->unit_index, _object_mask_unit) : NULL;
+
+			snap_window.snaps++;
+			snap_window.backward += backward;
+			snap_window.clock_backward += advance < -0.001f;
+			snap_window.cuts += cut;
+			if (excess >= snap_window.worst_excess)
+			{
+				double *worst = snap_window.worst;
+
+				snap_window.worst_excess = excess;
+				worst[0] = distance;
+				worst[1] = allowed;
+				worst[2] = degrees;
+				worst[3] = allowed_degrees;
+				worst[4] = (double)ticks;
+				worst[5] = snap_last.fraction;
+				worst[6] = interpolation_fraction;
+				worst[7] = now - snap_last.time;
+				worst[8] = now - web_tick_time;
+				worst[9] = network_web_trigger_down();
+				worst[10] = unit && TEST_FLAG(unit->unit.control_flags, _unit_control_crouch_modifier_bit);
+				worst[11] = halo_linux_camera_assist_enabled(0) ? 1.0 : 0.0;
+				worst[12] = corrections != snap_last.corrections;
+				worst[13] = cut;
+			}
+		}
+	}
+	snap_last.valid = TRUE;
+	snap_last.position = drawn->position;
+	snap_last.forward = drawn->forward;
+	snap_last.tick = interpolation_tick;
+	snap_last.fraction = interpolation_fraction;
+	snap_last.time = now;
+	snap_last.corrections = corrections;
+}
+
+/* since the last call: [0] frames measured, [1] snaps, [2] of them moving
+back, [3] drawn earlier on the game clock, [4] camera cuts, [5] the longest
+step (world units), [6] the largest turn (degrees), [7..20] the worst snap
+(see snap_window.worst) */
+void render_interpolation_web_snaps(double values[21])
+{
+	values[0] = snap_window.frames;
+	values[1] = snap_window.snaps;
+	values[2] = snap_window.backward;
+	values[3] = snap_window.clock_backward;
+	values[4] = snap_window.cuts;
+	values[5] = snap_window.maximum_step;
+	values[6] = snap_window.maximum_degrees;
+	memcpy(&values[7], snap_window.worst, sizeof(snap_window.worst));
+	memset(&snap_window, 0, sizeof(snap_window));
+}
+#endif
