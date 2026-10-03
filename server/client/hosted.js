@@ -114,8 +114,15 @@
     };
   }
 
+  /* Chrome refuses a new pointer lock for about a second after the player
+     left one (Escape): "Pointer lock cannot be acquired immediately after
+     the user has exited the lock." That is no refusal to tell anyone about. */
+  function isLockCooldown(error) {
+    return !!error && error.name === "SecurityError" && /immediately after/i.test(String(error.message || ""));
+  }
+
   global.HaloHostedUI = { createController: createController, surfaceFor: surfaceFor, MAPS: MAPS, MODES: MODES,
-    pointerLock: null };
+    isLockCooldown: isLockCooldown, pointerLock: null };
 
   var document = global.document;
   if (!document || typeof document.createElement !== "function" || !document.documentElement ||
@@ -216,8 +223,10 @@
     element("progress", { id: "hosted-map-loading-progress", max: "100", value: "0" }),
   ]);
   var lockNotice = element("div", { id: "hosted-lock-notice", hidden: true, role: "status" }, [
-    element("span", { text: "Mouse capture was blocked by this Discord client; fully restart Discord (Quit from the tray) " +
-      "and relaunch. Playing without mouse look." }),
+    element("span", { text: global.HaloActivity || /[?&]frame_id=/.test(String(global.location && global.location.search)) ?
+      "Mouse capture was blocked by this Discord client; fully restart Discord (Quit from the tray) " +
+        "and relaunch. Playing without mouse look." :
+      "The browser refused mouse capture. Playing without mouse look." }),
     element("button", { type: "button", id: "hosted-lock-retry", text: "Retry" }),
     element("button", { type: "button", id: "hosted-lock-menu", text: "Menu" }),
   ]);
@@ -284,12 +293,21 @@
   /* Takes the mouse. A refusal (the promise, pointerlockerror, or nothing
      within 1.5 s) never leaves the player behind the overlay: it goes, the
      game keeps the keyboard, and a notice explains and offers a retry. */
-  var lockAttempt = { pending: false, timer: 0, reported: false };
+  var lockAttempt = { pending: false, timer: 0, reported: false, retried: false, retryTimer: 0 };
+  var LOCK_COOLDOWN_RETRY_MILLISECONDS = 1200;
 
   function lockFailed(error) {
     if (!lockAttempt.pending) return;
     lockAttempt.pending = false;
     global.clearTimeout(lockAttempt.timer);
+    /* (the cooldown after Escape: once more when it is over, still within
+    the click's activation; the overlay stays meanwhile) */
+    if (isLockCooldown(error) && !lockAttempt.retried) {
+      lockAttempt.retried = true;
+      global.clearTimeout(lockAttempt.retryTimer);
+      lockAttempt.retryTimer = global.setTimeout(requestLock, LOCK_COOLDOWN_RETRY_MILLISECONDS);
+      return;
+    }
     controller.lockFailed();
     if (!lockAttempt.reported) {
       lockAttempt.reported = true;
@@ -329,6 +347,8 @@
   }
 
   function play() {
+    lockAttempt.retried = false;
+    global.clearTimeout(lockAttempt.retryTimer);
     requestLock();
     controller.applyAudio();
     if (!controller.audio.muted && typeof global.resumeBrowserAudio === "function") global.resumeBrowserAudio();

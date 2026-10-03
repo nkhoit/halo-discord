@@ -62,6 +62,7 @@ void network_player_attach_unit(long player_index, long unit_index);
 void network_player_detach_unit(long player_index);
 void network_player_show_pickup(long player_index, short kind, long definition_index, short count);
 /* game_engine.c's */
+void game_engine_client_respawned(long player_index);
 long game_engine_write_network_state(byte *buffer, long size);
 void game_engine_read_network_state(byte const *buffer, long size);
 
@@ -110,6 +111,9 @@ good, the host's player somewhere its own is not) */
 #define HOST_ACCEPT_TOLERANCE 3.5f
 #define REMOTE_CORRECTION_TOLERANCE 0.05f
 #define LOCAL_CORRECTION_TOLERANCE 3.0f
+/* ticks a client's respawn countdown may differ from the host's before it
+takes the host's (which arrives a one-way trip late) */
+#define RESPAWN_TIMER_TOLERANCE 6
 
 struct distributed_unit_state
 {
@@ -123,7 +127,8 @@ struct distributed_unit_state
 	/* the vehicle it rides and its seat, NONE for none */
 	long vehicle_index;
 	short seat_index;
-	short pad1;
+	/* (dead) ticks until the host respawns the player */
+	short respawn_timer;
 	real_point3d position;
 	real_vector3d velocity;
 	real_vector3d forward;
@@ -688,6 +693,8 @@ static void distributed_state_from_player(
 		state->active_camouflage = unit->unit.active_camouflage;
 	}
 	state->killing_player_index = NO_PLAYER;
+	if (unit_index == NONE)
+		state->respawn_timer = (short)MIN(player->respawn_timer, 32767);
 	if (unit_index == NONE && player_index < MAXIMUM_TRACKED_PLAYERS && distributed_deaths[player_index].valid)
 	{
 		struct distributed_death const *death = &distributed_deaths[player_index];
@@ -831,6 +838,16 @@ static void distributed_handle_unit_states(
 			network_damage.c, usually kills it here first) */
 			if (unit_index != NONE)
 				unit_kill_no_statistics(unit_index);
+			/* the host's respawn timer, which this machine counts down between
+			ticks (game_engine_client_respawn_countdown): taken when it is
+			further off than the host's word is late */
+			if (distributed_living_unit(player) == NONE)
+			{
+				long difference = player->respawn_timer - state->respawn_timer;
+
+				if (difference > RESPAWN_TIMER_TOLERANCE || difference < -RESPAWN_TIMER_TOLERANCE)
+					player->respawn_timer = state->respawn_timer;
+			}
 			continue;
 		}
 		/* spawned on the host: the host's unit is the player's here too, once
@@ -845,6 +862,7 @@ static void distributed_handle_unit_states(
 			if (player->unit_index != NONE)
 				network_player_detach_unit(player_index);
 			network_player_attach_unit(player_index, state->unit_index);
+			game_engine_client_respawned(player_index);
 			/* (a unit of a life this machine missed the end of, no player's
 			now: unit_kill_no_statistics is for players' units only) */
 			if (unit_index != NONE && unit_index != state->unit_index)

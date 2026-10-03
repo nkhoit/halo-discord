@@ -3624,12 +3624,14 @@ void players_update_before_game(
 				if (game_engine_running())
 				{
 					/* (a client of the distributed netcode's players take the units
-					the host spawns them with, network_player_attach_unit) */
-					if (
+					the host spawns them with, network_player_attach_unit; the
+					client counts down to it all the same) */
 #ifdef HALO_LINUX
-						!network_game_distributed_client() &&
+					if (network_game_distributed_client())
+						game_engine_client_respawn_countdown(iterator.datum_index);
+					else
 #endif
-						game_engine_should_spawn_player(iterator.datum_index))
+					if (game_engine_should_spawn_player(iterator.datum_index))
 					{
 						game_engine_prespawn_player_update(iterator.datum_index);
 						player_spawn(iterator.datum_index);

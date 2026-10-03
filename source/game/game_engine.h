@@ -362,6 +362,15 @@ real game_engine_get_starting_location_rating(
 	struct player_starting_location const *starting_location);
 boolean game_engine_should_spawn_player(
 	long player_index);
+
+#ifdef HALO_LINUX
+/* (a client of the distributed netcode) a dead player's respawn countdown
+and its sounds, without the spawn, which is the host's */
+void game_engine_client_respawn_countdown(
+	long player_index);
+void game_engine_client_respawned(
+	long player_index);
+#endif
 void game_engine_postspawn_player_update(
 	long player_index);
 

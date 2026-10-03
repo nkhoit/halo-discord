@@ -170,8 +170,8 @@ static void network_test_log_players(
 		}
 		else
 		{
-			length += snprintf(line + length, sizeof(line) - (size_t)length, " player %ld: dead",
-				(long)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index));
+			length += snprintf(line + length, sizeof(line) - (size_t)length, " player %ld: dead r%ld",
+				(long)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index), (long)player->respawn_timer);
 		}
 		/* the game type's score and the kills and deaths */
 		length += snprintf(line + length, sizeof(line) - (size_t)length, " s%ld k%d d%d",
@@ -436,22 +436,83 @@ static void network_test_pickup(
 	}
 }
 
+/* the first player kills the last (a kill that scores), and picks up a
+weapon lying about and two grenades of each kind */
+static void network_test_kill(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	struct player_datum *last = NULL;
+
+	struct player_datum *first = NULL;
+	long first_index = NONE;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		if (!first)
+		{
+			first = player;
+			first_index = iterator.datum_index;
+		}
+		last = player;
+	}
+	if (last && last != first && last->unit_index != NONE && first->unit_index != NONE)
+	{
+		/* killed by the first player: a kill that scores */
+		platform_log("network test: the first player kills the last");
+		damage_kill_object_for_player(last->unit_index, first_index);
+		/* and picks up a weapon lying about, and two grenades of each kind */
+		{
+			struct object_iterator objects;
+			struct unit_datum *unit = unit_get(first->unit_index);
+
+			object_iterator_new(&objects, _object_mask_weapon, 0);
+			while (object_iterator_next(&objects))
+			{
+				struct weapon_datum *weapon = weapon_get(objects.index);
+
+				if (weapon->object.parent_object_index == NONE &&
+					weapon->definition_index != weapon_get(unit->unit.weapon_object_indices[0])->definition_index)
+				{
+					if (unit_add_weapon_to_inventory(first->unit_index, objects.index, TRUE))
+						platform_log("network test: the first player picks up a weapon");
+					break;
+				}
+			}
+			unit->unit.grenade_counts[0] = 2;
+			unit->unit.grenade_counts[1] = 2;
+		}
+	}
+}
+
 void network_test_update(
 	boolean main_menu_loaded,
 	real seconds)
 {
 	if (!network_test.checked)
 		network_test_read_settings();
-	/* (scripted hits also in games the menus made, for measuring) */
+	/* (scripted hits and kills also in games the menus made, for measuring;
+	the players logged every second) */
 	if (network_test.mode == _network_test_off)
 	{
-		if (network_test.shoot_interval > 0.0f && game_in_progress() && !main_menu_loaded &&
-			game_connection() != _game_connection_local &&
+		if ((network_test.shoot_interval > 0.0f || network_test.kill_interval > 0.0f) && game_in_progress() &&
+			!main_menu_loaded && game_connection() != _game_connection_local &&
 			game_time_get() - network_test.logged_time >= TICKS_PER_SECOND)
 		{
 			network_test.logged_time = game_time_get();
-			if (game_time_get() % (long)(network_test.shoot_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)
+			network_test_log_players();
+			if (network_test.shoot_interval > 0.0f &&
+				game_time_get() % (long)(network_test.shoot_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)
+			{
 				network_test_shoot();
+			}
+			if (network_test.kill_interval > 0.0f && game_connection() == _game_connection_network_server &&
+				game_time_get() % (long)(network_test.kill_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)
+			{
+				network_test_kill();
+			}
 		}
 		return;
 	}
@@ -508,50 +569,7 @@ void network_test_update(
 		if (network_test.mode == _network_test_host && network_test.kill_interval > 0.0f &&
 			game_time_get() % (long)(network_test.kill_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)
 		{
-			struct data_iterator iterator;
-			struct player_datum *player;
-			struct player_datum *last = NULL;
-
-			struct player_datum *first = NULL;
-			long first_index = NONE;
-
-			data_iterator_new(&iterator, player_data);
-			while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
-			{
-				if (!first)
-				{
-					first = player;
-					first_index = iterator.datum_index;
-				}
-				last = player;
-			}
-			if (last && last != first && last->unit_index != NONE && first->unit_index != NONE)
-			{
-				/* killed by the first player: a kill that scores */
-				platform_log("network test: the first player kills the last");
-				damage_kill_object_for_player(last->unit_index, first_index);
-				/* and picks up a weapon lying about, and two grenades of each kind */
-				{
-					struct object_iterator objects;
-					struct unit_datum *unit = unit_get(first->unit_index);
-
-					object_iterator_new(&objects, _object_mask_weapon, 0);
-					while (object_iterator_next(&objects))
-					{
-						struct weapon_datum *weapon = weapon_get(objects.index);
-
-						if (weapon->object.parent_object_index == NONE &&
-							weapon->definition_index != weapon_get(unit->unit.weapon_object_indices[0])->definition_index)
-						{
-							if (unit_add_weapon_to_inventory(first->unit_index, objects.index, TRUE))
-								platform_log("network test: the first player picks up a weapon");
-							break;
-						}
-					}
-					unit->unit.grenade_counts[0] = 2;
-					unit->unit.grenade_counts[1] = 2;
-				}
-			}
+			network_test_kill();
 		}
 	}
 
