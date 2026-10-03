@@ -119,6 +119,10 @@ to 4.
 One movement of the mouse wheel changes the weapon one time. A second
 movement after a short pause changes it again.
 
+These are the defaults. The setting `input.bindings` gives a control other
+keys or mouse buttons (the hosted web page sets it from Settings in its
+Escape menu, and keeps it in the browser).
+
 In the menus, the mouse moves a pointer:
 
 - The item below the pointer gets the focus.
@@ -156,6 +160,7 @@ the setting for one start of the game. It has priority over the file.
 | `audio.volume` | `1.0` | `HALO_VOLUME` | The master volume. |
 | `input.mouse_sensitivity` | `1.0` | `HALO_MOUSE_SENSITIVITY` | The multiplier for the mouse aim. |
 | `input.invert_mouse` | `false` | `HALO_MOUSE_INVERT=1` sets `true` | `true`: the vertical mouse aim is inverted. |
+| `input.bindings` | `""` | `HALO_INPUT_BINDINGS` | Keys and mouse buttons other than the defaults: `control=input,input;...`. The controls are `move_forward`, `move_back`, `move_left`, `move_right`, `jump`, `melee`, `action`, `switch_weapon`, `flashlight`, `switch_grenade`, `grenade`, `fire`, `crouch`, `zoom`, `pause`, `back` and `dpad_up`/`down`/`left`/`right`. An input is `key:` and an SDL scancode name or number (`key:Left Shift`, `key:225`), `mouse:left`, `middle`, `right`, `x1` or `x2`, or `wheel`. A control in the list takes only its inputs (none: no input); the others keep their defaults. Example: `jump=key:Space,mouse:x2;crouch=key:Left Shift`. |
 | `game.language` | `""` | `HALO_LANGUAGE` | The language of the menus: `ja`, `de`, `fr`, `es` or `it`. Empty: English. |
 | `paths.data` | `""` | `HALO_DATA_ROOT` | The data root. Refer to "Start the game". |
 | `paths.saves` | `""` | `HALO_SAVE_ROOT` | The save root. Refer to "Files and folders". |

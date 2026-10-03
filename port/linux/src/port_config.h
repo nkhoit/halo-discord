@@ -21,5 +21,12 @@ const char *config_string(const char *name);
 /* sets a boolean setting, and writes it into config.toml (only its line
 changes); 1 on success */
 int config_write_boolean(const char *name, int value);
+/* sets a setting for this run from text, as its environment variable would
+(the web page's settings: it keeps them itself); 1 on success */
+int config_set_text(const char *name, const char *text);
+/* a string setting copied whole into buffer (another thread may set it) */
+void config_copy_string(const char *name, char *buffer, unsigned long size);
+/* changes each time a setting is set while running */
+unsigned long config_generation(void);
 
 #endif

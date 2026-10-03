@@ -36,8 +36,9 @@ static unsigned keyboard_movement_axes[4];
 static struct {DWORD packet_number; XINPUT_GAMEPAD previous;} controllers[4];
 static Uint64 SDL_GetTicks(void) {return ticks;}
 static SDL_JoystickID SDL_GetGamepadID(SDL_Gamepad *p) {return p->id;}
-static int config_boolean(const char *key) {(void)key;return 0;}
-static float mouse_sensitivity(void) {return 1.f;}
+static float mouse_sensitivity_value=1.f;
+static BOOL mouse_invert_value=0;
+static void mouse_settings_refresh(void) {}
 static void platform_pump_events(void) {}
 static void platform_input_read(struct platform_input_state *input,int consume) {(void)consume;*input=physical_input;}
 static int sdl_gamepads(SDL_Gamepad **out) {for(int i=0;i<pad_count;i++)out[i]=&pads[i];return pad_count;}

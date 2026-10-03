@@ -40,7 +40,10 @@ try {
   'static void keyboard_gamepad', 'void test_input_hold_action', 'static int test_input_gamepad',
   'static SHORT stick', 'static void merge_button', 'static void sdl_gamepad_state',
   'HANDLE WINAPI XInputOpen', 'VOID WINAPI XInputClose', 'static int controller_port', 'DWORD WINAPI XInputGetState'];
- fs.writeFileSync(path.join(temp, 'xinput_movement.inc'), functions.map(m => block(xinput, m)).join('\n'));
+ fs.writeFileSync(path.join(temp, 'xinput_movement.inc'),
+  section(xinput, '/* The keys and mouse buttons of each of the controller\'s controls', 'static BOOL input_control_down(') +
+  block(xinput, 'static BOOL input_control_down(') + '\n' +
+  functions.map(m => block(xinput, m)).join('\n'));
  const abstraction = read('source/input/input_abstraction.c');
  fs.writeFileSync(path.join(temp, 'movement_policy.inc'), block(abstraction, 'boolean input_abstraction_keyboard_crouch_enabled'));
  fs.writeFileSync(path.join(temp, 'movement_mapping.inc'), section(abstraction, '\t\t\t{\n\t\t\t\treal scale;', 'input_abstraction_globals.controller_available[controller_index] = TRUE;'));

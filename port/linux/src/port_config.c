@@ -88,6 +88,14 @@ static const struct config_setting config_settings[] =
 		"How far the view turns for the mouse's movement." },
 	{ "input.invert_mouse", _config_boolean, "false", "HALO_MOUSE_INVERT", _environment_set_is_true, _platform_desktop,
 		"Moving the mouse forward looks down." },
+	{ "input.bindings", _config_string, "\"\"", "HALO_INPUT_BINDINGS", _environment_value, _platform_desktop,
+		"Keys and mouse buttons other than the defaults (port/linux/README.md,\n"
+		"\"Controls\"): control=input,input;... where a control is move_forward,\n"
+		"move_back, move_left, move_right, jump, melee, action, switch_weapon,\n"
+		"flashlight, switch_grenade, grenade, fire, crouch, zoom, pause, back or\n"
+		"dpad_up/down/left/right, and an input is key:<SDL scancode name or\n"
+		"number>, mouse:left/middle/right/x1/x2 or wheel. A control listed takes\n"
+		"only the inputs listed (none: unbound); the others keep theirs." },
 
 	{ "game.language", _config_string, "\"\"", "HALO_LANGUAGE", _environment_value, _platform_all,
 		"The language the game asks the Xbox for: \"ja\", \"de\", \"fr\", \"es\" or \"it\";\n"
@@ -237,6 +245,7 @@ struct config_value
 
 static struct config_value config_values[NUMBER_OF_CONFIG_SETTINGS];
 static int config_loaded = 0;
+static unsigned long config_changes = 0;
 static pthread_mutex_t config_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* ---------- the file */
@@ -794,6 +803,7 @@ int config_write_boolean(const char *name, int value)
 	config_boolean(name);
 	pthread_mutex_lock(&config_lock);
 	config_values[index].boolean = value != 0;
+	config_changes++;
 	snprintf(section, sizeof(section), "%.*s", (int)(dot - name), name);
 	snprintf(key, sizeof(key), "%s", dot + 1);
 	snprintf(line_text, sizeof(line_text), "%s = %s\n", key, value ? "true" : "false");
@@ -875,4 +885,40 @@ const char *config_string(const char *name)
 	const char *string = config_value(name, _config_string)->string;
 
 	return string ? string : "";
+}
+
+int config_set_text(const char *name, const char *text)
+{
+	long index = config_setting_index(name);
+
+	if (index < 0 || !text)
+		return 0;
+	/* (the file read first, as the other settings are) */
+	config_value(name, config_settings[index].type);
+	pthread_mutex_lock(&config_lock);
+	config_set_from_text(&config_values[index], config_settings[index].type, text);
+	config_changes++;
+	pthread_mutex_unlock(&config_lock);
+	return 1;
+}
+
+void config_copy_string(const char *name, char *buffer, unsigned long size)
+{
+	const struct config_value *value = config_value(name, _config_string);
+
+	if (!size)
+		return;
+	pthread_mutex_lock(&config_lock);
+	snprintf(buffer, size, "%s", value->string ? value->string : "");
+	pthread_mutex_unlock(&config_lock);
+}
+
+unsigned long config_generation(void)
+{
+	unsigned long generation;
+
+	pthread_mutex_lock(&config_lock);
+	generation = config_changes;
+	pthread_mutex_unlock(&config_lock);
+	return generation;
 }

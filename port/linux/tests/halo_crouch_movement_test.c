@@ -92,6 +92,23 @@ static int console_is_active(void) { return console_active; }
 static int gamepad_index_for_port(int p) { return p; }
 static void wheel_update(void) {}
 static void SetLastError(int error) { (void)error; }
+/* (the keyboard's bindings: their defaults, no input.bindings setting) */
+#define SDL_SCANCODE_COUNT 64
+static unsigned long config_generation(void) { return 0; }
+static void config_copy_string(const char *name, char *buffer, unsigned long size) { (void)name; if (size) buffer[0] = 0; }
+static int SDL_GetScancodeFromName(const char *name) { (void)name; return 0; }
+static void platform_log(const char *format, ...) { (void)format; }
+static int SDL_strcasecmp(const char *a, const char *b) { return strcmp(a, b); }
+static char *SDL_strtok_r(char *text, const char *separators, char **state)
+{
+ char *start = text ? text : *state, *end;
+ start += strspn(start, separators);
+ if (!*start) { *state = start; return NULL; }
+ end = start + strcspn(start, separators);
+ if (*end) *end++ = 0;
+ *state = end;
+ return start;
+}
 #include "xinput_movement.inc"
 #include "dead_zone.inc"
 #include "stick_constants.inc"

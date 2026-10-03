@@ -107,8 +107,8 @@ assert.match(xinput,
   /if \(count > 0\)\s*\{\s*look_gamepad = gamepads\[0\];\s*sdl_gamepad_state\(look_gamepad, &state->Gamepad\);\s*\}/,
   'the first physical controller must merge into Halo player one');
 assert.match(xinput,
-  /#ifdef HALO_WEB[\s\S]*?if \(k\[SDL_SCANCODE_C\]\) pad->wButtons \|= XINPUT_GAMEPAD_LEFT_THUMB;[\s\S]*?#else[\s\S]*?SDL_SCANCODE_LCTRL/,
-  'web crouch must use C without exposing Ctrl movement shortcuts');
+  /#ifdef HALO_WEB[\s\S]*?\{ 1, \{ SDL_SCANCODE_C \} \},[\s\S]*?#else[\s\S]*?\{ 2, \{ SDL_SCANCODE_LCTRL, SDL_SCANCODE_C \} \},/,
+  'web crouch must default to C without exposing Ctrl movement shortcuts');
 assert.match(shell,
   /function lockFullscreenMovementKeys\(\)[\s\S]*?navigator\.keyboard\.lock\(\["KeyW", "KeyA", "KeyS", "KeyD"\]\)[\s\S]*?fullscreenchange[\s\S]*?lockFullscreenMovementKeys\(\)/,
   'fullscreen should progressively lock movement keys against browser shortcuts');

@@ -17,6 +17,9 @@ Keyboard and mouse (port 0):
 	escape           start               F1               back
 	F12              release or recapture the mouse
 
+These are the defaults: the setting input.bindings gives a control other
+keys or mouse buttons (keyboard_gamepad's table below).
+
 In the menus the mouse is free and drives a pointer instead
 (port/linux/include/halo_ui_pointer.h, source/interface/ui_widget.c): its
 motion, buttons and wheel do not reach the controller then.
@@ -148,17 +151,31 @@ static void aim_look_update_gamepad_locked(
 		gamepad ? state->sThumbRY : 0, SDL_GetTicks());
 }
 
-static float mouse_sensitivity(void)
-{
-	static float sensitivity = -1.0f;
+/* input.mouse_sensitivity and input.invert_mouse, again whenever a setting
+has changed (the web page's Settings set them while playing) */
+static float mouse_sensitivity_value = 1.0f;
+static BOOL mouse_invert_value = FALSE;
+static unsigned long mouse_settings_generation;
+static BOOL mouse_settings_ready = FALSE;
 
-	if (sensitivity < 0.0f)
-	{
-		sensitivity = (float)config_real("input.mouse_sensitivity");
-		if (sensitivity <= 0.0f)
-			sensitivity = 1.0f;
-	}
-	return sensitivity;
+static void mouse_settings_refresh(void)
+{
+	unsigned long generation = config_generation();
+	float sensitivity;
+	BOOL invert;
+
+	if (mouse_settings_ready && generation == mouse_settings_generation)
+		return;
+	sensitivity = (float)config_real("input.mouse_sensitivity");
+	if (sensitivity <= 0.0f)
+		sensitivity = 1.0f;
+	invert = config_boolean("input.invert_mouse") ? TRUE : FALSE;
+	if (mouse_settings_ready && (sensitivity != mouse_sensitivity_value || invert != mouse_invert_value))
+		platform_log("input: mouse sensitivity %.2f%s", sensitivity, invert ? ", inverted" : "");
+	mouse_sensitivity_value = sensitivity;
+	mouse_invert_value = invert;
+	mouse_settings_generation = generation;
+	mouse_settings_ready = TRUE;
 }
 
 int halo_linux_camera_assist_enabled(short gamepad_index)
@@ -180,15 +197,13 @@ int halo_linux_mouse_look(short gamepad_index, float *yaw, float *pitch)
 {
 	/* radians per pixel of relative motion at sensitivity 1 */
 	const float scale = 0.0022f;
-	static int invert = -1;
 	float x, y;
 
 	*yaw = 0.0f;
 	*pitch = 0.0f;
 	if (gamepad_index != 0)
 		return FALSE;
-	if (invert < 0)
-		invert = config_boolean("input.invert_mouse");
+	mouse_settings_refresh();
 	pthread_mutex_lock(&mouse_lock);
 	aim_look_states_initialize_locked();
 	x = mouse_pending_x;
@@ -199,8 +214,8 @@ int halo_linux_mouse_look(short gamepad_index, float *yaw, float *pitch)
 	pthread_mutex_unlock(&mouse_lock);
 	if (x == 0.0f && y == 0.0f)
 		return FALSE;
-	*yaw = -x * scale * mouse_sensitivity();
-	*pitch = (invert ? y : -y) * scale * mouse_sensitivity();
+	*yaw = -x * scale * mouse_sensitivity_value;
+	*pitch = (mouse_invert_value ? y : -y) * scale * mouse_sensitivity_value;
 	return TRUE;
 }
 
@@ -233,6 +248,212 @@ static BYTE analog(BOOL down)
 	return down ? 0xff : 0x00;
 }
 
+/* The keys and mouse buttons of each of the controller's controls: the
+defaults below (port/linux/README.md, "Controls"), except the controls the
+setting input.bindings lists (port_config.c). The hosted web page sets it
+from its own Settings (platform_web_bind_input). */
+enum input_control
+{
+	_input_move_forward,
+	_input_move_back,
+	_input_move_left,
+	_input_move_right,
+	_input_jump,
+	_input_melee,
+	_input_action,
+	_input_switch_weapon,
+	_input_flashlight,
+	_input_switch_grenade,
+	_input_grenade,
+	_input_fire,
+	_input_crouch,
+	_input_zoom,
+	_input_pause,
+	_input_back,
+	_input_dpad_up,
+	_input_dpad_down,
+	_input_dpad_left,
+	_input_dpad_right,
+	NUMBER_OF_INPUT_CONTROLS
+};
+
+/* an input: a key (its SDL scancode), a mouse button or the wheel */
+#define INPUT_MOUSE_BUTTON(button) (0x1000 + (button))
+#define INPUT_WHEEL 0x2000
+#define MAXIMUM_INPUT_BINDINGS 4
+
+struct input_binding
+{
+	int count;
+	int inputs[MAXIMUM_INPUT_BINDINGS];
+};
+
+static const char *const input_control_names[NUMBER_OF_INPUT_CONTROLS] =
+{
+	"move_forward", "move_back", "move_left", "move_right", "jump", "melee", "action", "switch_weapon",
+	"flashlight", "switch_grenade", "grenade", "fire", "crouch", "zoom", "pause", "back",
+	"dpad_up", "dpad_down", "dpad_left", "dpad_right",
+};
+
+static const struct input_binding input_default_bindings[NUMBER_OF_INPUT_CONTROLS] =
+{
+	{ 1, { SDL_SCANCODE_W } },
+	{ 1, { SDL_SCANCODE_S } },
+	{ 1, { SDL_SCANCODE_A } },
+	{ 1, { SDL_SCANCODE_D } },
+	{ 3, { SDL_SCANCODE_SPACE, SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER } },
+	{ 3, { SDL_SCANCODE_F, SDL_SCANCODE_BACKSPACE, INPUT_MOUSE_BUTTON(SDL_BUTTON_X1) } },
+	{ 2, { SDL_SCANCODE_E, SDL_SCANCODE_R } },
+	{ 2, { SDL_SCANCODE_TAB, INPUT_WHEEL } },
+	{ 1, { SDL_SCANCODE_Q } },
+	{ 1, { SDL_SCANCODE_X } },
+	{ 2, { SDL_SCANCODE_G, INPUT_MOUSE_BUTTON(SDL_BUTTON_RIGHT) } },
+	{ 1, { INPUT_MOUSE_BUTTON(SDL_BUTTON_LEFT) } },
+#ifdef HALO_WEB
+	/* Control plus a movement key is a browser shortcut (Ctrl+W closes the
+	 * tab, Ctrl+S opens Save, and Ctrl+D bookmarks). Keep web crouch on C so
+	 * ordinary tab play cannot accidentally leave the game. */
+	{ 1, { SDL_SCANCODE_C } },
+#else
+	{ 2, { SDL_SCANCODE_LCTRL, SDL_SCANCODE_C } },
+#endif
+	{ 2, { SDL_SCANCODE_Z, INPUT_MOUSE_BUTTON(SDL_BUTTON_MIDDLE) } },
+	{ 1, { SDL_SCANCODE_ESCAPE } },
+	{ 1, { SDL_SCANCODE_F1 } },
+	{ 1, { SDL_SCANCODE_UP } },
+	{ 1, { SDL_SCANCODE_DOWN } },
+	{ 1, { SDL_SCANCODE_LEFT } },
+	{ 1, { SDL_SCANCODE_RIGHT } },
+};
+
+static struct input_binding input_bindings[NUMBER_OF_INPUT_CONTROLS];
+static unsigned long input_bindings_generation;
+static BOOL input_bindings_ready = FALSE;
+
+/* "key:<SDL scancode name or number>", "mouse:<left|middle|right|x1|x2 or
+1-5>" or "wheel"; -1 if it is none */
+static int input_parse(const char *text)
+{
+	static const char *const buttons[] = { "left", "middle", "right", "x1", "x2" };
+	char *end;
+	long number;
+	int index;
+
+	while (*text == ' ')
+		text++;
+	if (!strcmp(text, "wheel"))
+		return INPUT_WHEEL;
+	if (!strncmp(text, "mouse:", 6))
+	{
+		for (index = 0; index < 5; index++)
+		{
+			if (!SDL_strcasecmp(text + 6, buttons[index]))
+				return INPUT_MOUSE_BUTTON(index + 1);
+		}
+		number = strtol(text + 6, &end, 10);
+		return end != text + 6 && !*end && number >= 1 && number <= 5 ? INPUT_MOUSE_BUTTON((int)number) : -1;
+	}
+	if (!strncmp(text, "key:", 4))
+	{
+		number = strtol(text + 4, &end, 10);
+		if (end != text + 4 && !*end)
+			return number > 0 && number < SDL_SCANCODE_COUNT ? (int)number : -1;
+		number = SDL_GetScancodeFromName(text + 4);
+		return number > 0 ? (int)number : -1;
+	}
+	return -1;
+}
+
+/* the defaults, then each control "spec" lists (control=input,input;...) */
+static void input_bindings_parse(const char *spec, struct input_binding *bindings)
+{
+	char copy[1024];
+	char *control_text;
+	char *control_state = NULL;
+
+	memcpy(bindings, input_default_bindings, sizeof(input_default_bindings));
+	snprintf(copy, sizeof(copy), "%s", spec);
+	for (control_text = SDL_strtok_r(copy, ";", &control_state); control_text;
+		control_text = SDL_strtok_r(NULL, ";", &control_state))
+	{
+		char *equals = strchr(control_text, '=');
+		char *input_text;
+		char *input_state = NULL;
+		int control;
+
+		while (*control_text == ' ')
+			control_text++;
+		if (!equals)
+			continue;
+		*equals = 0;
+		for (control = 0; control < NUMBER_OF_INPUT_CONTROLS; control++)
+		{
+			if (!strcmp(control_text, input_control_names[control]))
+				break;
+		}
+		if (control == NUMBER_OF_INPUT_CONTROLS)
+			continue;
+		bindings[control].count = 0;
+		for (input_text = SDL_strtok_r(equals + 1, ",", &input_state); input_text;
+			input_text = SDL_strtok_r(NULL, ",", &input_state))
+		{
+			int input = input_parse(input_text);
+
+			if (input >= 0 && bindings[control].count < MAXIMUM_INPUT_BINDINGS)
+				bindings[control].inputs[bindings[control].count++] = input;
+		}
+	}
+}
+
+/* (each poll) the bindings, again whenever a setting has changed */
+static void input_bindings_refresh(void)
+{
+	unsigned long generation = config_generation();
+
+	if (input_bindings_ready && generation == input_bindings_generation)
+		return;
+	{
+		char spec[1024];
+		static char applied[1024];
+
+		config_copy_string("input.bindings", spec, sizeof(spec));
+		input_bindings_parse(spec, input_bindings);
+		if (strcmp(spec, applied))
+		{
+			platform_log("input: bindings \"%s\"", spec);
+			snprintf(applied, sizeof(applied), "%s", spec);
+		}
+	}
+	input_bindings_generation = generation;
+	input_bindings_ready = TRUE;
+}
+
+static BOOL input_down(const struct platform_input_state *input, int code)
+{
+	if (code == INPUT_WHEEL)
+		return SDL_GetTicks() < wheel_press_until_ms;
+	if (code >= INPUT_MOUSE_BUTTON(0))
+	{
+		int button = code - INPUT_MOUSE_BUTTON(0);
+
+		return !input->mouse_released && button >= 0 && button < (int)sizeof(input->mouse_buttons) &&
+			input->mouse_buttons[button];
+	}
+	return code >= 0 && code < (int)sizeof(input->keys) && input->keys[code];
+}
+
+static BOOL input_control_down(const struct platform_input_state *input, enum input_control control)
+{
+	int index;
+
+	for (index = 0; index < input_bindings[control].count; index++)
+	{
+		if (input_down(input, input_bindings[control].inputs[index]))
+			return TRUE;
+	}
+	return FALSE;
+}
+
 #ifdef HALO_WEB
 /* (the hosted page) Start and A pressed for a moment by its own buttons:
 the page keeps Escape for itself, and starts the host's match */
@@ -243,19 +464,100 @@ EMSCRIPTEN_KEEPALIVE void platform_web_press_button(int button)
 	if (button >= 0 && button < 2)
 		web_press_until[button] = emscripten_get_now() + 150.0;
 }
+
+/* The page's Settings (its Escape menu), applied as the settings
+input.mouse_sensitivity, input.invert_mouse and input.bindings are: the
+page keeps them, and sets them each visit. Bindings are staged control by
+control (platform_web_bind_input: up to MAXIMUM_INPUT_BINDINGS inputs, in
+input codes: an SDL scancode, 0x1000 + an SDL mouse button, 0x2000 the
+wheel; none unbinds it) and take effect together. */
+static struct input_binding web_staged_bindings[NUMBER_OF_INPUT_CONTROLS];
+static BOOL web_staged_controls[NUMBER_OF_INPUT_CONTROLS];
+
+EMSCRIPTEN_KEEPALIVE int platform_web_set_mouse_sensitivity(double sensitivity)
+{
+	char text[32];
+
+	if (!(sensitivity >= 0.05 && sensitivity <= 20.0))
+		return 0;
+	snprintf(text, sizeof(text), "%.4f", sensitivity);
+	return config_set_text("input.mouse_sensitivity", text);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_set_invert_mouse(int invert)
+{
+	return config_set_text("input.invert_mouse", invert ? "true" : "false");
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_bind_input(int control, int input0, int input1, int input2, int input3)
+{
+	int inputs[MAXIMUM_INPUT_BINDINGS] = { input0, input1, input2, input3 };
+	int index;
+
+	if (control < 0 || control >= NUMBER_OF_INPUT_CONTROLS)
+		return 0;
+	web_staged_bindings[control].count = 0;
+	for (index = 0; index < MAXIMUM_INPUT_BINDINGS; index++)
+	{
+		int input = inputs[index];
+
+		if (input <= 0)
+			continue;
+		if (!(input < SDL_SCANCODE_COUNT || input == INPUT_WHEEL ||
+			(input > INPUT_MOUSE_BUTTON(0) && input <= INPUT_MOUSE_BUTTON(5))))
+		{
+			return 0;
+		}
+		web_staged_bindings[control].inputs[web_staged_bindings[control].count++] = input;
+	}
+	web_staged_controls[control] = TRUE;
+	return 1;
+}
+
+/* the staged controls, the others at their defaults */
+EMSCRIPTEN_KEEPALIVE int platform_web_apply_input_bindings(void)
+{
+	char spec[1024] = "";
+	size_t length = 0;
+	int control;
+
+	for (control = 0; control < NUMBER_OF_INPUT_CONTROLS; control++)
+	{
+		int index;
+
+		if (!web_staged_controls[control])
+			continue;
+		length += (size_t)snprintf(spec + length, sizeof(spec) - length, "%s%s=", length ? ";" : "",
+			input_control_names[control]);
+		for (index = 0; index < web_staged_bindings[control].count && length < sizeof(spec); index++)
+		{
+			int input = web_staged_bindings[control].inputs[index];
+
+			if (input == INPUT_WHEEL)
+				length += (size_t)snprintf(spec + length, sizeof(spec) - length, "%swheel", index ? "," : "");
+			else if (input > INPUT_MOUSE_BUTTON(0))
+				length += (size_t)snprintf(spec + length, sizeof(spec) - length, "%smouse:%d", index ? "," : "",
+					input - INPUT_MOUSE_BUTTON(0));
+			else
+				length += (size_t)snprintf(spec + length, sizeof(spec) - length, "%skey:%d", index ? "," : "", input);
+		}
+		if (length >= sizeof(spec))
+			return 0;
+	}
+	memset(web_staged_controls, 0, sizeof(web_staged_controls));
+	return config_set_text("input.bindings", spec);
+}
 #endif
 
 static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GAMEPAD *pad)
 {
-	const unsigned char *k = input->keys;
-	BOOL mouse = !input->mouse_released;
-	const unsigned char *m = input->mouse_buttons;
 	int x = 0, y = 0;
 
-	if (k[SDL_SCANCODE_D]) x++;
-	if (k[SDL_SCANCODE_A]) x--;
-	if (k[SDL_SCANCODE_W]) y++;
-	if (k[SDL_SCANCODE_S]) y--;
+	input_bindings_refresh();
+	if (input_control_down(input, _input_move_right)) x++;
+	if (input_control_down(input, _input_move_left)) x--;
+	if (input_control_down(input, _input_move_forward)) y++;
+	if (input_control_down(input, _input_move_back)) y--;
 	if (x || y)
 	{
 		/* full deflection, diagonals on the unit circle */
@@ -265,12 +567,12 @@ static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GA
 		pad->sThumbLY = (SHORT)(y * 32767 * length);
 	}
 
-	if (k[SDL_SCANCODE_UP]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_UP;
-	if (k[SDL_SCANCODE_DOWN]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_DOWN;
-	if (k[SDL_SCANCODE_LEFT]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_LEFT;
-	if (k[SDL_SCANCODE_RIGHT]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_RIGHT;
-	if (k[SDL_SCANCODE_ESCAPE]) pad->wButtons |= XINPUT_GAMEPAD_START;
-	if (k[SDL_SCANCODE_F1]) pad->wButtons |= XINPUT_GAMEPAD_BACK;
+	if (input_control_down(input, _input_dpad_up)) pad->wButtons |= XINPUT_GAMEPAD_DPAD_UP;
+	if (input_control_down(input, _input_dpad_down)) pad->wButtons |= XINPUT_GAMEPAD_DPAD_DOWN;
+	if (input_control_down(input, _input_dpad_left)) pad->wButtons |= XINPUT_GAMEPAD_DPAD_LEFT;
+	if (input_control_down(input, _input_dpad_right)) pad->wButtons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+	if (input_control_down(input, _input_pause)) pad->wButtons |= XINPUT_GAMEPAD_START;
+	if (input_control_down(input, _input_back)) pad->wButtons |= XINPUT_GAMEPAD_BACK;
 #ifdef HALO_WEB
 	{
 		double now = emscripten_get_now();
@@ -278,29 +580,22 @@ static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GA
 		if (now < web_press_until[0]) pad->wButtons |= XINPUT_GAMEPAD_START;
 		if (now < web_press_until[1]) pad->bAnalogButtons[XINPUT_GAMEPAD_A] = 0xff;
 	}
-	/* Control plus a movement key is a browser shortcut (Ctrl+W closes the
-	 * tab, Ctrl+S opens Save, and Ctrl+D bookmarks). Keep web crouch on C so
-	 * ordinary tab play cannot accidentally leave the game. */
-	if (k[SDL_SCANCODE_C]) pad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
-#else
-	if (k[SDL_SCANCODE_LCTRL] || k[SDL_SCANCODE_C]) pad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
 #endif
-	if (k[SDL_SCANCODE_Z] || (mouse && m[SDL_BUTTON_MIDDLE])) pad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
+	if (input_control_down(input, _input_crouch)) pad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
+	if (input_control_down(input, _input_zoom)) pad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
 
-	pad->bAnalogButtons[XINPUT_GAMEPAD_A] |= analog(k[SDL_SCANCODE_SPACE] || k[SDL_SCANCODE_RETURN] ||
-		k[SDL_SCANCODE_KP_ENTER]);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(k[SDL_SCANCODE_F] || k[SDL_SCANCODE_BACKSPACE] ||
-		(mouse && m[SDL_BUTTON_X1]));
+	pad->bAnalogButtons[XINPUT_GAMEPAD_A] |= analog(input_control_down(input, _input_jump));
+	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(input_control_down(input, _input_melee));
 	#if defined(HALO_ANDROID) && !defined(HALO_WEB)
 	/* the system back key (gesture or button) backs out of menus */
-	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(k[SDL_SCANCODE_AC_BACK]);
+	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(input->keys[SDL_SCANCODE_AC_BACK]);
 #endif
-	pad->bAnalogButtons[XINPUT_GAMEPAD_X] |= analog(k[SDL_SCANCODE_E] || k[SDL_SCANCODE_R]);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_Y] |= analog(k[SDL_SCANCODE_TAB] || SDL_GetTicks() < wheel_press_until_ms);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] |= analog(k[SDL_SCANCODE_Q]);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] |= analog(k[SDL_SCANCODE_X]);
-	pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] |= analog(k[SDL_SCANCODE_G] || (mouse && m[SDL_BUTTON_RIGHT]));
-	pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] |= analog(mouse && m[SDL_BUTTON_LEFT]);
+	pad->bAnalogButtons[XINPUT_GAMEPAD_X] |= analog(input_control_down(input, _input_action));
+	pad->bAnalogButtons[XINPUT_GAMEPAD_Y] |= analog(input_control_down(input, _input_switch_weapon));
+	pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] |= analog(input_control_down(input, _input_flashlight));
+	pad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] |= analog(input_control_down(input, _input_switch_grenade));
+	pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] |= analog(input_control_down(input, _input_grenade));
+	pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] |= analog(input_control_down(input, _input_fire));
 }
 
 /* A scroll of the wheel switches weapons once: it holds Y for WHEEL_PRESS_MS

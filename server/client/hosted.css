@@ -188,6 +188,29 @@ html.halo-hosted #loading::after { display: none; }
 .hosted-overlay-actions button { flex: 1; }
 .hosted-hint { margin: 0; color: #7f9db3; font-size: .78rem; text-align: center; }
 
+/* Settings, in the overlay: the mouse and the controls */
+.hosted-settings { width: min(34rem, 92vw); max-height: 92vh; overflow-y: auto; box-sizing: border-box; }
+.hosted-settings h3 { margin: .4rem 0 0; font-size: .95rem; color: #a9c4d8; }
+.hosted-sensitivity { display: flex; align-items: center; gap: .6rem; }
+.hosted-sensitivity input { flex: 1; accent-color: #6cc6ff; }
+.hosted-sensitivity output { min-width: 3.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+.hosted-capture-notice { margin: 0; min-height: 1.2em; color: #a9c4d8; font-size: .85rem; }
+.hosted-capture-notice.warning { color: #ffcf8a; }
+.hosted-controls { display: grid; gap: .25rem; }
+.hosted-control { display: grid; grid-template-columns: 9rem 1fr auto; align-items: center; gap: .4rem; }
+.hosted-control-label { font-size: .9rem; }
+.hosted-chips { display: flex; flex-wrap: wrap; gap: .25rem; }
+#hosted-ui .hosted-chip,
+#hosted-ui .hosted-add { min-height: 1.8rem; padding: .15rem .5rem; font-size: .82rem; }
+#hosted-ui .hosted-chip.conflict { border-color: #ffb45c; color: #ffd9a8; }
+#hosted-ui .hosted-add { min-width: 2.2rem; }
+#hosted-ui .hosted-add.capturing { border-color: #8fd3ff; background: #0d4f80; }
+.hosted-unbound { color: #7f9db3; font-size: .82rem; font-style: italic; }
+@media (max-width: 30rem) {
+  .hosted-control { grid-template-columns: 1fr auto; }
+  .hosted-chips { grid-column: 1 / -1; order: 3; }
+}
+
 /* the browser refused the mouse: playing on, with a way back */
 #hosted-lock-notice {
   position: fixed;
