@@ -82,6 +82,7 @@ symbols in this file:
 #include "game/game_engine.h"
 #include "game/players.h"
 #include "main/main.h"
+#include "memory/data.h"
 #include "network_game_globals.h"
 #include "network_game_manager.h"
 #include "network_game_ui.h"
@@ -354,6 +355,25 @@ boolean network_game_add_player(
 					}
 				}
 
+#ifdef HALO_LINUX
+				/* (the distributed netcode) a player keeps the index the server
+				gave it, which is its player's on every machine
+				(network_game_spawn_player), whatever slot holds it here: a
+				machine that joined the match in progress never had the slots
+				of those who left before */
+				if (network_game_distributed() && player->player_list_index != NONE && new_player_index != NONE)
+				{
+					if (VALID_INDEX(player->player_list_index, NETWORK_GAME_PLAYER_SLOTS) &&
+						game->players[player->player_list_index].player_list_index == NONE)
+					{
+						new_player_index = player->player_list_index;
+					}
+					csmemcpy(&game->players[new_player_index], player, sizeof(struct network_player));
+					game->player_count++;
+					result = TRUE;
+				}
+				else
+#endif
 				if ((player->player_list_index == NONE || new_player_index == player->player_list_index) &&
 					new_player_index != NONE)
 				{
@@ -429,6 +449,20 @@ boolean network_game_spawn_player(
 		network_player_is_valid(player));
 
 	controller_index = network_game_player_is_local(player) ? player->controller_index : NONE;
+#ifdef HALO_LINUX
+	/* (the distributed netcode) the player at the index the server gave it,
+	the same on every machine whenever it joined: the netcode names players
+	by index (network_distributed.c) */
+	if (network_game_distributed() && player->player_list_index != NONE)
+	{
+		short salt = player_data->next_identifier ? player_data->next_identifier : (short)0x8000;
+
+		player_index = player_new(player->machine_index,
+			(long)((unsigned long)(unsigned short)salt << 16) | (long)(byte)player->player_list_index,
+			controller_index, player);
+	}
+	else
+#endif
 	player_index = player_new(player->machine_index, NONE, controller_index, player);
 	if (player_index != NONE)
 	{

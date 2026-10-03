@@ -53,6 +53,7 @@ unsigned char network_game_client_has_local_player(
 	short local_player_index);
 unsigned char network_game_server_joinable_in_game(struct network_game_server *server);
 unsigned char network_game_server_match_starting(struct network_game_server *server);
+unsigned char network_game_server_countdown_active(struct network_game_server *server);
 int config_boolean(const char *name);
 int config_write_boolean(const char *name, int value);
 void platform_log(const char *format, ...);
@@ -132,6 +133,9 @@ static struct
 	int wait_frames;
 	int host_map_index;
 	int host_mode_index;
+	/* (the host) the page started the match, which has not begun loading */
+	int start_requested;
+	float start_retry_seconds;
 	float seconds;
 	float player_retry_seconds;
 } web_online;
@@ -621,7 +625,8 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 		memory_order_release);
 	atomic_store_explicit(&web_online_match_starting,
 		global_network_game_server_get() &&
-			network_game_server_match_starting(global_network_game_server_get()) ? 1 : 0,
+			(network_game_server_match_starting(global_network_game_server_get()) ||
+				web_online.start_requested) ? 1 : 0,
 		memory_order_release);
 	request = atomic_exchange_explicit(
 		&web_online_requested_request,
@@ -692,6 +697,28 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 			platform_log("web online: starting the match");
 			network_game_server_pause_countdown(global_network_game_server_get(), WEB_FALSE);
 			network_game_client_request_start_time_change(client, WEB_TRUE);
+			web_online.start_requested = WEB_TRUE;
+			web_online.start_retry_seconds = 0.0f;
+		}
+		if (!client || network_game_client_get_state(client, NULL) != _network_client_pregame ||
+			!global_network_game_server_get() ||
+			network_game_server_match_starting(global_network_game_server_get()))
+		{
+			web_online.start_requested = WEB_FALSE;
+		}
+		else if (web_online.start_requested &&
+			!network_game_server_countdown_active(global_network_game_server_get()))
+		{
+			/* a machine that came into the lobby meanwhile stopped the
+			countdown (Halo stops it while a machine has no player yet):
+			once a second, start it again, as the host would press A */
+			web_online.start_retry_seconds += seconds;
+			if (web_online.start_retry_seconds >= 1.0f)
+			{
+				web_online.start_retry_seconds = 0.0f;
+				network_game_server_pause_countdown(global_network_game_server_get(), WEB_FALSE);
+				network_game_client_request_start_time_change(client, WEB_TRUE);
+			}
 		}
 		update_host(seconds);
 	}

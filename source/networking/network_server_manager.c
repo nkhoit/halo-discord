@@ -464,6 +464,7 @@ symbols in this file:
 #include "interface/ui_widget.h"
 #include "main/main.h"
 #include "math/random_math.h"
+#include "memory/data.h"
 #include "networking/network_client_manager.h"
 #include "networking/network_connection.h"
 #include "networking/network_game_globals.h"
@@ -1329,6 +1330,13 @@ boolean network_game_server_match_starting(
 	return server && server->state == _network_game_server_state_pregame && server->sent_start_game_message;
 }
 
+/* the lobby counts down to its match */
+boolean network_game_server_countdown_active(
+	struct network_game_server *server)
+{
+	return server && server->state == _network_game_server_state_pregame && server->countdown_state.active;
+}
+
 /* a machine that joined the running match and has not finished loading it:
 the match's messages wait until it has */
 boolean network_game_server_client_machine_is_loading_in_game(
@@ -1943,6 +1951,35 @@ boolean network_game_server_add_player_to_game(
 
 		if (player->primary_color_index == NONE)
 			get_unique_random_color(server, player);
+#ifdef HALO_LINUX
+		/* (the distributed netcode, in a match) the player's index is its
+		player's on every machine (network_game_spawn_player): the first
+		that is free in the game and of the players who quit, whom the match
+		keeps */
+		if (network_game_distributed() && server->state == _network_game_server_state_ingame && player_data)
+		{
+			boolean taken[MAXIMUM_NETWORK_PLAYER_COUNT];
+			struct data_iterator iterator;
+			long index;
+
+			csmemset(taken, 0, sizeof(taken));
+			data_iterator_new(&iterator, player_data);
+			while (data_iterator_next(&iterator))
+			{
+				if (DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index) < MAXIMUM_NETWORK_PLAYER_COUNT)
+					taken[DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index)] = TRUE;
+			}
+			player->player_list_index = NONE;
+			for (index = 0; index < MAXIMUM_NETWORK_PLAYER_COUNT; index++)
+			{
+				if (!taken[index] && server->game.players[index].player_list_index == NONE)
+				{
+					player->player_list_index = (char)index;
+					break;
+				}
+			}
+		}
+#endif
 
 		success = network_game_add_player(&server->game, player);
 		if (success == TRUE)

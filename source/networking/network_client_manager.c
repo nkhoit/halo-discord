@@ -2088,6 +2088,7 @@ boolean network_game_client_add_player_to_game(
 #ifdef HALO_LINUX
 		/* (a machine that joined the match in progress is sent the players
 		who came and went while it loaded; one it already has is no change) */
+		struct network_player player_added = *player;
 		long existing_index;
 
 		for (existing_index = 0; existing_index < MAXIMUM_NUMBER_OF_PLAYERS; existing_index++)
@@ -2109,6 +2110,26 @@ boolean network_game_client_add_player_to_game(
 			if (client->state == _network_game_client_state_ingame)
 			{
 				player = &client->game.players[client->game.player_count - 1];
+#ifdef HALO_LINUX
+				/* (the distributed netcode places a player in the slot of its
+				index, network_game_add_player) */
+				if (network_game_distributed())
+				{
+					long slot;
+
+					for (slot = 0; slot < MAXIMUM_NUMBER_OF_PLAYERS; slot++)
+					{
+						struct network_player *added = &client->game.players[slot];
+
+						if (network_player_is_valid(added) && added->machine_index == player_added.machine_index &&
+							added->controller_index == player_added.controller_index)
+						{
+							player = added;
+							break;
+						}
+					}
+				}
+#endif
 
 				success = network_game_spawn_player(player);
 

@@ -1641,6 +1641,8 @@ static boolean network_game_server_handle_message_client_ping(
 }
 
 #ifdef HALO_LINUX
+int config_boolean(const char *name);
+
 /* (joining a match in progress) the machine just accepted is sent the game as
 it runs (its settings: the map, the game type, the players) and told to
 begin, as every machine was when the match started; it loads the map and
@@ -1981,6 +1983,26 @@ static boolean network_game_server_handle_message_client_join_game_request(
 			result = FALSE;
 		}
 	}
+#ifdef HALO_LINUX
+	else if (config_boolean("network.join_in_progress") &&
+		!network_game_server_client_machine_is_joined_to_game(server, server_client_machine))
+	{
+		/* (a match that takes nobody now, or its results: the machine is
+		told at once, and tries again, rather than wait out its join) */
+		struct message_server_machine_rejected rejection;
+		struct network_message *reply;
+
+		rejection.reason = _network_game_server_rejection_reason_game_not_open;
+		network_event("refused a machine joining a match that takes nobody now");
+		reply = create_network_game_message(_message_server_machine_rejected, &rejection, sizeof(rejection));
+		if (reply)
+		{
+			network_game_server_write(network_game_server_get_client_connection(server_client_machine),
+				reply, GET_MESSAGE_SIZE(reply->header), NULL, 1);
+		}
+		result = FALSE;
+	}
+#endif
 
 	return result;
 }
