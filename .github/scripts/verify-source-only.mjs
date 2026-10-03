@@ -19,11 +19,11 @@ const problems = [];
 
 for (const path of paths) {
   const lower = path.toLowerCase();
-  if (/(^|\/)(?:assets|build|dist|node_modules|original|research|\.wrangler)(?:\/|$)/u.test(lower)) {
+  if (/(^|\/)(?:assets|build|dist|node_modules|original|research)(?:\/|$)/u.test(lower)) {
     problems.push(`${path}: generated, proprietary, or research material is not permitted`);
     continue;
   }
-  if (/(^|\/)(?:\.env(?:\..*)?|wrangler\.toml\.secret|secrets?\.json)$/u.test(lower)) {
+  if (/(^|\/)(?:\.env(?:\..*)?|secrets?\.json)$/u.test(lower)) {
     problems.push(`${path}: secret-bearing file is not permitted`);
     continue;
   }

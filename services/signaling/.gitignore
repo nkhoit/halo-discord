@@ -1,6 +1,0 @@
-node_modules/
-.dev.vars
-.env
-.wrangler/
-coverage/
-worker-startup*.cpuprofile

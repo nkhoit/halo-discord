@@ -212,14 +212,12 @@ Open `http://127.0.0.1:8090/?netstats=1` in one Chrome profile (dev login as
 "Developer") and
 `http://127.0.0.1:8090/auth/dev-login?name=Guest&return=%2F%3Fnetstats%3D1`
 in another; host in the first and open the `#room=` invite in the second.
-The WebRTC baseline still runs as before: `python tools\web_serve.py --port
-8765` plus `services\signaling` under `wrangler dev`, page
-`http://127.0.0.1:8765/build/web/halo.html`.
+The WebRTC baseline (`tools\web_serve.py` with the signaling Worker under
+`wrangler dev`) is historical: `services/signaling` has been removed.
 
 Local-only pieces that are not in Git: `assets\maps` (from
 `tools\xiso_extract.py`), the junction `build\web\assets\maps -> assets\maps`,
-an empty `port\web\assets` directory, `server\.env`, and
-`services\signaling\.dev.vars` for the WebRTC baseline.
+an empty `port\web\assets` directory and `server\.env`.
 
 Forge (`ssh forge@forge.story-nessie.ts.net`): `~/halo-discord/{build,maps,server}`,
 image `halo-server`, network `halo-net`, netem script
@@ -237,7 +235,8 @@ recorded.
 - Maps: `python tools/xiso_extract.py <xiso> --output assets/maps`, and a
   junction `build/web/assets/maps -> assets/maps` (the game resolves maps
   relative to the page; `tools/web_serve.py` serves the repository root).
-- Local signaling: `services/signaling`, `wrangler dev --port 8787` with an
+- Local signaling (historical, since removed): `services/signaling`,
+  `wrangler dev --port 8787` with an
   ignored `.dev.vars` holding `ENVIRONMENT=development`,
   `TURNSTILE_TEST_BYPASS=true` and random secrets.
 
