@@ -49,6 +49,8 @@ try {
     block(manager, 'boolean server_has_enough_machines('),
     block(manager, 'boolean server_ok_to_countdown('),
   ].join('\n\n') + '\n');
+  const engine = fs.readFileSync(path.join(root, 'source/game/game_engine.c'), 'utf8').replace(/\r\n/g, '\n');
+  fs.writeFileSync(path.join(temp, 'late_join_end.inc'), block(engine, 'boolean game_engine_should_end_game(') + '\n');
 
   /* the three broadcasts (unreliable and reliable per-tick state, and the
      game's own messages) reach a machine by that predicate alone */

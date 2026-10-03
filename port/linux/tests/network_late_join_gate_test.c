@@ -77,6 +77,16 @@ static boolean network_player_is_valid(struct network_player *player)
 
 #include "late_join_gate.inc"
 
+/* game_engine.c's end of a match with one team left */
+static int game_engine_present = 1;
+static int teams_alive;
+static int hosting = 1;
+#define game_engine game_engine_present
+static boolean multiple_teams_alive(void) { return teams_alive; }
+static void *global_network_game_server_get(void) { return hosting ? (void *)&game_engine_present : 0; }
+#include "late_join_end.inc"
+#undef game_engine
+
 static int failures;
 
 /* a lobby: machines 0 to machine_count - 1 with a player each, on teams 0,
@@ -218,6 +228,29 @@ int main(void)
 			}
 		}
 	}
+
+	/* ---------- the end of a match with one team left: only with late joins */
+	for (lockstep = 0; lockstep <= 1; lockstep++)
+	{
+		for (setting = 0; setting <= 1; setting++)
+		{
+			boolean late_joins = !lockstep && setting;
+
+			distributed = !lockstep;
+			join_in_progress = setting;
+			hosting = TRUE;
+			teams_alive = FALSE;
+			check(game_engine_should_end_game() == !late_joins,
+				late_joins ? "late joins: one team left plays on" : "without late joins one team left ends the match");
+			teams_alive = TRUE;
+			check(!game_engine_should_end_game(), "two teams alive never end the match");
+		}
+	}
+	distributed = TRUE;
+	join_in_progress = TRUE;
+	hosting = FALSE;
+	teams_alive = FALSE;
+	check(game_engine_should_end_game(), "(not the host: its rule as before)");
 
 	if (!failures)
 		printf("late join gate tests passed\n");
