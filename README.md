@@ -116,3 +116,10 @@ The game is the decompilation of the Xbox build 2342 of Halo: Combat Evolved
 
 Those projects and their contributors are not responsible for this one. The
 license is in [LICENSE.md](LICENSE.md).
+
+## Disclaimer
+
+This project is not affiliated with or endorsed by Microsoft, Xbox Game
+Studios, Bungie or Halo Studios (formerly 343 Industries). Halo is a
+trademark of Microsoft. The repository contains no game data: to play, you
+need your own copy of Halo: Combat Evolved.
