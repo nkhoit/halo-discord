@@ -18,7 +18,7 @@ Paths are UTF-8, as SDL gives them.
 
 #include "update.h"
 
-#define UPDATE_USER_AGENT L"halo-ce-universal-updater"
+#define UPDATE_USER_AGENT L"halo-discord-updater"
 #define TIMEOUT_MILLISECONDS 20000
 
 /* (WinHTTP's TLS 1.3 flag, missing from older SDKs) */

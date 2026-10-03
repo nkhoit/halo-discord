@@ -609,7 +609,7 @@ int posix_register_url_scheme(const char *scheme, const char *description)
 		snprintf(directory, sizeof(directory), "%s/.local/share/applications", home);
 	else
 		return 0;
-	snprintf(name, sizeof(name), "halo-ce-universal-%s.desktop", scheme);
+	snprintf(name, sizeof(name), "halo-discord-%s.desktop", scheme);
 	snprintf(path, sizeof(path), "%s/%s", directory, name);
 	snprintf(entry, sizeof(entry),
 		"[Desktop Entry]\n"

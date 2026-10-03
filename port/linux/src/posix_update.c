@@ -35,7 +35,7 @@ Built with the host's ABI, as the other posix_*.c.
 #include <sys/types.h>
 #include <unistd.h>
 
-#define UPDATE_USER_AGENT "halo-ce-universal-updater"
+#define UPDATE_USER_AGENT "halo-discord-updater"
 #define MAXIMUM_REDIRECTS 8
 #define TIMEOUT_MILLISECONDS 20000
 #define MAXIMUM_HEADER_SIZE 16384

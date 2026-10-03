@@ -47,8 +47,11 @@ import java.util.zip.ZipInputStream;
  * app must keep for Android to install a new version over it.
  */
 final class Updater {
-    private static final String REPOSITORY = "cybersecurity/halo-ce-universal";
-    private static final String USER_AGENT = "halo-ce-universal-updater";
+    /* the GitHub repository whose releases are the updates: none, since this
+     * repository (halo-discord) publishes no releases, so the app never looks
+     * for updates; "owner/name" turns the check on */
+    private static final String REPOSITORY = "";
+    private static final String USER_AGENT = "halo-discord-updater";
     private static final int TIMEOUT_MILLISECONDS = 20000;
 
     private Updater() {
@@ -58,7 +61,7 @@ final class Updater {
     static void start(Activity activity) {
         File config = configFile(activity);
 
-        if (BuildConfig.HALO_BUILD_NUMBER <= 0 || config == null || !autoUpdate(config))
+        if (REPOSITORY.isEmpty() || BuildConfig.HALO_BUILD_NUMBER <= 0 || config == null || !autoUpdate(config))
             return;
         new Thread(() -> {
             int latest = latestRelease();
