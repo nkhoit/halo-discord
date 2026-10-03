@@ -88,6 +88,7 @@ static struct
 	boolean team_set;
 	real kill_interval;
 	real end_time;
+	boolean ended;
 	real shoot_interval;
 	real vehicle_time;
 	real pickup_time;
@@ -517,12 +518,15 @@ void network_test_update(
 				network_test_kill();
 			}
 			/* (once a game: the clock starts over with the next; a match only,
-			not Halo's lobby, whose clock runs too) */
-			if (network_test.end_time > 0.0f && game_connection() == _game_connection_network_server &&
-				game_engine_running() &&
-				game_time_get() >= (long)(network_test.end_time * TICKS_PER_SECOND) &&
-				game_time_get() - (long)(network_test.end_time * TICKS_PER_SECOND) < TICKS_PER_SECOND)
+			not Halo's lobby, whose clock runs too. These checks run a second
+			apart by the frames' clock, so a window of exactly a second can be
+			stepped over.) */
+			if (game_time_get() < (long)(network_test.end_time * TICKS_PER_SECOND))
+				network_test.ended = FALSE;
+			else if (network_test.end_time > 0.0f && !network_test.ended &&
+				game_connection() == _game_connection_network_server && game_engine_running())
 			{
+				network_test.ended = TRUE;
 				platform_log("network test: the host ends the game");
 				game_engine_end_game();
 			}
