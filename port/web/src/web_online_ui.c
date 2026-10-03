@@ -43,6 +43,8 @@ unsigned char player_ui_configure_network_server_game(
 void game_connection_set(short connection);
 void main_goto_main_menu(void);
 short network_game_client_get_state(struct network_game_client *client, short *state_data);
+unsigned char network_game_client_request_start_time_change(struct network_game_client *client, short request_type);
+void network_game_server_pause_countdown(struct network_game_server *server, unsigned char pause);
 short network_game_client_get_error(struct network_game_client *client);
 unsigned char network_game_client_join_first_available_game(void);
 unsigned char network_game_client_add_player(struct network_game_client *client, short controller_index);
@@ -94,6 +96,11 @@ _Static_assert(sizeof(struct web_online_player_profile) == 0x30,
 /* Command and host options share one atomic word so the game thread can never
 observe a new command with map/mode values from a different browser request. */
 static atomic_int web_online_requested_request = ATOMIC_VAR_INIT(_web_online_command_none);
+/* the host's next match, set in its pregame lobby: 1 | map << 8 | mode << 16,
+0 for none (its own mailbox: it never starts or ends a session) */
+static atomic_int web_online_requested_configuration = ATOMIC_VAR_INIT(0);
+/* the host asks for its match to start (1), as A on Halo's lobby does */
+static atomic_int web_online_requested_start = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_public_state = ATOMIC_VAR_INIT(_web_online_state_idle);
 static atomic_int web_online_public_error = ATOMIC_VAR_INIT(_web_online_error_none);
 static atomic_int web_online_transport_state = ATOMIC_VAR_INIT(_web_online_transport_disconnected);
@@ -161,6 +168,35 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_host_configured(
 		&web_online_requested_request,
 		pack_request(_web_online_command_host, map_index, mode_index),
 		memory_order_release);
+	return 1;
+}
+
+/* The host's pregame lobby takes another map and game type (after a match,
+for the next one): the same change Halo's own lobby menus make, so nobody
+disconnects. Ignored unless this machine hosts and is in its lobby. */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_configure(
+	int map_index,
+	int mode_index)
+{
+	if (map_index < 0 || map_index >= _web_online_multiplayer_level_count ||
+		mode_index < 0 || mode_index >= _web_online_game_mode_count)
+	{
+		return 0;
+	}
+	atomic_store_explicit(
+		&web_online_requested_configuration,
+		pack_request(1, map_index, mode_index),
+		memory_order_release);
+	return 1;
+}
+
+/* The host's lobby starts its match: the request Halo's lobby makes when the
+host presses A ("start faster", network_game_client_request_start_time_change),
+whichever of the lobby's menus has the focus. Ignored unless this machine
+hosts and is in its lobby. */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_start_match(void)
+{
+	atomic_store_explicit(&web_online_requested_start, 1, memory_order_release);
 	return 1;
 }
 
@@ -580,7 +616,36 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 	}
 
 	if (web_online.command == _web_online_command_host)
+	{
+		int configuration = atomic_exchange_explicit(
+			&web_online_requested_configuration, 0, memory_order_acq_rel);
+		struct network_game_client *client = global_network_game_client_get();
+
+		if (configuration && global_network_game_server_get() && client &&
+			network_game_client_get_state(client, NULL) == _network_client_pregame)
+		{
+			int map_index = (configuration >> WEB_ONLINE_REQUEST_MAP_SHIFT) & 0xff;
+			int mode_index = (configuration >> WEB_ONLINE_REQUEST_MODE_SHIFT) & 0xff;
+
+			if (player_ui_configure_network_server_game(map_index, mode_index))
+			{
+				web_online.host_map_index = map_index;
+				web_online.host_mode_index = mode_index;
+				platform_log("web online: next match %d/%d", map_index, mode_index);
+			}
+		}
+		if (atomic_exchange_explicit(&web_online_requested_start, 0, memory_order_acq_rel) &&
+			global_network_game_server_get() && client &&
+			network_game_client_get_state(client, NULL) == _network_client_pregame)
+		{
+			/* (after a match Halo's own map select pauses the countdown until
+			the host leaves it; the page's picker stands in for it) */
+			platform_log("web online: starting the match");
+			network_game_server_pause_countdown(global_network_game_server_get(), WEB_FALSE);
+			network_game_client_request_start_time_change(client, WEB_TRUE);
+		}
 		update_host(seconds);
+	}
 	else
 		update_join(seconds);
 }
