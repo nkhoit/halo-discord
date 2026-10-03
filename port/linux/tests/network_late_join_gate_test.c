@@ -5,7 +5,10 @@
      network_game_server_client_machine_is_loading_in_game;
    - the lobby counts down to its match (server_ok_to_countdown) with two
      machines, two players and both teams taken, as the Xbox game did; with
-     late joins on, a host may start alone.
+     late joins on, a host may start alone;
+   - the lobby's directions line (multiplayer_game_directions) says
+     "Waiting for another Xbox console" to a host alone; with late joins on
+     it says "Accepting Players", and nothing over its countdown.
    The rules and what they depend on come from the real source
    (network_late_join_gate_test.js extracts them). */
 #include <stdio.h>
@@ -86,6 +89,54 @@ static boolean multiple_teams_alive(void) { return teams_alive; }
 static void *global_network_game_server_get(void) { return hosting ? (void *)&game_engine_present : 0; }
 #include "late_join_end.inc"
 #undef game_engine
+
+/* ui_widget_game_data_input_functions.c's lobby directions */
+#define NUMBEROF(array) ((long)(sizeof(array) / sizeof((array)[0])))
+#define match_vassert(file, line, condition, message) ((void)0)
+enum { _ui_widget_type_text_box = 1 };
+enum { _team_red, _team_blue };
+struct widget_instance
+{
+	short type;
+	boolean visible;
+	struct { struct { short string_list_index; } text_box; } parameters;
+};
+struct network_game
+{
+	short machine_count;
+	short player_count;
+	struct { boolean has_teams; } variant;
+	struct network_player players[MAXIMUM_NETWORK_PLAYER_COUNT];
+};
+static struct network_game lobby_game;
+static short seconds_to_game_start = -1;
+static struct network_game *network_game_get_game(void) { return &lobby_game; }
+static void *global_network_game_client_get(void) { return &lobby_game; }
+static short network_game_client_get_seconds_to_game_start(void *client) { (void)client; return seconds_to_game_start; }
+#include "late_join_lobby_text.inc"
+
+/* the directions line for a lobby of machine_count machines (a player each,
+alternating teams), with the countdown at seconds (-1: none): its string, or
+NONE when hidden */
+static int directions(int machine_count, boolean teams, int seconds)
+{
+	struct widget_instance widget = { _ui_widget_type_text_box, TRUE, { { NONE } } };
+	int index;
+
+	memset(&lobby_game, 0, sizeof(lobby_game));
+	lobby_game.machine_count = (short)machine_count;
+	lobby_game.player_count = (short)machine_count;
+	lobby_game.variant.has_teams = teams;
+	for (index = 0; index < MAXIMUM_NETWORK_PLAYER_COUNT; index++)
+	{
+		lobby_game.players[index].machine_index = index < machine_count ? index : NONE;
+		lobby_game.players[index].controller_index = index < machine_count ? 0 : NONE;
+		lobby_game.players[index].team_index = index < machine_count ? index % 2 : NONE;
+	}
+	seconds_to_game_start = (short)seconds;
+	multiplayer_game_directions(&widget);
+	return widget.visible ? widget.parameters.text_box.string_list_index : NONE;
+}
 
 static int failures;
 
@@ -251,6 +302,56 @@ int main(void)
 	hosting = FALSE;
 	teams_alive = FALSE;
 	check(game_engine_should_end_game(), "(not the host: its rule as before)");
+
+	/* ---------- the lobby's directions line */
+	splitscreen_local = FALSE;
+	for (lockstep = 0; lockstep <= 1; lockstep++)
+	{
+		for (setting = 0; setting <= 1; setting++)
+		{
+			boolean late_joins = !lockstep && setting;
+			int teams;
+
+			distributed = !lockstep;
+			join_in_progress = setting;
+			hosting = TRUE;
+			for (teams = 0; teams <= 1; teams++)
+			{
+				if (late_joins)
+				{
+					check(directions(1, teams, -1) == _multiplayer_game_text_string_accepting_players,
+						"late joins: a host alone is accepting players");
+					check(directions(1, teams, 3) == NONE, "late joins: a host alone counting down shows only the countdown");
+					check(directions(1, teams, 0) == NONE, "late joins: nothing over the start");
+				}
+				else
+				{
+					check(directions(1, teams, -1) == _multiplayer_game_text_string_waiting_for_machine,
+						"without late joins a host alone waits for another Xbox");
+					check(directions(1, teams, 3) == _multiplayer_game_text_string_waiting_for_machine,
+						"without late joins the line is as before, countdown or not");
+				}
+				/* two or more machines, and guests: as before */
+				check(directions(2, teams, -1) == (teams ? _multiplayer_game_text_string_teams_ready : NONE),
+					"two machines: as before");
+				check(directions(2, teams, 5) == NONE, "two machines counting down: as before");
+			}
+			lobby_game.players[1].team_index = _team_red;
+			{
+				struct widget_instance widget = { _ui_widget_type_text_box, TRUE, { { NONE } } };
+
+				seconds_to_game_start = -1;
+				multiplayer_game_directions(&widget);
+				check(widget.parameters.text_box.string_list_index == _multiplayer_game_text_string_waiting_for_teams,
+					"two on one team: as before");
+			}
+			hosting = FALSE;
+			check(directions(2, 0, 5) == NONE && directions(2, 1, -1) == _multiplayer_game_text_string_teams_ready,
+				"a guest's line: as before");
+			check(directions(1, 0, -1) == NONE, "a guest never waits for machines");
+		}
+	}
+	hosting = TRUE;
 
 	if (!failures)
 		printf("late join gate tests passed\n");
