@@ -4,6 +4,8 @@ Halo: Combat Evolved multiplayer as a Discord Activity. Players start it from a
 voice channel and play together in the Activity's frame. The same page also
 works in a desktop browser, with a room link to share.
 
+<img width="1278" alt="Host a game: the map and game type picker in a Discord Activity" src="https://github.com/user-attachments/assets/369b62b4-0273-4989-bb88-fcbf35e32168" />
+
 ## How it works
 
 - **Client:** the game, compiled to WebAssembly (WebGL 2, threads, SDL3), in
