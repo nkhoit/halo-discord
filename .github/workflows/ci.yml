@@ -43,6 +43,8 @@ jobs:
         run: node --test port/linux/tests/halo_aim_device_test.js
       - name: Test keyboard crouch movement (native C, no game assets)
         run: node --test port/linux/tests/halo_crouch_movement_test.js
+      - name: Test the keyboard and mouse bindings (native C, no game assets)
+        run: node --test port/linux/tests/input_bindings_test.js
       - name: Test the 16-bit wide string helpers (native C, no game assets)
         run: node --test port/linux/tests/msvc_wide_test.js
       - name: Test that late joins leave broadcasts alone when off (native C, no game assets)
