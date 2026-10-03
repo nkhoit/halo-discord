@@ -55,6 +55,15 @@ export const IDENTIFIER_PATTERN = /^[0-9a-f]{12}$/;
 export const BUILD_PATTERN = /^[A-Za-z0-9._-]{1,96}$/;
 /* A Discord Activity instance id, e.g. i-<snowflake>-gc-<guild>-<channel>. */
 export const INSTANCE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const GUILD_INSTANCE_PATTERN = /^i-\d{1,20}-gc-(\d{1,20})-(\d{1,20})$/;
+export const GUILD_ID_PATTERN = /^\d{1,20}$/;
+
+/* The guild and voice channel an Activity instance runs in; null for an
+   instance outside a server (a DM or group DM). */
+export function instanceLocation(instanceId: string): { guild: string; channel: string } | null {
+  const match = GUILD_INSTANCE_PATTERN.exec(instanceId);
+  return match ? { guild: match[1]!, channel: match[2]! } : null;
+}
 
 export function parseSocketQuery(url: URL): { role: Role; kind: SocketKind } | null {
   const role = url.searchParams.get("role");

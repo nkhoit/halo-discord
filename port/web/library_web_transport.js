@@ -1226,7 +1226,8 @@ addToLibrary({
     relaySendPhase: function(relay) {
       if (!relay || !relay.ready || relay.options.role !== 'host' || relay.inMatch === undefined) return;
       try {
-        relay.reliable.send(JSON.stringify({ type: 'phase', inMatch: relay.inMatch, joinable: !!relay.joinable }));
+        relay.reliable.send(JSON.stringify(Object.assign({}, relay.phaseDetails || {},
+          { type: 'phase', inMatch: relay.inMatch, joinable: !!relay.joinable })));
       } catch (error) {
         /* closing: the next "ready" sends it */
       }
@@ -1736,11 +1737,17 @@ addToLibrary({
         /* Room mode: connects to the configured relay room; its members
            become peers through onRelayPeer. */
         openRelay: function() { runtime.openRelay(); },
-        setRelayPhase: function(inMatch, joinable) {
+        /* details: what the room's server-wide listing shows, {state, map,
+           mode, channel} (relay.ts control) */
+        setRelayPhase: function(inMatch, joinable, details) {
           var relay = runtime.relay;
-          if (!relay || (relay.inMatch === !!inMatch && relay.joinable === !!joinable)) return;
+          var detailsKey = details ? JSON.stringify(details) : '';
+          if (!relay || (relay.inMatch === !!inMatch && relay.joinable === !!joinable &&
+              (relay.phaseDetailsKey || '') === detailsKey)) return;
           relay.inMatch = !!inMatch;
           relay.joinable = !!joinable;
+          relay.phaseDetails = details || null;
+          relay.phaseDetailsKey = detailsKey;
           runtime.relaySendPhase(relay);
         },
         addPeer: function(options) { return runtime.addPeer(options); },

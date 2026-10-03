@@ -112,6 +112,18 @@ const states = [];
   assert.equal(lastState(), '1,1,1');
   assert(states.includes('connected'));
 
+  // The host's phase, with what the server-wide list shows; sent on changes only.
+  HaloWebTransport.setRelayPhase(false, false, { state: 'lobby', map: 9, mode: 1, channel: 'Squad A' });
+  HaloWebTransport.setRelayPhase(false, false, { state: 'lobby', map: 9, mode: 1, channel: 'Squad A' });
+  HaloWebTransport.setRelayPhase(true, true, { state: 'match', map: 9, mode: 1, channel: 'Squad A' });
+  assert.deepEqual(socket.texts.slice(1), [
+    { state: 'lobby', map: 9, mode: 1, channel: 'Squad A', type: 'phase', inMatch: false, joinable: false },
+    { state: 'match', map: 9, mode: 1, channel: 'Squad A', type: 'phase', inMatch: true, joinable: true },
+  ]);
+  HaloWebTransport.setRelayPhase(false, false);
+  assert.deepEqual(socket.texts.at(-1), { type: 'phase', inMatch: false, joinable: false }, 'details are optional');
+  socket.texts.length = 1;
+
   // Outbound frames carry the channel and the destination peer; reliable ones
   // also their sequence number and the acknowledgement of the peer's frames.
   const frame = haloFrame(7);

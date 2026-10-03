@@ -47,6 +47,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
     sessionStatus: sessionStatus || (activity ? [401, 200] : [200]), signIns: 0, fetches: [], configured: [], relayOpened: 0, disconnects: 0,
     windowListeners: {}, customizations: [], phases: [], replaced: [], assigned: [], configured_matches: [],
     joinable: false, joinablePhases: [], joinInProgress: [], matchJoinable: 0, matchStarting: 0,
+    guildRooms: [], details: [], delays: [],
   };
   const elements = page.elements;
   const styleInputs = ['sage', 'red'].map(value => element({ checked: value === 'sage', value }));
@@ -75,6 +76,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
         return json(200, { host: page.roomHost, players: page.roomHost ? 1 : 0, inMatch: page.inMatch,
           joinable: page.joinable });
       }
+      if (/\/v1\/guild-rooms\?build=test-build$/.test(url)) return json(200, { rooms: page.guildRooms });
       if (/\/auth\/session$/.test(url)) {
         const status = page.sessionStatus.length > 1 ? page.sessionStatus.shift() : page.sessionStatus[0];
         return status === 200 ?
@@ -88,6 +90,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
       user,
       signIn: async () => { page.signIns++; },
       openExternalLink() {},
+      channelName: () => 'Squad A',
     } : undefined,
     HaloHostedUser: activity ? undefined : user,
     HaloWebTransport: {
@@ -99,9 +102,10 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
       openRelay() { page.relayOpened++; },
       removePeer() {},
       /* (sends only changes, as the transport does) */
-      setRelayPhase(inMatch, joinable) {
+      setRelayPhase(inMatch, joinable, details) {
         if (page.phases.at(-1) !== inMatch) page.phases.push(inMatch);
         if (page.joinablePhases.at(-1) !== joinable) page.joinablePhases.push(joinable);
+        if (JSON.stringify(page.details.at(-1)) !== JSON.stringify(details)) page.details.push(details);
       },
     },
     history: { replaceState(state, title, url) { page.replaced.push(url); location.hash = url; } },
@@ -131,7 +135,10 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
     clearTimeout() {},
     setInterval: callback => page.intervals.push(callback),
     setTimeout: (callback, milliseconds) => {
-      if (!milliseconds || milliseconds <= 2000) page.timers.push(callback);
+      if (!milliseconds || milliseconds <= 2000) {
+        page.timers.push(callback);
+        page.delays.push(milliseconds || 0);
+      }
       return page.timers.length;
     },
   };
@@ -246,6 +253,20 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   await settle();
   assert(page.disconnects > before, 'leaving the page (or entering the back/forward cache) closes the room');
 
+  /* A host that leaves: its lobby waits a poll before asking who hosts its
+     room, which until the relay sees the socket close is still itself. */
+  const leaving = load({ activity: true });
+  leaving.context.HaloOnline.runtimeReady();
+  await leaving.tick();
+  await leaving.context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
+  leaving.delays.length = 0;
+  await leaving.context.HaloOnline.leave();
+  await settle();
+  assert.deepEqual(leaving.delays, [2000], 'the lobby resumes after one poll interval');
+  await leaving.tick();
+  await settle();
+  assert.equal(leaving.status().view, 'pick', 'back in its own lobby');
+
   /* ---------- joining a match in progress (#4) */
   const late = load({ activity: true });
   late.context.HaloOnline.runtimeReady();
@@ -290,6 +311,52 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   assert.deepEqual(hosting.phases, [false, true, false],
     'past the lobby from the start (loading) to the end of the match');
   assert.deepEqual(hosting.joinablePhases, [false, true, false], 'joinable only while the match takes players');
+  assert.deepEqual(hosting.details.map(details => details.state), ['lobby', 'starting', 'match', 'postgame'],
+    'the server-wide list follows the host\'s match');
+  assert.deepEqual(JSON.parse(JSON.stringify(hosting.details[0])),
+    { state: 'lobby', map: 0, mode: 0, channel: 'Squad A' }, 'with its map, game type and voice channel');
+
+  /* ---------- the server-wide lobby (#21) */
+  const visitor = load({ activity: true });
+  visitor.context.HaloOnline.runtimeReady();
+  await visitor.tick();
+  await settle();
+  assert.equal(visitor.status().view, 'pick');
+  const listed = { roomId: 'Other-Room-0123456789ab', host: 'Bea', channel: 'Squad B', map: 9, mode: 1,
+    state: 'match', players: 3, capacity: 16, joinable: true, reason: null };
+  visitor.guildRooms = [listed];
+  assert.deepEqual(JSON.parse(JSON.stringify(await visitor.context.HaloOnline.guildRooms())), [listed]);
+  assert(visitor.fetches.includes('https://123.discordsays.com/v1/guild-rooms?build=test-build'),
+    'asked with this build, so other versions show as not joinable');
+  assert.equal(visitor.context.HaloOnline.joinGuildRoom({ roomId: ROOM }), false, 'not its own room');
+  assert.equal(visitor.context.HaloOnline.joinGuildRoom({ roomId: '../x' }), false);
+  assert.equal(visitor.context.HaloOnline.joinGuildRoom(listed), true);
+  assert.equal(visitor.status().view, 'joining-match', 'a match in progress is joined as it runs');
+  assert.equal(visitor.status().host, 'Bea');
+  await settle();
+  assert.equal(visitor.relayOpened, 1);
+  const visiting = visitor.configured.at(-1);
+  assert.equal(visiting.relay.roomId, listed.roomId, 'the other channel\'s room');
+  assert.equal(visiting.relay.role, 'guest');
+  assert.equal(visitor.status().roomId, listed.roomId);
+  assert.equal(visitor.context.HaloOnline.joinGuildRoom(listed), false, 'only from the lobby');
+  visiting.onRelayPeer({ peerId: 'relay-020000000002', identifier: '020000000002', name: 'Bea', role: 'host' });
+  visiting.onStateChange({ peerId: 'relay-020000000002', state: 'connected' });
+  visitor.gameState = 6;
+  visitor.clientState = 3;
+  visitor.poll();
+  assert.equal(visitor.status().view, 'match');
+  /* Bea left: back to this channel's own lobby. */
+  visitor.gameState = 0;
+  visitor.clientState = 2;
+  visitor.poll();
+  await settle();
+  await visitor.tick();
+  await settle();
+  assert.equal(visitor.status().roomId, ROOM, 'this channel\'s room again');
+  assert.equal(visitor.status().view, 'pick');
+  assert(visitor.fetches.filter(url => url === `https://123.discordsays.com/v1/rooms/${ROOM}`).length >= 2,
+    'polling this channel\'s room again');
 
   /* ---------- the browser page: the room is in the address */
   const browser = load({ activity: false, user: { id: '9', name: 'Cortana' } });
@@ -312,6 +379,9 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   assert.equal(invited.configured.at(-1).relay.roomId, 'Shared-Room-0123456789', 'the address\'s room is joined');
   assert.equal(invited.configured.at(-1).relay.role, 'guest');
   assert.equal(invited.location.hash, '#room=Shared-Room-0123456789', 'the room stays in the address');
+  assert.deepEqual(JSON.parse(JSON.stringify(await invited.context.HaloOnline.guildRooms())), [],
+    'the browser page has no server-wide list');
+  assert(!invited.fetches.some(url => /guild-rooms/.test(url)));
 
   /* ---------- a renewal the server refuses (the session lifetime is over) */
   const refusedActivity = load({ activity: true, sessionStatus: [401] });

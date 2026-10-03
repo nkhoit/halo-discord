@@ -11,18 +11,19 @@ import type { Duplex } from "node:stream";
 
 import { WebSocketServer, type WebSocket } from "ws";
 
-import { Auth, clientAddress, requestSession } from "./auth.ts";
+import { activityRoomId, Auth, clientAddress, requestSession } from "./auth.ts";
 import type { Config } from "./config.ts";
 import type { DiscordApi } from "./discord.ts";
 import {
   BUILD_PATTERN,
   CloseCode,
   IDENTIFIER_PATTERN,
+  instanceLocation,
   MAXIMUM_BATCH_BYTES,
   ROOM_ID_PATTERN,
   parseSocketQuery,
 } from "./protocol.ts";
-import { consoleLog, type Log, Relay } from "./relay.ts";
+import { type Access, consoleLog, type Log, Relay } from "./relay.ts";
 import { activityBundle } from "./bundle.ts";
 import {
   ACTIVITY_CSP,
@@ -42,7 +43,7 @@ import {
   REVALIDATE,
   serveFile,
 } from "./static.ts";
-import { verifyToken } from "./tokens.ts";
+import { type Session, verifyToken } from "./tokens.ts";
 
 export const AUTH_DEADLINE_MILLISECONDS = 5000;
 export const HEARTBEAT_MILLISECONDS = 30_000;
@@ -131,6 +132,24 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     return [name, { body, version: contentVersion(body) }];
   })) as Record<string, { body: string; version: string }>;
   const loginVersion = contentVersion(LOGIN_SCRIPT);
+
+  /* The session's allowlisted Discord servers (as of sign-in, and still on
+     the allowlist), and its Activity instance's room. */
+  function guildsOf(session: Session): string[] {
+    const allowlist = config.discord?.guildIds;
+    return (session.guilds ?? []).filter((guild) => !allowlist || allowlist.includes(guild));
+  }
+  function ownRoomId(session: Session): string | null {
+    return session.inst ? activityRoomId(config.tokenSecret, session.inst) : null;
+  }
+  function accessOf(session: Session, roomId: string): Access {
+    const location = session.inst ? instanceLocation(session.inst) : null;
+    return {
+      own: ownRoomId(session) === roomId ? { guild: location?.guild ?? null, channel: location?.channel ?? null } : null,
+      guilds: guildsOf(session),
+      activity: session.inst !== undefined,
+    };
+  }
   const handlersVersion = contentVersion(HANDLERS_SCRIPT);
 
   async function source(): Promise<string | null> {
@@ -235,6 +254,21 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       if (path === "/v1/client-errors" && request.method === "POST") return receiveClientError(request, response, headers);
       if (request.method !== "GET" && request.method !== "HEAD") {
         response.writeHead(405, { Allow: "GET, HEAD", "Cache-Control": NO_STORE }).end();
+        return;
+      }
+      /* The other Activity rooms in the caller's Discord server, for its
+         lobby; only from an Activity session in a server it belongs to. */
+      if (path === "/v1/guild-rooms") {
+        const session = requestSession(config, request);
+        if (!session) {
+          response.writeHead(401, { ...headers, "Content-Type": "text/plain" }).end("login required");
+          return;
+        }
+        const guild = session.inst ? instanceLocation(session.inst)?.guild : undefined;
+        const build = url.searchParams.get("build");
+        const rooms = guild && guildsOf(session).includes(guild) ?
+          relay.guildRooms(guild, ownRoomId(session), build && BUILD_PATTERN.test(build) ? build : null) : [];
+        response.writeHead(200, { ...headers, "Content-Type": "application/json" }).end(JSON.stringify({ rooms }));
         return;
       }
       const room = /^\/v1\/rooms\/([^/]+)$/.exec(path);
@@ -386,7 +420,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       Object.assign(context, { user: session.sub, id: message.id });
       relay.join(socket, roomId, {
         user: session.sub, name: session.name, id: message.id, role: query.role, kind: query.kind,
-      }, message.build);
+      }, message.build, accessOf(session, roomId));
     });
   }
 

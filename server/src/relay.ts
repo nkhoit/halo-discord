@@ -19,6 +19,7 @@ import {
   identifierText,
   isReliableChannel,
   joinBatch,
+  sanitizeName,
   splitBatch,
   writeIdentifier,
 } from "./protocol.ts";
@@ -34,6 +35,41 @@ export interface Member {
   since: number;
 }
 
+/* Who may join a room. own: the joining session's Activity instance is this
+   room's (its server and voice channel, if any). guilds: the allowlisted
+   Discord servers the session's user belongs to. activity: the session is a
+   Discord Activity's. */
+export interface Access {
+  own: { guild: string | null; channel: string | null } | null;
+  guilds: readonly string[];
+  activity: boolean;
+}
+
+const BROWSER_ACCESS: Access = { own: null, guilds: [], activity: false };
+
+/* A match's state as its host reports it. */
+export type MatchState = "lobby" | "starting" | "match" | "postgame";
+const MATCH_STATES = new Set<string>(["lobby", "starting", "match", "postgame"]);
+
+/* Halo's player limit, and so a room's capacity in players. */
+export const MAXIMUM_PLAYERS = MAXIMUM_ROOM_SOCKETS / 2;
+
+/* A room in a server-wide list (GET /v1/guild-rooms). */
+export interface GuildRoom {
+  roomId: string;
+  host: string;
+  channel: string | null;
+  map: number | null;
+  mode: number | null;
+  state: MatchState;
+  players: number;
+  capacity: number;
+  joinable: boolean;
+  /* Why it is not joinable: "full", "version" (another build) or "match"
+     (a match that takes nobody now). */
+  reason: "full" | "version" | "match" | null;
+}
+
 export type Log = (entry: Record<string, unknown>) => void;
 
 export const consoleLog: Log = (entry) => console.log(JSON.stringify({ at: new Date().toISOString(), ...entry }));
@@ -45,6 +81,16 @@ class Room {
      returns, unless its match takes players as it runs (joinable). */
   inMatch = false;
   joinable = false;
+  /* A Discord Activity instance's room, and the server and voice channel it
+     belongs to (learned from its members' sessions). */
+  activity = false;
+  guild: string | null = null;
+  channel: string | null = null;
+  /* What the host reports for the server-wide list. */
+  state: MatchState = "lobby";
+  map: number | null = null;
+  mode: number | null = null;
+  channelName: string | null = null;
   readonly id: string;
 
   constructor(id: string) {
@@ -92,8 +138,16 @@ export class Relay {
 
   /* Admits an authenticated socket, or closes it with the reason it cannot join.
      The caller already listens for the socket's errors (app.ts). */
-  join(socket: WebSocket, roomId: string, joining: Omit<Member, "since">, build: string): void {
+  join(socket: WebSocket, roomId: string, joining: Omit<Member, "since">, build: string,
+      access: Access = BROWSER_ACCESS): void {
     let room = this.rooms.get(roomId);
+    /* Besides its own instance's room, a Discord Activity joins only rooms of
+       instances in a server the user belongs to; a browser session also
+       joins rooms that no Activity owns (link rooms). */
+    if (!access.own && (room?.activity || access.activity) &&
+        !(room?.activity && room.guild !== null && access.guilds.includes(room.guild))) {
+      return this.refuse(socket, roomId, joining, "not in your Discord server");
+    }
     if (!room) {
       if (this.rooms.size >= this.maxRooms) return this.refuse(socket, roomId, joining, "too many rooms");
       room = new Room(roomId);
@@ -123,6 +177,11 @@ export class Relay {
       close(other, CloseCode.Replaced, "replaced by a new connection");
     }
     room.build ??= build;
+    if (access.own) {
+      room.activity = true;
+      room.guild ??= access.own.guild;
+      room.channel ??= access.own.channel;
+    }
     const member: Member = { ...joining, since: Date.now() };
     room.members.set(socket, member);
     this.log({ event: "accept", room: roomId.slice(0, 8), user: member.user, id: member.id,
@@ -172,6 +231,25 @@ export class Relay {
       joinable: host !== null && room.inMatch && room.joinable && !roomFull };
   }
 
+  /* The rooms of Activity instances in a Discord server that have a host, but
+     not the caller's own (exceptRoomId); joinable for a client of build. */
+  guildRooms(guild: string, exceptRoomId: string | null, build: string | null): GuildRoom[] {
+    const rooms: GuildRoom[] = [];
+    for (const room of this.rooms.values()) {
+      if (!room.activity || room.guild !== guild || room.id === exceptRoomId) continue;
+      const summary = this.summary(room.id);
+      if (!summary.host) continue;
+      const full = summary.players >= MAXIMUM_PLAYERS || room.members.size >= MAXIMUM_ROOM_SOCKETS;
+      const reason = full ? "full" : build !== null && room.build !== null && room.build !== build ? "version" :
+        summary.inMatch && !summary.joinable ? "match" : null;
+      rooms.push({
+        roomId: room.id, host: summary.host, channel: room.channelName, map: room.map, mode: room.mode,
+        state: room.state, players: summary.players, capacity: MAXIMUM_PLAYERS, joinable: reason === null, reason,
+      });
+    }
+    return rooms.sort((a, b) => a.host.localeCompare(b.host));
+  }
+
   private refuse(socket: WebSocket, roomId: string, joining: Omit<Member, "since">, reason: string): void {
     this.log({ event: "refuse", room: roomId.slice(0, 8), user: joining.user, id: joining.id, reason });
     close(socket, CloseCode.Refused, reason);
@@ -193,24 +271,37 @@ export class Relay {
     if (member.role === "host" && ![...room.members.values()].some((other) => other.role === "host")) {
       room.inMatch = false;
       room.joinable = false;
+      room.state = "lobby";
     }
     if (!room.members.size) this.rooms.delete(room.id);
   }
 
   /* The one text message after "auth": the host's
-     {"type":"phase","inMatch":boolean,"joinable"?:boolean}. */
+     {"type":"phase","inMatch":boolean,"joinable"?:boolean}, and for the
+     server-wide list, optionally "state" (MatchState), "map" and "mode"
+     (the hosted page's indices) and "channel" (its voice channel's name). */
   private control(room: Room, sender: Member, data: RawData): boolean {
     const message = data instanceof Buffer ? data : Buffer.concat(data as Buffer[]);
-    if (message.byteLength > 256) return false;
+    if (message.byteLength > 512) return false;
     let parsed: unknown;
     try {
       parsed = JSON.parse(message.toString("utf8"));
     } catch {
       return false;
     }
-    const value = parsed as { type?: unknown; inMatch?: unknown; joinable?: unknown } | null;
+    const value = parsed as { type?: unknown; inMatch?: unknown; joinable?: unknown; state?: unknown;
+      map?: unknown; mode?: unknown; channel?: unknown } | null;
     if (!value || value.type !== "phase" || typeof value.inMatch !== "boolean") return false;
     if (value.joinable !== undefined && typeof value.joinable !== "boolean") return false;
+    const index = (field: unknown) => typeof field === "number" && Number.isInteger(field) && field >= 0 && field < 64;
+    if ((value.state !== undefined && (typeof value.state !== "string" || !MATCH_STATES.has(value.state))) ||
+        (value.map !== undefined && !index(value.map)) || (value.mode !== undefined && !index(value.mode)) ||
+        (value.channel !== undefined && value.channel !== null && typeof value.channel !== "string")) return false;
+    room.state = (value.state as MatchState | undefined) ?? (value.inMatch ? "match" : "lobby");
+    room.map = (value.map as number | undefined) ?? null;
+    room.mode = (value.mode as number | undefined) ?? null;
+    room.channelName = typeof value.channel === "string" && value.channel.trim() ?
+      sanitizeName(value.channel) : null;
     const joinable = value.inMatch && value.joinable === true;
     if (room.inMatch !== value.inMatch || room.joinable !== joinable) {
       this.log({ event: "phase", room: room.id.slice(0, 8), user: sender.user, inMatch: value.inMatch, joinable });

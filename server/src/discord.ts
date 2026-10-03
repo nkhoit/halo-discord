@@ -11,9 +11,9 @@ export interface DiscordApi {
      omitted for the Embedded App SDK's authorize flow. */
   exchangeCode(code: string, redirectUri?: string): Promise<string>;
   getUser(accessToken: string): Promise<DiscordUser>;
-  /* The user's matching guild, if any. Fetches the guild list once and checks
-     the whole allowlist locally. */
-  findGuildMembership(accessToken: string, guildIds: readonly string[]): Promise<string | null>;
+  /* The allowlisted guilds the user is a member of, in allowlist order. Fetches
+     the guild list once and checks the whole allowlist locally. */
+  allowedGuilds(accessToken: string, guildIds: readonly string[]): Promise<string[]>;
 }
 
 const API = "https://discord.com/api/v10";
@@ -62,15 +62,14 @@ export class HttpDiscordApi implements DiscordApi {
     };
   }
 
-  async findGuildMembership(accessToken: string, guildIds: readonly string[]): Promise<string | null> {
+  async allowedGuilds(accessToken: string, guildIds: readonly string[]): Promise<string[]> {
     const guilds = await this.get(accessToken, "/users/@me/guilds");
-    if (!Array.isArray(guilds)) return null;
-    const allowed = new Set(guildIds);
+    if (!Array.isArray(guilds)) return [];
+    const member = new Set<string>();
     for (const guild of guilds) {
-      if (guild && typeof guild === "object" && "id" in guild && typeof guild.id === "string" &&
-          allowed.has(guild.id)) return guild.id;
+      if (guild && typeof guild === "object" && "id" in guild && typeof guild.id === "string") member.add(guild.id);
     }
-    return null;
+    return guildIds.filter((guildId) => member.has(guildId));
   }
 
   private async get(accessToken: string, path: string): Promise<unknown> {

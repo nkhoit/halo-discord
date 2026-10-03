@@ -504,6 +504,10 @@
     element("h1", { id: "hosted-title" }),
     element("p", { id: "hosted-text" }),
     element("p", { id: "hosted-notice", role: "alert", hidden: true }),
+    element("section", { id: "hosted-guild", hidden: true, "aria-labelledby": "hosted-guild-title" }, [
+      element("h2", { id: "hosted-guild-title", text: "Matches in this server" }),
+      element("ul", { id: "hosted-guild-list" }),
+    ]),
     picker,
     element("button", { type: "button", id: "hosted-share", class: "hosted-link", hidden: true, text: "Copy invite link" }),
   ]);
@@ -980,6 +984,80 @@
     return count === 1 ? "1 player" : count + " players";
   }
 
+  /* ---------- the server-wide lobby (the Discord Activity): the matches
+     hosted from the server's other voice channels, polled while nobody
+     hosts here and the picker shows */
+  var GUILD_POLL_MILLISECONDS = 4000;
+  var GUILD_STATES = { lobby: "In lobby", starting: "Starting", match: "In match", postgame: "Match over" };
+  var GUILD_REASONS = { full: "Full", version: "Different version", match: "Can't join now" };
+  var guildList = { polling: false, timer: 0, generation: 0, rooms: [], key: "" };
+
+  function guildRoomLabel(room) {
+    var map = MAPS[room.map] ? MAPS[room.map][1] : null;
+    var mode = MODES[room.mode] ? MODES[room.mode][1] : null;
+    return [map, mode].filter(Boolean).join(" · ");
+  }
+
+  function renderGuildRooms() {
+    var key = JSON.stringify(guildList.rooms);
+    if (key === guildList.key) return;
+    guildList.key = key;
+    var list = byId("hosted-guild-list");
+    while (list.firstChild) list.removeChild(list.firstChild);
+    guildList.rooms.forEach(function(room) {
+      var reason = room.joinable ? null : (GUILD_REASONS[room.reason] || "Can't join now");
+      var join = element("button", { type: "button", class: "hosted-guild-join" + (reason ? "" : " primary"),
+        text: reason || "Join" });
+      join.disabled = !!reason;
+      if (reason) join.title = reason;
+      join.addEventListener("click", function() {
+        if (global.HaloOnline && global.HaloOnline.joinGuildRoom(room)) {
+          stopGuildPoll();
+          render();
+        }
+      });
+      list.appendChild(element("li", { class: "hosted-guild-room", "data-room": String(room.roomId) }, [
+        element("span", { class: "hosted-guild-host",
+          text: String(room.host || "Someone") + (room.channel ? " · " + room.channel : "") }),
+        element("span", { class: "hosted-guild-what", text: guildRoomLabel(room) }),
+        element("span", { class: "hosted-guild-players", text: (room.players || 0) + "/" + (room.capacity || 16) }),
+        element("span", { class: "hosted-guild-state", text: GUILD_STATES[room.state] || "" }),
+        join,
+      ]));
+    });
+    show(byId("hosted-guild"), guildList.rooms.length > 0);
+  }
+
+  function pollGuildRooms() {
+    guildList.timer = 0;
+    var generation = guildList.generation;
+    global.HaloOnline.guildRooms().then(function(rooms) {
+      if (generation !== guildList.generation) return;
+      guildList.rooms = Array.isArray(rooms) ? rooms.filter(function(room) { return room && room.roomId; }) : [];
+      renderGuildRooms();
+      guildList.timer = global.setTimeout(pollGuildRooms, GUILD_POLL_MILLISECONDS);
+    }, function() {
+      if (generation === guildList.generation) guildList.timer = global.setTimeout(pollGuildRooms, GUILD_POLL_MILLISECONDS);
+    });
+  }
+
+  function startGuildPoll() {
+    if (guildList.polling) return;
+    guildList.polling = true;
+    guildList.generation++;
+    pollGuildRooms();
+  }
+
+  function stopGuildPoll() {
+    if (!guildList.polling) return;
+    guildList.polling = false;
+    guildList.generation++;
+    if (guildList.timer) global.clearTimeout(guildList.timer);
+    guildList.timer = 0;
+    guildList.rooms = [];
+    renderGuildRooms();
+  }
+
   function render() {
     var gameArea = byId("game-area");
     var presented = !!gameArea && gameArea.dataset.presented === "true";
@@ -1001,6 +1079,9 @@
     show(panel, surface === "panel");
     show(picker, picking);
     if (picking && surface === "panel") requestPictures();
+    if (status.view === "pick" && surface === "panel" && global.HaloOnline &&
+        typeof global.HaloOnline.guildRooms === "function") startGuildPoll();
+    else stopGuildPoll();
     panel.classList.toggle("picking", picking);
     text("hosted-host", nextMatch ? "Start match" : "Host game");
     show(byId("hosted-share"), surface === "panel" && picking && !!status.shareUrl);
