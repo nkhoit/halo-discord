@@ -119,6 +119,10 @@ first tick.
 - Until it has loaded, the match's messages skip it; the players who joined
   or left meanwhile are sent to it once it has. A machine still loading
   after 90 seconds, or when the match ends, is let go.
+- A player is at the same index on every machine, the one the server gave
+  it (in a match, the first free of the game's players and of those who
+  quit, whom the match keeps): the netcode names players by index, and a
+  late machine never had the datums of those who left before it.
 - Everything else a late joiner needs is what every client is sent all the
   time: the units, objects, inventories, statistics and the game type's
   state.
