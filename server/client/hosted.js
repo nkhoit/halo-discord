@@ -34,11 +34,14 @@
   var BUTTON = { START: 0, A: 1 };
 
   /* Lobby views drawn as a panel over the game, and those drawn as a bar in
-     Halo's own lobby; in a match (and while booting) neither. */
+     Halo's own lobby or over a match's results; in a match (and while
+     booting) neither. After a match the host's lobby is a panel again: the
+     next match's picker. */
   var PANEL_VIEWS = ["checking", "pick", "joining", "wait-match", "wait-retry", "host-starting"];
-  var BAR_VIEWS = ["hosting", "joined"];
+  var BAR_VIEWS = ["hosting", "joined", "postgame"];
 
-  function surfaceFor(view) {
+  function surfaceFor(view, playedMatch) {
+    if (view === "hosting" && playedMatch) return "panel";
     if (PANEL_VIEWS.indexOf(view) >= 0) return "panel";
     if (BAR_VIEWS.indexOf(view) >= 0) return "bar";
     return "none";
@@ -199,6 +202,7 @@
   var bar = element("div", { id: "hosted-bar", hidden: true }, [
     element("span", { id: "hosted-bar-text" }),
     element("button", { type: "button", id: "hosted-start", class: "primary", hidden: true, text: "Start match" }),
+    element("button", { type: "button", id: "hosted-next", class: "primary", hidden: true, text: "Next match" }),
     element("button", { type: "button", id: "hosted-bar-share", hidden: true, text: "Copy invite link" }),
     element("button", { type: "button", id: "hosted-bar-leave", text: "Leave" }),
   ]);
@@ -354,6 +358,14 @@
     if (!controller.audio.muted && typeof global.resumeBrowserAudio === "function") global.resumeBrowserAudio();
   }
 
+  /* (the host) the match starts: Halo's own start request, whatever its lobby
+     shows (an older page build without it: A, as on the lobby) */
+  function startMatch() {
+    if (!global.HaloOnline || typeof global.HaloOnline.startMatch !== "function" || !global.HaloOnline.startMatch()) {
+      press(BUTTON.A);
+    }
+  }
+
   function press(button) {
     var fn = module("platform_web_press_button");
     if (fn) fn(button);
@@ -385,11 +397,28 @@
     }, function() {});
   }
 
+  /* (this lobby has played a match: the host picks the next one here) */
+  var lobby = { playedMatch: false };
+
   function wire() {
     byId("hosted-host").addEventListener("click", function() {
       if (!global.HaloOnline) return;
-      global.HaloOnline.host({ mapIndex: selected.map, modeIndex: selected.mode });
+      var settings = { mapIndex: selected.map, modeIndex: selected.mode };
+      if (status.view !== "hosting") {
+        global.HaloOnline.host(settings);
+        return;
+      }
+      /* the next match: the lobby takes the map and game type, then starts
+      (a moment later, once the game has applied them) */
+      var current = status.settings || {};
+      var changed = current.mapIndex !== settings.mapIndex || current.modeIndex !== settings.modeIndex;
+      if (changed && typeof global.HaloOnline.configure === "function") global.HaloOnline.configure(settings);
+      lobby.playedMatch = false;
+      play();
+      startMatch();
+      render();
     });
+    byId("hosted-next").addEventListener("click", function() { press(BUTTON.A); });
     byId("hosted-resume").addEventListener("click", play);
     byId("hosted-menu").addEventListener("click", function() {
       play();
@@ -403,7 +432,7 @@
     });
     byId("hosted-start").addEventListener("click", function() {
       play();
-      press(BUTTON.A);
+      startMatch();
     });
     byId("hosted-mute").addEventListener("click", function() {
       controller.setMuted(!controller.audio.muted);
@@ -471,13 +500,18 @@
       controller.applyAudio();
     }
     controller.update(presented, status.view);
-    var surface = presented ? surfaceFor(status.view) : "none";
+    if (status.view === "match") lobby.playedMatch = true;
+    else if (!status.role) lobby.playedMatch = false;
+    var surface = presented ? surfaceFor(status.view, lobby.playedMatch) : "none";
     var host = status.host || "The host";
+    var nextMatch = status.view === "hosting" && surface === "panel";
+    var picking = status.view === "pick" || nextMatch;
 
     show(panel, surface === "panel");
-    show(picker, status.view === "pick");
-    panel.classList.toggle("picking", status.view === "pick");
-    show(byId("hosted-share"), surface === "panel" && status.view === "pick" && !!status.shareUrl);
+    show(picker, picking);
+    panel.classList.toggle("picking", picking);
+    text("hosted-host", nextMatch ? "Start match" : "Host game");
+    show(byId("hosted-share"), surface === "panel" && picking && !!status.shareUrl);
     var title = "", body = "";
     switch (status.view) {
       case "checking": title = "Halo"; body = "Checking who's here…"; break;
@@ -486,25 +520,35 @@
       case "wait-match": title = host + " is in a match"; body = "You'll join when it ends."; break;
       case "wait-retry": title = "Couldn't join " + host + " yet"; body = "Trying again shortly."; break;
       case "host-starting": title = "Opening your lobby…"; body = settingsLabel(status.settings); break;
+      case "hosting":
+        title = "Next match";
+        body = "Pick a map and game type for everyone in your lobby (" + players(status.playerCount || 1) + ").";
+        break;
     }
     text("hosted-title", title);
     text("hosted-text", body);
     var notice = byId("hosted-notice");
     show(notice, surface === "panel" && !!status.notice);
     text("hosted-notice", status.notice || "");
-    if (status.view === "pick" && status.settings && !picker.dataset.restored) {
-      picker.dataset.restored = "true";
+    /* (the last choice preselected: on first showing, and for each next match) */
+    var pickerKey = picking ? status.view : "";
+    if (picking && status.settings && picker.dataset.restored !== pickerKey) {
       select("map", status.settings.mapIndex || 0);
       select("mode", status.settings.modeIndex || 0);
     }
+    picker.dataset.restored = pickerKey;
 
     show(bar, surface === "bar");
     if (status.view === "hosting") {
       text("hosted-bar-text", "Your lobby · " + settingsLabel(status.settings) + " · " + players(status.playerCount || 1));
     } else if (status.view === "joined") {
-      text("hosted-bar-text", "In " + host + "'s lobby · waiting for " + host + " to start");
+      text("hosted-bar-text", lobby.playedMatch ? "Waiting for " + host + " to pick the next match…" :
+        "In " + host + "'s lobby · waiting for " + host + " to start");
+    } else if (status.view === "postgame") {
+      text("hosted-bar-text", status.role === "host" ? "Match over" : "Match over · waiting for " + host);
     }
     show(byId("hosted-start"), status.view === "hosting");
+    show(byId("hosted-next"), status.view === "postgame" && status.role === "host");
     show(byId("hosted-bar-share"), status.view === "hosting" && !!status.shareUrl);
     text("hosted-bar-leave", status.view === "hosting" ? "Close lobby" : "Leave");
 

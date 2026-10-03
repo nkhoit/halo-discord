@@ -87,6 +87,7 @@ static struct
 	real joined_seconds;
 	boolean team_set;
 	real kill_interval;
+	real end_time;
 	real shoot_interval;
 	real vehicle_time;
 	real pickup_time;
@@ -119,6 +120,7 @@ static void network_test_read_settings(
 	}
 	network_test.start_delay = (real)config_real("debug.network_test_start");
 	network_test.kill_interval = (real)config_real("debug.network_test_kill");
+	network_test.end_time = (real)config_real("debug.network_test_end");
 	network_test.shoot_interval = (real)config_real("debug.network_test_shoot");
 	network_test.vehicle_time = (real)config_real("debug.network_test_vehicle");
 	network_test.pickup_time = (real)config_real("debug.network_test_pickup");
@@ -497,7 +499,8 @@ void network_test_update(
 	the players logged every second) */
 	if (network_test.mode == _network_test_off)
 	{
-		if ((network_test.shoot_interval > 0.0f || network_test.kill_interval > 0.0f) && game_in_progress() &&
+		if ((network_test.shoot_interval > 0.0f || network_test.kill_interval > 0.0f || network_test.end_time > 0.0f) &&
+			game_in_progress() &&
 			!main_menu_loaded && game_connection() != _game_connection_local &&
 			game_time_get() - network_test.logged_time >= TICKS_PER_SECOND)
 		{
@@ -512,6 +515,16 @@ void network_test_update(
 				game_time_get() % (long)(network_test.kill_interval * TICKS_PER_SECOND) < TICKS_PER_SECOND)
 			{
 				network_test_kill();
+			}
+			/* (once a game: the clock starts over with the next; a match only,
+			not Halo's lobby, whose clock runs too) */
+			if (network_test.end_time > 0.0f && game_connection() == _game_connection_network_server &&
+				game_engine_running() &&
+				game_time_get() >= (long)(network_test.end_time * TICKS_PER_SECOND) &&
+				game_time_get() - (long)(network_test.end_time * TICKS_PER_SECOND) < TICKS_PER_SECOND)
+			{
+				platform_log("network test: the host ends the game");
+				game_engine_end_game();
 			}
 		}
 		return;

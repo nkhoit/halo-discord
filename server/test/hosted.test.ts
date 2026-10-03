@@ -26,7 +26,7 @@ interface Controller {
 
 interface HostedUi {
   createController(environment: { storage: Storage; applyAudio(muted: boolean, volume: number): void }): Controller;
-  surfaceFor(view: string): string;
+  surfaceFor(view: string, playedMatch?: boolean): string;
   isLockCooldown(error: unknown): boolean;
 }
 
@@ -107,7 +107,11 @@ describe("the overlay", () => {
       expect(surfaceFor(view), view).toBe("panel");
     }
     expect(surfaceFor("hosting")).toBe("bar");
+    expect(surfaceFor("hosting", true), "after a match the host picks the next one").toBe("panel");
     expect(surfaceFor("joined")).toBe("bar");
+    expect(surfaceFor("joined", true), "guests never get the picker").toBe("bar");
+    expect(surfaceFor("postgame")).toBe("bar");
+    expect(surfaceFor("postgame", true)).toBe("bar");
     expect(surfaceFor("match")).toBe("none");
     expect(surfaceFor("booting")).toBe("none");
   });

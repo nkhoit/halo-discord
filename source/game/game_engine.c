@@ -6379,9 +6379,16 @@ void game_engine_initialize(
 	return;
 }
 
+#ifdef HALO_LINUX
+static void game_engine_client_respawn_reset(void);
+#endif
+
 void game_engine_initialize_for_new_map(
 	void)
 {
+#ifdef HALO_LINUX
+	game_engine_client_respawn_reset();
+#endif
 	if (game_engine)
 	{
 		game_engine_verify_current_map();
@@ -7994,6 +8001,15 @@ static short client_respawn_sound_after(
 	short threshold)
 {
 	return threshold > 60 ? 60 : threshold > 30 ? 30 : threshold > 1 ? 1 : 0;
+}
+
+/* a player still dead when the last game ended starts the next one owing no
+countdown, so their first death in it sounds the whole countdown */
+static void game_engine_client_respawn_reset(
+	void)
+{
+	csmemset(client_respawn_previous, 0, sizeof(client_respawn_previous));
+	csmemset(client_respawn_next_sound, 0, sizeof(client_respawn_next_sound));
 }
 
 void game_engine_client_respawn_countdown(

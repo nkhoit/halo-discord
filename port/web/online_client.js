@@ -116,6 +116,7 @@
     hostSettings: null,
     guestWasJoined: false,
     inMatch: false,
+    inPostgame: false,
     leavePromise: null,
     wizardStep: "map",
   };
@@ -464,6 +465,25 @@
     }
   }
 
+  /* (the host, in its lobby) the next match's map and game type, applied to
+     the lobby everyone is in (web_online_ui.c platform_web_online_configure) */
+  function configureNextMatch(value) {
+    if (!session.active || session.role !== "host") return false;
+    var settings = normalizeHostSettings(value);
+    var configure = global.Module && global.Module._platform_web_online_configure;
+    if (typeof configure !== "function" || !configure(settings.mapIndex, settings.modeIndex)) return false;
+    session.hostSettings = settings;
+    saveHostSettings(settings);
+    return true;
+  }
+
+  /* (the host, in its lobby) starts the match */
+  function startMatch() {
+    var start = global.Module && global.Module._platform_web_online_start_match;
+    if (!session.active || session.role !== "host" || typeof start !== "function") return false;
+    return !!start();
+  }
+
   function clientGameState() {
     var get = global.Module && global.Module._platform_web_online_get_client_state;
     try {
@@ -477,16 +497,19 @@
      not yet polled), "pick" (nobody hosts: choose and host), "joining",
      "wait-match" (the host is in a match), "wait-retry" (a join failed),
      "host-starting", "hosting" (the host's Halo lobby), "joined" (a guest in
-     the host's lobby) or "match". */
+     the host's lobby), "match" or "postgame" (a match's results, until the
+     host goes back to the lobby). */
   function hostedStatus() {
     var state = -1;
     try { state = session.runtimeReady ? gameState() : -1; } catch (error) { /* starting */ }
     var view;
     if (!session.runtimeReady) view = "booting";
     else if (session.active && session.role === "host") {
-      view = state === GAME_STATE.HOSTING ? (session.inMatch ? "match" : "hosting") : "host-starting";
+      view = state === GAME_STATE.HOSTING ?
+        (session.inMatch ? "match" : session.inPostgame ? "postgame" : "hosting") : "host-starting";
     } else if (session.active) {
-      view = state === GAME_STATE.JOINED ? (session.inMatch ? "match" : "joined") : "joining";
+      view = state === GAME_STATE.JOINED ?
+        (session.inMatch ? "match" : session.inPostgame ? "postgame" : "joined") : "joining";
     } else view = hostedLobby.view || "checking";
     if (hostedLobby.notice && Date.now() - hostedLobby.noticeAt > NOTICE_MILLISECONDS) hostedLobby.notice = null;
     var summary = hostedLobby.summary || {};
@@ -1957,7 +1980,10 @@
     }
     elements.dialog.dataset.gameState = String(state);
     var clientState = clientGameState();
-    session.inMatch = clientState === CLIENT_STATE.INGAME || clientState === CLIENT_STATE.POSTGAME;
+    /* (the room is joinable again from the postgame on: Halo returns
+    everyone to its lobby from there, and a late joiner waits in it) */
+    session.inMatch = clientState === CLIENT_STATE.INGAME;
+    session.inPostgame = clientState === CLIENT_STATE.POSTGAME;
     if (session.role === "host" && global.HaloWebTransport && typeof global.HaloWebTransport.setRelayPhase === "function") {
       global.HaloWebTransport.setRelayPhase(session.inMatch);
     }
@@ -2055,6 +2081,7 @@
     session.hostSettings = null;
     session.guestWasJoined = false;
     session.inMatch = false;
+    session.inPostgame = false;
     session.pendingInvite = null;
     session.wizardStep = "map";
     if (relayAuth.refreshTimer) global.clearTimeout(relayAuth.refreshTimer);
@@ -2463,6 +2490,8 @@
     leave: function() { return leave(true); },
     defaultFrameCap: defaultFrameCap,
     status: hostedStatus,
+    configure: configureNextMatch,
+    startMatch: startMatch,
   });
 
   if (document.readyState === "loading") {

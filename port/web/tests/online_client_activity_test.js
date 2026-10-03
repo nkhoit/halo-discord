@@ -45,7 +45,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' } }) {
     elements: {}, roomHost: null, inMatch: false, gameState: 2, clientState: 2, intervals: [], timers: [],
     /* (the Activity's first session request finds it expired; a browser page is signed in) */
     sessionStatus: activity ? [401, 200] : [200], signIns: 0, fetches: [], configured: [], relayOpened: 0, disconnects: 0,
-    windowListeners: {}, customizations: [], phases: [], replaced: [], assigned: [],
+    windowListeners: {}, customizations: [], phases: [], replaced: [], assigned: [], configured_matches: [],
   };
   const elements = page.elements;
   const styleInputs = ['sage', 'red'].map(value => element({ checked: value === 'sage', value }));
@@ -109,6 +109,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' } }) {
       _platform_web_online_request: () => 1,
       _platform_web_online_set_player_customization: (...values) => { page.customizations.push(values); return 1; },
       _platform_web_online_set_transport_state() {},
+      _platform_web_online_configure: (map, mode) => { page.configured_matches.push([map, mode]); return 1; },
     },
     navigator: {},
     URL,
@@ -193,6 +194,7 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   page.poll();
   assert.equal(page.status().view, 'match');
   assert.deepEqual(page.phases, [], 'only the host speaks for the room');
+  assert.equal(page.context.HaloOnline.configure({ mapIndex: 0, modeIndex: 0 }), false, 'only the host picks the next match');
 
   /* The host left: back to the lobby, with the reason. */
   page.roomHost = null;
@@ -218,8 +220,16 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   page.clientState = 3;
   page.poll();
   assert.equal(page.status().view, 'match');
+  page.clientState = 4;
+  page.poll();
+  assert.equal(page.status().view, 'postgame', 'the results, until the host goes back to the lobby');
+  assert.deepEqual(page.phases, [false, true, false], 'the room is joinable again from the postgame on');
   page.clientState = 2;
   page.poll();
+  assert.equal(page.status().view, 'hosting');
+  assert.equal(page.context.HaloOnline.configure({ mapIndex: 0, modeIndex: 0 }), true, 'the next match, in the lobby');
+  assert.deepEqual(page.configured_matches, [[0, 0]]);
+  assert.deepEqual(page.status().settings.mapIndex, 0);
   assert.deepEqual(page.phases, [false, true, false], 'the host tells the room when its match starts and ends');
 
   const before = page.disconnects;
