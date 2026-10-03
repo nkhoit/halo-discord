@@ -1,7 +1,8 @@
 // Builds port/linux/tests/spectator_view_test.c against the real view scope
 // of port/linux/game/spectator.c (a spectator's target standing in as local
-// player 0 while it is drawn) and the netcode's own-player predicate of
-// port/linux/game/network_distributed.c. CC defaults to cc; with CC=emcc the
+// player 0 while it is drawn), the netcode's own-player predicate of
+// port/linux/game/network_distributed.c, and how the first-person weapon
+// finds the events of a unit or a weapon (source/interface/first_person_weapons.c). CC defaults to cc; with CC=emcc the
 // test runs under node.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -37,6 +38,8 @@ try {
   const spectator = fs.readFileSync(path.join(root, 'port/linux/game/spectator.c'), 'utf8').replace(/\r\n/g, '\n');
   const distributed = fs.readFileSync(path.join(root, 'port/linux/game/network_distributed.c'), 'utf8')
     .replace(/\r\n/g, '\n');
+  const weapons = fs.readFileSync(path.join(root, 'source/interface/first_person_weapons.c'), 'utf8')
+    .replace(/\r\n/g, '\n');
   fs.writeFileSync(path.join(temp, 'spectator_view.inc'), [
     lines(spectator, 'enum spectator_view\n{', '};'),
     lines(spectator, '/* the target, a tick */\nstruct spectator_snapshot', '};'),
@@ -44,9 +47,13 @@ try {
     block(spectator, 'boolean spectator_view_begin('),
     block(spectator, 'void spectator_view_end('),
     block(spectator, 'boolean spectator_view_scoped('),
-    block(spectator, 'boolean spectator_first_person_view('),
     block(spectator, 'short spectator_first_person_slot('),
+    block(spectator, 'boolean spectator_first_person_view('),
+    block(spectator, 'short spectator_first_person_weapon_slot('),
+    block(spectator, 'boolean spectator_sees_with_player('),
     block(distributed, 'boolean distributed_player_is_local('),
+    block(weapons, 'static short first_person_weapon_index_from_weapon_index(\n\tlong weapon_index)\n{'),
+    block(weapons, 'static short first_person_weapon_index_from_unit_index(\n\tlong unit_index)\n{'),
   ].join('\n\n') + '\n');
   const cc = process.env.CC || 'cc';
   const web = /emcc/.test(path.basename(cc));
