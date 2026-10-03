@@ -414,11 +414,11 @@
     hostedLobby.timer = 0;
   }
 
-  function startHostedLobby() {
+  function startHostedLobby(delay) {
     if (!hostedPage() || session.active || hostedLobby.timer || !session.runtimeReady ||
         hostedLobby.pendingJoin) return;
     hostedLobby.roomId = pageRoomId();
-    hostedLobby.timer = global.setTimeout(pollHostedLobby, 0);
+    hostedLobby.timer = global.setTimeout(pollHostedLobby, delay || 0);
   }
 
   /* The Discord display name, when it fits Halo's rules (eleven basic
@@ -2170,6 +2170,9 @@
     session.operationGeneration++;
     if (session.leavePromise) return session.leavePromise;
     session.leavePromise = (async function() {
+      /* (a host that just left still shows in its room's status until the
+         relay has seen its socket close; polling at once would join itself) */
+      var wasHost = session.role === "host";
       session.closing = true;
       var pendingWork = [session.messageChain].concat(Array.from(session.peerPromises.values()));
       if (session.role === "host" && session.room && session.roomTicket) {
@@ -2204,7 +2207,7 @@
         showSetup();
         setBusy(false);
       }
-      if (hostedPage()) startHostedLobby();
+      if (hostedPage()) startHostedLobby(wasHost ? LOBBY_POLL_MILLISECONDS : 0);
     })();
     try {
       await session.leavePromise;

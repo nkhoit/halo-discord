@@ -47,7 +47,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
     sessionStatus: sessionStatus || (activity ? [401, 200] : [200]), signIns: 0, fetches: [], configured: [], relayOpened: 0, disconnects: 0,
     windowListeners: {}, customizations: [], phases: [], replaced: [], assigned: [], configured_matches: [],
     joinable: false, joinablePhases: [], joinInProgress: [], matchJoinable: 0, matchStarting: 0,
-    guildRooms: [], details: [],
+    guildRooms: [], details: [], delays: [],
   };
   const elements = page.elements;
   const styleInputs = ['sage', 'red'].map(value => element({ checked: value === 'sage', value }));
@@ -135,7 +135,10 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
     clearTimeout() {},
     setInterval: callback => page.intervals.push(callback),
     setTimeout: (callback, milliseconds) => {
-      if (!milliseconds || milliseconds <= 2000) page.timers.push(callback);
+      if (!milliseconds || milliseconds <= 2000) {
+        page.timers.push(callback);
+        page.delays.push(milliseconds || 0);
+      }
       return page.timers.length;
     },
   };
@@ -249,6 +252,20 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   page.windowListeners.pagehide();
   await settle();
   assert(page.disconnects > before, 'leaving the page (or entering the back/forward cache) closes the room');
+
+  /* A host that leaves: its lobby waits a poll before asking who hosts its
+     room, which until the relay sees the socket close is still itself. */
+  const leaving = load({ activity: true });
+  leaving.context.HaloOnline.runtimeReady();
+  await leaving.tick();
+  await leaving.context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
+  leaving.delays.length = 0;
+  await leaving.context.HaloOnline.leave();
+  await settle();
+  assert.deepEqual(leaving.delays, [2000], 'the lobby resumes after one poll interval');
+  await leaving.tick();
+  await settle();
+  assert.equal(leaving.status().view, 'pick', 'back in its own lobby');
 
   /* ---------- joining a match in progress (#4) */
   const late = load({ activity: true });
