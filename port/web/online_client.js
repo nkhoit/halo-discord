@@ -383,7 +383,7 @@
   var NOTICE_MILLISECONDS = 15000;
   var CLIENT_STATE = Object.freeze({ PREGAME: 2, INGAME: 3, POSTGAME: 4 });
   var hostedLobby = { timer: 0, view: null, summary: null, roomId: null, retryAt: 0, notice: null, noticeAt: 0,
-    joiningMatch: false };
+    joiningMatch: false, pendingJoin: false };
 
   function hostedPage() {
     var mode = typeof document.querySelector === "function" &&
@@ -415,7 +415,8 @@
   }
 
   function startHostedLobby() {
-    if (!hostedPage() || session.active || hostedLobby.timer || !session.runtimeReady) return;
+    if (!hostedPage() || session.active || hostedLobby.timer || !session.runtimeReady ||
+        hostedLobby.pendingJoin) return;
     hostedLobby.roomId = pageRoomId();
     hostedLobby.timer = global.setTimeout(pollHostedLobby, 0);
   }
@@ -465,6 +466,53 @@
       hostedLobby.retryAt = Date.now() + JOIN_RETRY_MILLISECONDS;
       join("room:" + hostedLobby.roomId);
     }
+  }
+
+  /* (Discord Activity) the matches hosted from this Discord server's other
+     voice channels (the server's GET /v1/guild-rooms), for the lobby's list */
+  async function guildRooms() {
+    if (!activity() || !hostedPage()) return [];
+    try {
+      var response = await fetch(relayEndpoint("v1/guild-rooms?build=" + encodeURIComponent(buildId())),
+        { credentials: "include", cache: "no-store" });
+      if (!response.ok) return [];
+      var body = await response.json();
+      return body && Array.isArray(body.rooms) ? body.rooms : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /* (Discord Activity, nobody hosting here) joins a room from that list: its
+     lobby, or its match as it runs. Leaving it, or its host leaving, brings
+     the player back to this channel's lobby. */
+  function joinGuildRoom(room) {
+    if (!activity() || !hostedPage() || session.active || !session.runtimeReady || !room ||
+        !/^[A-Za-z0-9_-]{16,64}$/.test(String(room.roomId)) || room.roomId === pageRoomId()) return false;
+    stopHostedLobby();
+    hostedLobby.roomId = room.roomId;
+    hostedLobby.joiningMatch = room.state === "match";
+    hostedLobby.summary = { host: typeof room.host === "string" ? room.host : null, players: room.players || 0,
+      inMatch: hostedLobby.joiningMatch, joinable: !!room.joinable };
+    hostedLobby.view = hostedLobby.joiningMatch ? "joining-match" : "joining";
+    /* (join() leaves first, which would restart this channel's lobby) */
+    hostedLobby.pendingJoin = true;
+    join("room:" + room.roomId);
+    return true;
+  }
+
+  /* (the host) what its room's server-wide listing shows */
+  function hostListingDetails(clientState, phase) {
+    var settings = session.hostSettings || readHostSettings();
+    var details = {
+      state: clientState === CLIENT_STATE.INGAME ? "match" : clientState === CLIENT_STATE.POSTGAME ? "postgame" :
+        phase.inMatch ? "starting" : "lobby",
+      map: settings.mapIndex,
+      mode: settings.modeIndex,
+    };
+    var channel = activity() && typeof activity().channelName === "function" ? activity().channelName() : null;
+    if (typeof channel === "string" && channel) details.channel = channel.slice(0, 64);
+    return details;
   }
 
   /* (the host, in its lobby) the next match's map and game type, applied to
@@ -1928,6 +1976,7 @@
     var profile = readPlayerProfile();
     savePlayerProfile(profile);
     await leave(false);
+    hostedLobby.pendingJoin = false;
     var operation = ++session.operationGeneration;
     var invite;
     var recoveredVerification = false;
@@ -2012,7 +2061,7 @@
     session.inPostgame = clientState === CLIENT_STATE.POSTGAME;
     if (session.role === "host" && global.HaloWebTransport && typeof global.HaloWebTransport.setRelayPhase === "function") {
       var phase = hostMatchPhase(clientState);
-      global.HaloWebTransport.setRelayPhase(phase.inMatch, phase.joinable);
+      global.HaloWebTransport.setRelayPhase(phase.inMatch, phase.joinable, hostListingDetails(clientState, phase));
     }
     if (state === GAME_STATE.ERROR) {
       fail(new Error(GAME_ERRORS[gameError()] || "Halo could not enter the online lobby."));
@@ -2519,6 +2568,8 @@
     status: hostedStatus,
     configure: configureNextMatch,
     startMatch: startMatch,
+    guildRooms: guildRooms,
+    joinGuildRoom: joinGuildRoom,
   });
 
   if (document.readyState === "loading") {

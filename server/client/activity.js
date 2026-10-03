@@ -109,14 +109,16 @@ async function panel(title, text, actions) {
    message; the limit is an assumption, Discord's is not documented). */
 const DEVELOPMENT_CAPTURE_LOG_LIMIT = 1000;
 
-function developmentSdk(user, instanceId, configuration = {}) {
+function developmentSdk(user, instanceId, configuration = {}, channelName = null) {
   for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
       "RTCSessionDescription", "RTCIceCandidate"]) {
     delete window[name];
     if (name in window) window[name] = undefined;
   }
+  const channelId = (/-gc-\d+-(\d+)$/.exec(instanceId) || [])[1] || null;
   const commands = {
     authorize: async () => ({ code: `dev:${user}` }),
+    getChannel: async ({ channel_id }) => ({ id: channel_id, name: channelName || `Channel ${channel_id}` }),
     openExternalLink: async ({ url }) => ({ opened: Boolean(window.open(url, "_blank", "noopener")) }),
     captureLog: async ({ message }) => {
       if (!message || message.length > DEVELOPMENT_CAPTURE_LOG_LIMIT) {
@@ -127,6 +129,7 @@ function developmentSdk(user, instanceId, configuration = {}) {
   };
   return {
     instanceId,
+    channelId,
     commands,
     ready: async () => {
       if (configuration.disableConsoleLogOverride) return;
@@ -157,6 +160,18 @@ async function signIn(sdk, clientId) {
   return response.json();
 }
 
+/* The voice channel's name, for the server-wide lobby (best effort: null
+   outside a server channel or when Discord does not say). */
+async function voiceChannelName(sdk) {
+  if (!sdk.channelId) return null;
+  try {
+    const channel = await sdk.commands.getChannel({ channel_id: sdk.channelId });
+    return channel && typeof channel.name === "string" && channel.name ? channel.name : null;
+  } catch (error) {
+    return null;
+  }
+}
+
 async function openInBrowser(sdk, url) {
   try {
     await sdk.commands.openExternalLink({ url });
@@ -171,7 +186,8 @@ async function main() {
   const parameters = new URLSearchParams(location.search);
   const developmentUser = meta("halo-activity-dev") ? parameters.get("dev_user") : null;
   const sdk = developmentUser ?
-    developmentSdk(developmentUser, parameters.get("instance_id") || "dev-instance", SDK_CONFIGURATION) :
+    developmentSdk(developmentUser, parameters.get("instance_id") || "dev-instance", SDK_CONFIGURATION,
+      parameters.get("channel_name")) :
     new DiscordSDK(clientId, SDK_CONFIGURATION);
 
   await status("Connecting to Discord…");
@@ -193,9 +209,12 @@ async function main() {
 
   await status("Signing in with Discord…");
   let session = await signIn(sdk, clientId);
+  let channelName = null;
+  voiceChannelName(sdk).then((name) => { channelName = name; });
   window.HaloActivity = Object.freeze({
     roomId: session.roomId,
     user: session.user,
+    channelName: () => channelName,
     /* Signs in again through the SDK, e.g. after the session expired. */
     signIn: async () => {
       session = await signIn(sdk, clientId);
