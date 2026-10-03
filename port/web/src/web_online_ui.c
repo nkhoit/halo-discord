@@ -48,6 +48,8 @@ void network_game_server_pause_countdown(struct network_game_server *server, uns
 short network_game_client_get_error(struct network_game_client *client);
 unsigned char network_game_client_join_first_available_game(void);
 unsigned char network_game_client_add_player(struct network_game_client *client, short controller_index);
+/* (prototype, #52) port/linux/game/network_test.c's */
+unsigned char network_spectator_wanted(void);
 unsigned char network_game_client_has_local_player(
 	struct network_game_client *client,
 	short local_player_index);
@@ -583,6 +585,12 @@ static void update_join(float seconds)
 		client_state == _network_client_ingame ||
 		client_state == _network_client_postgame)
 	{
+		/* (prototype, #52) a spectator joins without a player */
+		if (!web_online.player_added && network_spectator_wanted())
+		{
+			web_online.player_added = WEB_TRUE;
+			platform_log("web online: joining as a spectator, without a player");
+		}
 		add_primary_player_when_ready(client, seconds);
 		if (!web_online.player_added)
 		{

@@ -518,6 +518,17 @@ void network_distributed_web_statistics(
 
 /* ---------- shared (network_distributed.h) */
 
+/* (prototype, #52: a spectator following the killer) who last killed a
+player, by absolute index, as the host has it; NONE for none */
+short network_distributed_killing_player(
+	short player_absolute_index)
+{
+	if (player_absolute_index < 0 || player_absolute_index >= MAXIMUM_TRACKED_PLAYERS ||
+		!distributed_deaths[player_absolute_index].valid)
+		return NONE;
+	return distributed_deaths[player_absolute_index].killing_player_index;
+}
+
 void network_distributed_statistics(
 	long *sent,
 	long *received,

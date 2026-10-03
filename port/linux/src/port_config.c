@@ -182,6 +182,30 @@ static const struct config_setting config_settings[] =
 		"machines of twice it), to test the netcode as over the internet; 0 none." },
 	{ "debug.network_loss", _config_real, "0.0", "HALO_NETWORK_LOSS", _environment_value, _platform_all,
 		"Percent of datagrams received that are dropped, for the same; 0 none." },
+	{ "debug.spectate", _config_boolean, "false", "HALO_SPECTATE", _environment_set_is_true, _platform_all,
+		"(prototype, #52) Join a match in progress without a player and watch it\n"
+		"(distributed netcode with network.join_in_progress only; network_test.c)." },
+	{ "debug.spectate_camera", _config_string, "\"first_person\"", "HALO_SPECTATE_CAMERA", _environment_value, _platform_all,
+		"The spectator's camera: \"first_person\", \"smooth\" (first person, a tick\n"
+		"behind, interpolated), \"orbit\" or \"static\"." },
+	{ "debug.spectate_hud", _config_boolean, "false", "HALO_SPECTATE_HUD", _environment_set_is_true, _platform_all,
+		"The spectated player's first-person weapon and HUD (experiment)." },
+	{ "debug.spectate_cycle", _config_real, "0.0", "HALO_SPECTATE_CYCLE", _environment_value, _platform_all,
+		"Seconds between switching to the next player; 0 never." },
+	{ "debug.spectate_target", _config_integer, "-1", "HALO_SPECTATE_TARGET", _environment_value, _platform_all,
+		"The player (absolute index) to watch first; -1 the first with a unit." },
+	{ "debug.spectate_death", _config_string, "\"stay\"", "HALO_SPECTATE_DEATH", _environment_value, _platform_all,
+		"When the spectated player dies: \"stay\" on them or follow the \"killer\"." },
+	{ "debug.spectate_join", _config_real, "0.0", "HALO_SPECTATE_JOIN", _environment_value, _platform_all,
+		"Seconds of spectating after which the spectator adds its player; 0 never." },
+	{ "debug.spectate_log", _config_real, "0.0", "HALO_SPECTATE_LOG", _environment_value, _platform_all,
+		"Seconds of per-tick and per-frame camera logs (on a player's machine: its\n"
+		"own unit's); 0 none." },
+	{ "debug.spectate_static", _config_string, "\"\"", "HALO_SPECTATE_STATIC", _environment_value, _platform_all,
+		"The static camera: \"x y z yaw pitch\" (degrees)." },
+	{ "debug.spectate_orbit", _config_real, "20.0", "HALO_SPECTATE_ORBIT", _environment_value, _platform_all,
+		"The orbit camera's scripted turn, degrees a second (the mouse in the full\n"
+		"feature)." },
 	{ "debug.test_input", _config_string, "\"\"", "HALO_TEST_INPUT", _environment_value, _platform_all,
 		"\"bot:<seed>\" plays controller 1 with a scripted pattern (automated\n"
 		"network tests); empty for none." },

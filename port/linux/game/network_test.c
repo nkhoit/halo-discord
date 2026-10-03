@@ -48,6 +48,7 @@ Called from the main loop every frame (main.c).
 #include "objects/damage.h"
 #include "scenario/scenario.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -512,10 +513,473 @@ static void network_test_ammo_message(
 	hud_picked_up_ammunition(0, object_get(weapon_index)->definition_index, 8);
 }
 
+/* ---------- (prototype, #52) a spectator: a machine in a match in progress
+without a player of its own, watching another's (debug.spectate). Its
+camera replaces the window's (main.c main_game_render); with
+debug.spectate_hud the spectated player also stands in as local player 0
+around the first-person weapon's and the HUD's updates and the render, but
+never as this machine's own player for the netcode (its local_player_index
+stays NONE: distributed_player_is_local). */
+
+#include "camera/observer.h"
+#include "math/real_math.h"
+
+/* the platform layer's */
+int config_boolean(const char *name);
+long config_integer(const char *name);
+/* network_server_manager.c's */
+boolean network_game_join_in_progress_enabled(void);
+/* network_distributed.c's: who last killed a player, NONE for none */
+short network_distributed_killing_player(short player_absolute_index);
+/* render_interpolation.c's */
+real render_interpolation_fraction(void);
+real_matrix4x3 *render_interpolation_object_node_matrices(long object_index);
+
+#define SPECTATOR_FIELD_OF_VIEW (70.0f * 3.14159265f / 180.0f)
+#define SPECTATOR_ORBIT_DISTANCE 3.5f
+#define SPECTATOR_ORBIT_PITCH (-20.0f * 3.14159265f / 180.0f)
+
+enum
+{
+	_spectator_camera_first_person,
+	_spectator_camera_smooth,
+	_spectator_camera_orbit,
+	_spectator_camera_static,
+};
+
+static struct
+{
+	boolean checked;
+	boolean enabled;
+	short camera;
+	boolean hud;
+	boolean follow_killer;
+	real cycle;
+	long first_target;
+	real join_after;
+	real log_seconds;
+	real orbit_speed;
+	boolean static_set;
+	real_point3d static_position;
+	real static_yaw;
+	real static_pitch;
+	/* while spectating */
+	boolean watching;
+	real seconds;
+	real since_switch;
+	boolean join_requested;
+	long target_player;
+	long target_unit;
+	long followed_unit;
+	long snapshot_time;
+	boolean have_snapshot;
+	real_point3d camera_previous;
+	real_point3d camera_latest;
+	real_vector3d aim_previous;
+	real_vector3d aim_latest;
+	real_point3d center_previous;
+	real_point3d center_latest;
+	real orbit_yaw;
+	struct observer_result result;
+	long frames;
+	long logged_tick;
+	real logged_seconds;
+	long slot_saved;
+	boolean slot_swapped;
+} spectator = { 0 };
+
+static void spectator_read_settings(void)
+{
+	char const *camera = config_string("debug.spectate_camera");
+	char const *view = config_string("debug.spectate_static");
+
+	spectator.checked = TRUE;
+	spectator.enabled = config_boolean("debug.spectate");
+	spectator.camera = !strcmp(camera, "smooth") ? _spectator_camera_smooth :
+		!strcmp(camera, "orbit") ? _spectator_camera_orbit :
+		!strcmp(camera, "static") ? _spectator_camera_static : _spectator_camera_first_person;
+	spectator.hud = config_boolean("debug.spectate_hud");
+	spectator.follow_killer = !strcmp(config_string("debug.spectate_death"), "killer");
+	spectator.cycle = (real)config_real("debug.spectate_cycle");
+	spectator.first_target = config_integer("debug.spectate_target");
+	spectator.join_after = (real)config_real("debug.spectate_join");
+	spectator.log_seconds = (real)config_real("debug.spectate_log");
+	spectator.orbit_speed = (real)config_real("debug.spectate_orbit") * 3.14159265f / 180.0f;
+	spectator.static_set = sscanf(view, "%f %f %f %f %f", &spectator.static_position.x, &spectator.static_position.y,
+		&spectator.static_position.z, &spectator.static_yaw, &spectator.static_pitch) == 5;
+	spectator.static_yaw *= 3.14159265f / 180.0f;
+	spectator.static_pitch *= 3.14159265f / 180.0f;
+	spectator.target_player = NONE;
+	spectator.target_unit = NONE;
+	spectator.followed_unit = NONE;
+	spectator.slot_saved = NONE;
+	if (spectator.enabled)
+		platform_log("spectate: on (camera %s%s, death %s)", camera, spectator.hud ? ", hud" : "",
+			spectator.follow_killer ? "killer" : "stay");
+}
+
+/* a machine in a running match with no player of its own (and the setting) */
+static boolean spectator_watching(void)
+{
+	return spectator.enabled && network_game_join_in_progress_enabled() &&
+		game_connection() == _game_connection_network_client && game_in_progress() && game_engine_running() &&
+		!spectator.slot_swapped && local_player_count() == 0 && local_player_get_player_index(0) == NONE;
+}
+
+/* the next player after `after` (NONE: the first) with a unit, or else any */
+static long spectator_next_player(long after)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	long first_with_unit = NONE;
+	long next_with_unit = NONE;
+	long any = NONE;
+	boolean past = after == NONE;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		if (any == NONE)
+			any = iterator.datum_index;
+		if (player->unit_index != NONE)
+		{
+			if (first_with_unit == NONE)
+				first_with_unit = iterator.datum_index;
+			if (past && next_with_unit == NONE && iterator.datum_index != after)
+				next_with_unit = iterator.datum_index;
+		}
+		if (iterator.datum_index == after)
+			past = TRUE;
+	}
+	return next_with_unit != NONE ? next_with_unit : first_with_unit != NONE ? first_with_unit : any;
+}
+
+static void spectator_switch(long player_index, char const *why)
+{
+	if (player_index == spectator.target_player)
+		return;
+	spectator.target_player = player_index;
+	spectator.since_switch = 0.0f;
+	spectator.have_snapshot = FALSE;
+	platform_log("spectate: %s player %ld", why,
+		player_index == NONE ? -1L : (long)DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index));
+}
+
+static void spectator_aim_angles(real_vector3d const *aim, real *yaw, real *pitch)
+{
+	*yaw = (real)atan2(aim->j, aim->i) * 180.0f / 3.14159265f;
+	*pitch = (real)asin(PIN(aim->k, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
+}
+
+/* (every frame, before the ticks) the target: cycling, deaths, joining */
+static void spectator_update(real seconds)
+{
+	struct player_datum *player;
+
+	if (!spectator.checked)
+		spectator_read_settings();
+	if (!spectator_watching())
+	{
+		if (spectator.watching)
+		{
+			spectator.watching = FALSE;
+			platform_log("spectate: stopped (local players %d)", (int)local_player_count());
+		}
+		return;
+	}
+	if (!spectator.watching)
+	{
+		spectator.watching = TRUE;
+		spectator.seconds = 0.0f;
+		spectator.target_player = NONE;
+		platform_log("spectate: watching");
+	}
+	spectator.seconds += seconds;
+	spectator.since_switch += seconds;
+
+	if (spectator.target_player == NONE || !datum_try_and_get(player_data, spectator.target_player))
+	{
+		long first = spectator_next_player(NONE);
+		struct data_iterator iterator;
+
+		data_iterator_new(&iterator, player_data);
+		while (spectator.first_target >= 0 && data_iterator_next(&iterator))
+		{
+			if (DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index) == spectator.first_target)
+				first = iterator.datum_index;
+		}
+		spectator_switch(first, "first");
+	}
+	else if (spectator.cycle > 0.0f && spectator.since_switch >= spectator.cycle)
+		spectator_switch(spectator_next_player(spectator.target_player), "next");
+	player = spectator.target_player != NONE ? player_get(spectator.target_player) : NULL;
+	spectator.target_unit = player ? player->unit_index : NONE;
+	if (player && player->unit_index == NONE && spectator.follow_killer)
+	{
+		short killer = network_distributed_killing_player((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(spectator.target_player));
+		struct data_iterator iterator;
+		struct player_datum *other;
+
+		data_iterator_new(&iterator, player_data);
+		while (killer != NONE && (other = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+		{
+			if (DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index) == killer &&
+				iterator.datum_index != spectator.target_player && other->unit_index != NONE)
+			{
+				spectator_switch(iterator.datum_index, "the killer,");
+				spectator.target_unit = other->unit_index;
+				break;
+			}
+		}
+	}
+	if (spectator.target_unit != NONE && spectator.target_unit != spectator.followed_unit)
+	{
+		platform_log("spectate: following unit %lx%s", (unsigned long)spectator.target_unit,
+			spectator.followed_unit != NONE ? " (respawned or switched)" : "");
+		spectator.followed_unit = spectator.target_unit;
+		spectator.have_snapshot = FALSE;
+	}
+
+	if (game_time_get() - network_test.logged_time >= TICKS_PER_SECOND)
+	{
+		network_test.logged_time = game_time_get();
+		network_test_log_players();
+	}
+	if (spectator.join_after > 0.0f && !spectator.join_requested && spectator.seconds >= spectator.join_after)
+	{
+		spectator.join_requested = TRUE;
+		platform_log("spectate: joining: add player request %s",
+			network_game_client_add_player(global_network_game_client_get(), 0) ? "sent" : "refused");
+	}
+}
+
+/* (a player's machine, debug.spectate_log) its own unit's aim, every tick */
+static void spectator_log_own(void)
+{
+	long player_index = local_player_get_player_index(0);
+	struct unit_datum *unit;
+	real yaw, pitch;
+	real_point3d camera;
+
+	if (spectator.log_seconds <= 0.0f || player_index == NONE || game_time_get() == spectator.logged_tick ||
+		game_time_get() > (long)(spectator.log_seconds * TICKS_PER_SECOND) + 300 || player_get(player_index)->unit_index == NONE)
+		return;
+	if (game_time_get() / TICKS_PER_SECOND != spectator.logged_tick / TICKS_PER_SECOND)
+		network_test_log_players();
+	spectator.logged_tick = game_time_get();
+	unit = unit_get(player_get(player_index)->unit_index);
+	unit_get_camera_position(player_get(player_index)->unit_index, &camera);
+	spectator_aim_angles(&unit->unit.aiming_vector, &yaw, &pitch);
+	platform_log("spectate: own tick %ld player %ld at %.3f %.3f %.3f aim %.3f %.3f", game_time_get(),
+		(long)DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index), camera.x, camera.y, camera.z, yaw, pitch);
+}
+
+static void spectator_snapshot(void)
+{
+	long time = game_time_get();
+	struct unit_datum *unit;
+	struct object_datum *object;
+	real_point3d camera;
+	real_vector3d aim;
+	real_point3d center;
+	real yaw, pitch;
+
+	if (spectator.target_unit == NONE || !unit_try_and_get(spectator.target_unit))
+		return;
+	if (spectator.have_snapshot && time == spectator.snapshot_time)
+		return;
+	unit = unit_get(spectator.target_unit);
+	object = object_get(spectator.target_unit);
+	unit_get_camera_position(spectator.target_unit, &camera);
+	aim = unit->unit.aiming_vector;
+	normalize3d(&aim);
+	center = object->object.position;
+	center.z += 0.3f;
+	if (!spectator.have_snapshot)
+	{
+		spectator.camera_previous = camera;
+		spectator.aim_previous = aim;
+		spectator.center_previous = center;
+	}
+	else
+	{
+		spectator.camera_previous = spectator.camera_latest;
+		spectator.aim_previous = spectator.aim_latest;
+		spectator.center_previous = spectator.center_latest;
+	}
+	spectator.camera_latest = camera;
+	spectator.aim_latest = aim;
+	spectator.center_latest = center;
+	spectator.have_snapshot = TRUE;
+	spectator.snapshot_time = time;
+	if (spectator.log_seconds > 0.0f && spectator.seconds <= spectator.log_seconds)
+	{
+		spectator_aim_angles(&aim, &yaw, &pitch);
+		platform_log("spectate: tick %ld player %ld at %.3f %.3f %.3f aim %.3f %.3f", time,
+			(long)DATUM_INDEX_TO_ABSOLUTE_INDEX(spectator.target_player), camera.x, camera.y, camera.z, yaw, pitch);
+	}
+}
+
+static void spectator_point_lerp(real_point3d const *a, real_point3d const *b, real t, real_point3d *result)
+{
+	result->x = a->x + (b->x - a->x) * t;
+	result->y = a->y + (b->y - a->y) * t;
+	result->z = a->z + (b->z - a->z) * t;
+}
+
+static void spectator_set_view(real_point3d const *position, real_vector3d const *forward)
+{
+	real_vector3d up = { 0.0f, 0.0f, 1.0f };
+	real along;
+
+	spectator.result.position = *position;
+	spectator.result.forward = *forward;
+	normalize3d(&spectator.result.forward);
+	along = dot_product3d(&up, &spectator.result.forward);
+	up.i -= spectator.result.forward.i * along;
+	up.j -= spectator.result.forward.j * along;
+	up.k -= spectator.result.forward.k * along;
+	if (normalize3d(&up) == 0.0f)
+		up.i = 1.0f;
+	spectator.result.up = up;
+	spectator.result.velocity.i = spectator.result.velocity.j = spectator.result.velocity.k = 0.0f;
+	spectator.result.field_of_view = SPECTATOR_FIELD_OF_VIEW;
+	scenario_location_from_point(&spectator.result.location, &spectator.result.position);
+}
+
+/* (main.c, drawing a frame) the camera of a machine spectating, or NULL */
+static boolean spectator_watching_or_swapped(void)
+{
+	return spectator.slot_swapped || spectator_watching();
+}
+
+struct observer_result const *network_spectator_camera(
+	real frame_seconds)
+{
+	real alpha = render_interpolation_fraction();
+	short camera = spectator.camera;
+	real_point3d position;
+	real_vector3d forward;
+
+	if (!spectator.checked || !spectator.watching || !spectator_watching_or_swapped())
+		return NULL;
+	spectator_snapshot();
+	/* (dead: around where they fell) */
+	if (spectator.target_unit == NONE && camera != _spectator_camera_static)
+		camera = _spectator_camera_orbit;
+	if (camera == _spectator_camera_static || (!spectator.have_snapshot && spectator.static_set))
+	{
+		forward.i = (real)(cos(spectator.static_yaw) * cos(spectator.static_pitch));
+		forward.j = (real)(sin(spectator.static_yaw) * cos(spectator.static_pitch));
+		forward.k = (real)sin(spectator.static_pitch);
+		spectator_set_view(&spectator.static_position, &forward);
+	}
+	else if (!spectator.have_snapshot)
+	{
+		return NULL;
+	}
+	else if (camera == _spectator_camera_orbit)
+	{
+		real_point3d center;
+
+		spectator.orbit_yaw += spectator.orbit_speed * frame_seconds;
+		spectator_point_lerp(&spectator.center_previous, &spectator.center_latest, alpha, &center);
+		forward.i = (real)(cos(spectator.orbit_yaw) * cos(SPECTATOR_ORBIT_PITCH));
+		forward.j = (real)(sin(spectator.orbit_yaw) * cos(SPECTATOR_ORBIT_PITCH));
+		forward.k = (real)sin(SPECTATOR_ORBIT_PITCH);
+		position.x = center.x - forward.i * SPECTATOR_ORBIT_DISTANCE;
+		position.y = center.y - forward.j * SPECTATOR_ORBIT_DISTANCE;
+		position.z = center.z - forward.k * SPECTATOR_ORBIT_DISTANCE;
+		spectator_set_view(&position, &forward);
+	}
+	else if (camera == _spectator_camera_smooth)
+	{
+		spectator_point_lerp(&spectator.camera_previous, &spectator.camera_latest, alpha, &position);
+		forward.i = spectator.aim_previous.i + (spectator.aim_latest.i - spectator.aim_previous.i) * alpha;
+		forward.j = spectator.aim_previous.j + (spectator.aim_latest.j - spectator.aim_previous.j) * alpha;
+		forward.k = spectator.aim_previous.k + (spectator.aim_latest.k - spectator.aim_previous.k) * alpha;
+		spectator_set_view(&position, &forward);
+	}
+	else
+	{
+		spectator_set_view(&spectator.camera_latest, &spectator.aim_latest);
+	}
+	spectator.frames++;
+	return &spectator.result;
+}
+
+/* (main.c) every frame drawn: its camera, while debug.spectate_log lasts */
+void network_spectator_log_frame(
+	struct observer_result const *camera)
+{
+	real yaw, pitch;
+
+	if (!spectator.checked || spectator.log_seconds <= 0.0f || !camera ||
+		(spectator.watching ? spectator.seconds > spectator.log_seconds :
+			game_time_get() > (long)(spectator.log_seconds * TICKS_PER_SECOND) + 300))
+		return;
+	spectator_aim_angles(&camera->forward, &yaw, &pitch);
+	platform_log("spectate: frame %ld+%.2f %s at %.3f %.3f %.3f aim %.3f %.3f", game_time_get(),
+		render_interpolation_fraction(), spectator.watching ? "spectator" : "own", camera->position.x,
+		camera->position.y, camera->position.z, yaw, pitch);
+}
+
+/* (debug.spectate_hud) the spectated player as local player 0, around the
+first-person weapon's and the HUD's updates and the drawing; TRUE when it
+is, for network_spectator_view_end */
+boolean network_spectator_view_begin(
+	void)
+{
+	if (!spectator.hud || !spectator_watching() || spectator.target_player == NONE ||
+		spectator.target_unit == NONE || spectator.camera == _spectator_camera_orbit ||
+		spectator.camera == _spectator_camera_static)
+		return FALSE;
+	spectator.slot_saved = players_globals->local_players[0];
+	players_globals->local_players[0] = spectator.target_player;
+	spectator.slot_swapped = TRUE;
+	return TRUE;
+}
+
+void network_spectator_view_end(
+	boolean begun)
+{
+	if (!begun)
+		return;
+	players_globals->local_players[0] = spectator.slot_saved;
+	spectator.slot_swapped = FALSE;
+}
+
+/* (first_person_weapons.c) the spectated unit's first-person weapon slot */
+short network_spectator_first_person_slot(
+	long unit_index)
+{
+	return spectator.hud && spectator.watching && unit_index != NONE && unit_index == spectator.target_unit &&
+		spectator.camera != _spectator_camera_orbit && spectator.camera != _spectator_camera_static ? 0 : NONE;
+}
+
+/* (render_objects.c) the spectated unit, not drawn while seen from inside */
+boolean network_spectator_first_person_object(
+	long object_index)
+{
+	return spectator.watching && object_index != NONE && object_index == spectator.target_unit &&
+		(spectator.camera == _spectator_camera_first_person || spectator.camera == _spectator_camera_smooth);
+}
+
+/* (web_online_ui.c) join without a player */
+boolean network_spectator_wanted(
+	void)
+{
+	if (!spectator.checked)
+		spectator_read_settings();
+	return spectator.enabled;
+}
+
 void network_test_update(
 	boolean main_menu_loaded,
 	real seconds)
 {
+	spectator_update(seconds);
+	spectator_log_own();
 	if (!network_test.checked)
 		network_test_read_settings();
 	/* (scripted hits and kills also in games the menus made, for measuring;

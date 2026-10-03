@@ -670,6 +670,11 @@ typedef char screenshot_and_framerate_globals_size_assert[
 
 #ifdef HALO_LINUX
 void network_test_update(boolean main_menu_loaded, real seconds);
+/* (prototype, #52) network_test.c's spectator */
+struct observer_result const *network_spectator_camera(real frame_seconds);
+void network_spectator_log_frame(struct observer_result const *camera);
+boolean network_spectator_view_begin(void);
+void network_spectator_view_end(boolean begun);
 #endif
 
 /* ---------- prototypes */
@@ -3021,6 +3026,10 @@ void main_game_render(
 	long player_window_count;
 	long window_count;
 	short last_local_player_index;
+#ifdef HALO_LINUX
+	boolean spectator_view;
+	struct observer_result const *spectator_camera;
+#endif
 
 	lock_global_random_seed();
 	collision_log_continue_period(TRUE);
@@ -3035,6 +3044,12 @@ void main_game_render(
 		window_count = 1;
 		player_window_count = 1;
 	}
+#ifdef HALO_LINUX
+	/* (prototype, #52) a spectator's camera, and with debug.spectate_hud the
+	spectated player as local player 0 for the drawing (network_test.c) */
+	spectator_view = network_spectator_view_begin();
+	spectator_camera = network_spectator_camera((real)time_delta_since_tick_sec);
+#endif
 
 	for (window_index = 0; window_index < player_window_count; window_index++)
 	{
@@ -3069,6 +3084,14 @@ void main_game_render(
 			observer = observer_get_camera(window->local_player_index);
 #ifdef HALO_LINUX
 			observer = render_interpolation_camera(window->local_player_index, observer);
+			if (window_index == 0 && spectator_camera)
+			{
+				/* (as film playback: a player's frame, its world drawn) */
+				observer = spectator_camera;
+				window->local_player_index = 0;
+			}
+			if (window_index == 0)
+				network_spectator_log_frame(observer);
 #endif
 		}
 		else
@@ -3104,6 +3127,9 @@ void main_game_render(
 	{
 		screenshot_render(global_screenshot_count.windows);
 	}
+#ifdef HALO_LINUX
+	network_spectator_view_end(spectator_view);
+#endif
 
 	collision_log_end_period();
 	unlock_global_random_seed();

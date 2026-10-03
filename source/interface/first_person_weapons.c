@@ -126,6 +126,11 @@ symbols in this file:
 #include "sound/sound_manager.h"
 #include "units/units.h"
 
+#ifdef HALO_LINUX
+/* (prototype, #52) port/linux/game/network_test.c's */
+short network_spectator_first_person_slot(long unit_index);
+#endif
+
 /* ---------- constants */
 
 enum
@@ -2258,6 +2263,11 @@ static short first_person_weapon_index_from_unit_index(
 {
 	short local_player_index;
 
+#ifdef HALO_LINUX
+	/* (prototype, #52) the spectated unit's events (network_test.c) */
+	if (network_spectator_first_person_slot(unit_index) != NONE)
+		return network_spectator_first_person_slot(unit_index);
+#endif
 	for (local_player_index=0; local_player_index<MAXIMUM_NUMBER_OF_LOCAL_PLAYERS; local_player_index++)
 	{
 		long player_index= local_player_get_player_index(local_player_index);

@@ -109,6 +109,11 @@ symbols in this file:
 #include "tag_files/tag_files.h"
 #include "saved games/game_state.h"
 
+#ifdef HALO_LINUX
+/* (prototype, #52) port/linux/game/network_test.c's */
+boolean network_spectator_first_person_object(long object_index);
+#endif
+
 /* ---------- constants */
 
 enum
@@ -448,6 +453,11 @@ static boolean object_is_first_person_camera(
 		? NONE
 		: player_get(local_player_get_player_index(render.local_player_index))->unit_index;
 
+#ifdef HALO_LINUX
+	/* (prototype, #52) the spectated unit, seen from inside (network_test.c) */
+	if (network_spectator_first_person_object(object_index))
+		return TRUE;
+#endif
 	return (unit_index == object_index &&
 		director_get_perspective(render.local_player_index) ==
 			_director_perspective_first_person) ||
