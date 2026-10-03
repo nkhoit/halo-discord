@@ -90,7 +90,8 @@ export class Relay {
     this.log = log;
   }
 
-  /* Admits an authenticated socket, or closes it with the reason it cannot join. */
+  /* Admits an authenticated socket, or closes it with the reason it cannot join.
+     The caller already listens for the socket's errors (app.ts). */
   join(socket: WebSocket, roomId: string, joining: Omit<Member, "since">, build: string): void {
     let room = this.rooms.get(roomId);
     if (!room) {
@@ -133,10 +134,6 @@ export class Relay {
         kind: member.kind, code, reason: reason.toString(), ageMs: Date.now() - member.since,
         current: room.members.get(socket) === member });
       this.remove(room, socket);
-    });
-    socket.on("error", (error) => {
-      this.log({ event: "error", room: roomId.slice(0, 8), user: member.user, id: member.id,
-        message: error.message });
     });
 
     const peers: string[] = [];

@@ -1,3 +1,6 @@
+import { once } from "node:events";
+import { connect } from "node:net";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { BATCH_MARKER, Channel, joinBatch, MAXIMUM_HALO_FRAME_BYTES, MAXIMUM_ROOM_SOCKETS, SEQUENCE_BYTES }
@@ -57,6 +60,98 @@ describe("authentication", () => {
     await new Promise((resolve) => binary.socket.once("open", resolve));
     binary.socket.send(frame(Channel.Reliable, HOST));
     expect((await binary.closed).code).toBe(4401);
+  });
+});
+
+/* A WebSocket client written by hand, to send what a browser never would. */
+describe("malformed frames", () => {
+  const UNMASKED_HELLO = Buffer.from([0x81, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f]);
+
+  /* A masked text frame; an all-zero mask key leaves the payload as it is. */
+  function maskedText(text: string): Buffer {
+    const payload = Buffer.from(text);
+    const length = payload.length < 126 ? Buffer.from([0x80 | payload.length]) :
+      Buffer.from([0x80 | 126, payload.length >> 8, payload.length & 0xff]);
+    return Buffer.concat([Buffer.from([0x81]), length, Buffer.alloc(4), payload]);
+  }
+
+  async function raw(room: string, role = "guest") {
+    const { port } = new URL(server.base);
+    const socket = connect(Number(port), "127.0.0.1");
+    let received = Buffer.alloc(0);
+    socket.on("data", (data: Buffer) => { received = Buffer.concat([received, data]); });
+    socket.on("error", () => {});
+    const ended = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    await once(socket, "connect");
+    socket.write(`GET /v1/rooms/${room}/ws?role=${role}&ch=both HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+      "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+      "Sec-WebSocket-Version: 13\r\nOrigin: http://127.0.0.1:9\r\n\r\n");
+    await until(() => received.includes("\r\n\r\n"));
+    expect(received.toString("latin1")).toMatch(/^HTTP\/1\.1 101 /);
+    received = received.subarray(received.indexOf("\r\n\r\n") + 4);
+    return { socket, ended, received: () => received };
+  }
+
+  async function stillServing(): Promise<void> {
+    expect(await (await fetch(`${server.base}/healthz`)).text()).toBe("ok");
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST);
+    const guest = await join(server.base, room, "guest", "user-a", GUEST_A);
+    guest.socket.send(frame(Channel.Reliable, HOST));
+    await until(() => host.frames.length === 1);
+    host.socket.close();
+    guest.socket.close();
+  }
+
+  const errors = () => server.logs.filter((entry) => entry.event === "error");
+
+  it("are refused before authentication without taking the server down", async () => {
+    const client = await raw(newRoom());
+    client.socket.write(UNMASKED_HELLO);
+    await client.ended;
+    expect(errors()).toEqual([expect.objectContaining({ code: "WS_ERR_EXPECTED_MASK", user: null })]);
+    expect(JSON.stringify(server.logs)).not.toContain("hello");
+    await stillServing();
+  });
+
+  it("are refused while an unauthorized or refused socket closes", async () => {
+    const forged = await raw(newRoom());
+    forged.socket.write(maskedText(JSON.stringify({ type: "auth", token: "forged", id: GUEST_A, build: "b1" })));
+    await until(() => forged.received().length > 0);
+    expect(forged.received()[0]).toBe(0x88);
+    forged.socket.write(UNMASKED_HELLO);
+    await forged.ended;
+
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST, { build: "web-1" });
+    const mismatched = await raw(room);
+    mismatched.socket.write(maskedText(JSON.stringify({ type: "auth", token: token("user-a"), id: GUEST_A, build: "web-2" })));
+    await until(() => mismatched.received().length > 0);
+    expect(mismatched.received()[0]).toBe(0x88);
+    mismatched.socket.write(UNMASKED_HELLO);
+    await mismatched.ended;
+    expect(server.logs.some((entry) => entry.event === "refuse" && entry.reason === "build mismatch")).toBe(true);
+    expect(errors()).toHaveLength(2);
+    expect(host.socket.readyState).toBe(host.socket.OPEN);
+    host.socket.close();
+    await stillServing();
+  });
+
+  it("close a member's socket, once, and leave its room working", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST);
+    const client = await raw(room);
+    client.socket.write(maskedText(JSON.stringify({ type: "auth", token: token("user-a"), id: GUEST_A, build: "b1" })));
+    await until(() => client.received().includes('"ready"'));
+    await until(() => host.texts.some((text) => text.type === "peer-up"));
+    client.socket.write(UNMASKED_HELLO);
+    await client.ended;
+    await until(() => host.texts.some((text) => text.type === "peer-down"));
+    expect(errors()).toEqual([expect.objectContaining({ code: "WS_ERR_EXPECTED_MASK", user: "user-a", id: GUEST_A })]);
+    const guest = await join(server.base, room, "guest", "user-b", GUEST_B);
+    guest.socket.send(frame(Channel.Reliable, HOST));
+    await until(() => host.frames.length === 1);
+    await stillServing();
   });
 });
 
