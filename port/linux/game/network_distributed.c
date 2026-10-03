@@ -57,6 +57,8 @@ boolean network_distributed_client_send_reliably(void *message, word size);
 boolean network_distributed_server_send_to_all(void *message, word size);
 boolean network_distributed_server_send_to_all_reliably(void *message, word size);
 boolean network_distributed_server_send_to_machine_reliably(long machine_index, void *message, word size);
+/* spectator.c's: drawing a spectator's target as local player 0 */
+boolean spectator_view_scoped(void);
 /* players.c's */
 void network_player_attach_unit(long player_index, long unit_index);
 void network_player_detach_unit(long player_index);
@@ -612,7 +614,9 @@ boolean distributed_player_is_local(
 {
 	struct player_datum *player = player_index != NONE ? player_try_and_get(player_index) : NULL;
 
-	return player && player->local_player_index != NONE;
+	/* (never a spectator's target, which stands in as local player 0 only
+	for drawing: spectator.c) */
+	return player && player->local_player_index != NONE && !spectator_view_scoped();
 }
 
 long distributed_living_unit(
