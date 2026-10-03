@@ -13,6 +13,10 @@
 //                      two or more arrived at once (clients)
 //   own                own-unit corrections per minute, the farthest (units), aim corrections, seat corrections
 //   peerRttMs          median peer round trip
+//   snaps              frames whose own view moved back, further or turned further than the time drawn
+//                      allows (per minute), camera cuts, the largest step/turn, and the worst one's context
+//   pacing             mean interval between rendered frames and its mean change frame to frame (ms)
+//   pointerLock        the hosted page's mouse capture requests, successes and failures (totals)
 //   matchStart         map loads and each match's first 15 s, kept out of the above: how many, the
 //                      longest frame gap while loading and in those first seconds, frames over 100 ms
 // p50s are shot/sample-weighted medians of the windows' p50s; p99s are the worst window's.
@@ -44,8 +48,10 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     startOver100: 0, seconds: 0, over: [0, 0, 0], freeze: 0, fire: [], fireP99: 0, fireMax: 0,
     shots: 0, unanswered: 0, unconfirmed: 0, hit: [], hitP99: 0, hitMax: 0, hits: 0, remote: [], remoteP99: 0, remoteMax: 0,
     remoteCorrections: 0, snaps: 0, ticks: 0, held: 0, heldRun: 0, bunched: 0, own: 0, ownMax: 0, aim: 0, seat: 0,
-    rtt: [] });
+    rtt: [], snaps: 0, snapBackward: 0, snapCuts: 0, snapStep: 0, snapTurn: 0, worstSnap: null, worstSnapAt: null,
+    intervals: [], changes: [], busy: 0, toTick: [], toShot: [], lock: null });
   const seconds = stats.windowSeconds ?? 5;
+  if (stats.pointerLock) p.lock = stats.pointerLock;
   /* loading (and the menus): not play */
   if (!(game.ticksPerSecond >= 20)) {
     p.playing = false;
@@ -85,7 +91,23 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     p.remoteCorrections += feel.remoteCorrections; p.remote.push([feel.remoteErrorP50, feel.remoteCorrections]);
     p.remoteP99 = Math.max(p.remoteP99, feel.remoteErrorP99); p.remoteMax = Math.max(p.remoteMax, feel.remoteErrorMax);
   }
-  p.snaps += feel.remoteSnaps ?? 0;
+  p.remoteSnaps = (p.remoteSnaps ?? 0) + (feel.remoteSnaps ?? 0);
+  const snaps = stats.snaps ?? {};
+  p.snaps += snaps.snaps ?? 0;
+  p.snapBackward += snaps.backward ?? 0;
+  p.snapCuts += snaps.cuts ?? 0;
+  p.snapStep = Math.max(p.snapStep, snaps.maxStepUnits ?? 0);
+  p.snapTurn = Math.max(p.snapTurn, snaps.maxTurnDegrees ?? 0);
+  if (snaps.worst && (!p.worstSnap || snaps.worst.stepUnits * 30 + snaps.worst.turnDegrees >
+      p.worstSnap.stepUnits * 30 + p.worstSnap.turnDegrees)) {
+    p.worstSnap = snaps.worst;
+    p.worstSnapAt = entry.at;
+  }
+  if (game.frameIntervalMeanMs) p.intervals.push([game.frameIntervalMeanMs, seconds]);
+  if (game.frameIntervalChangeMs !== undefined && game.frameIntervalMeanMs) p.changes.push([game.frameIntervalChangeMs, seconds]);
+  p.busy += feel.busyPresses ?? 0;
+  if (feel.pressToTickP50Ms) p.toTick.push([feel.pressToTickP50Ms, feel.shots || 1]);
+  if (feel.tickToShotP50Ms) p.toShot.push([feel.tickToShotP50Ms, feel.shots || 1]);
   p.held += feel.relayedHeldTicks ?? 0;
   p.heldRun = Math.max(p.heldRun, feel.relayedHeldRunMax ?? 0);
   p.bunched += feel.relayedBunchedTicks ?? 0;
@@ -102,11 +124,16 @@ for (const [user, p] of players) {
     freezes: { over33PerMin: perMinute(p.over[0]), over50PerMin: perMinute(p.over[1]),
       over100PerMin: perMinute(p.over[2]), maxMs: round(p.freeze) },
     fire: { shots: p.shots, p50Ms: round(median(p.fire)), p99Ms: round(p.fireP99), maxMs: round(p.fireMax),
-      unanswered: p.unanswered },
+      unanswered: p.unanswered, busyPresses: p.busy, pressToTickP50Ms: round(median(p.toTick)),
+      tickToShotP50Ms: round(median(p.toShot)) },
     hitConfirm: { hits: p.hits, p50Ms: round(median(p.hit)), p99Ms: round(p.hitP99), maxMs: round(p.hitMax),
       unconfirmed: p.unconfirmed },
     remote: { corrections: p.remoteCorrections, p50: round(median(p.remote), 3), p99: round(p.remoteP99, 3),
-      max: round(p.remoteMax, 2), snapsPerMin: perMinute(p.snaps) },
+      max: round(p.remoteMax, 2), snapsPerMin: perMinute(p.remoteSnaps ?? 0) },
+    snaps: { perMin: perMinute(p.snaps), backward: p.snapBackward, cuts: p.snapCuts, maxStepUnits: round(p.snapStep, 3),
+      maxTurnDegrees: round(p.snapTurn), worst: p.worstSnap, worstAt: p.worstSnapAt },
+    pacing: { intervalMs: round(median(p.intervals), 2), changeMs: round(median(p.changes), 2) },
+    pointerLock: p.lock,
     relayedInput: clientTicks ? { heldPct: round(100 * p.held / clientTicks), longestRun: p.heldRun,
       bunchedPct: round(100 * p.bunched / clientTicks) } : null,
     own: { correctionsPerMin: perMinute(p.own), maxUnits: round(p.ownMax, 2), aim: p.aim, seat: p.seat },

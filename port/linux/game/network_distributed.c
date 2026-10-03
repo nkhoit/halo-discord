@@ -47,6 +47,9 @@ machine (their datum identifiers need not be).
 #include "objects/damage.h"
 #include "units/units.h"
 #include "network_distributed.h"
+#ifdef HALO_WEB
+#include "items/weapons.h"
+#endif
 
 /* network_game_globals.c's and network_server_message_handler.c's */
 boolean network_distributed_client_send(void *message, word size);
@@ -231,8 +234,17 @@ static struct
 {
 	boolean trigger_down;
 	double press_time;
+	/* the press: the first tick to take it (dequeued with the trigger), and
+	whether the weapon was busy (reloading, switching, between shots) */
+	double press_dequeued;
+	boolean press_busy;
 	double fire_samples[WEB_FEEL_SAMPLES];
 	short fire_count;
+	double queue_samples[WEB_FEEL_SAMPLES];
+	short queue_count;
+	double weapon_samples[WEB_FEEL_SAMPLES];
+	short weapon_count;
+	long busy_presses;
 	long unanswered_presses;
 	struct
 	{
@@ -294,8 +306,43 @@ void network_web_trigger(
 		web_feel.press_time = 0.0;
 	}
 	if (down && !web_feel.trigger_down && web_feel.press_time <= 0.0)
+	{
+		long player_index = local_player_get_player_index(0);
+		struct player_datum *player = player_index != NONE ? player_try_and_get(player_index) : NULL;
+		struct unit_datum *unit = player && player->unit_index != NONE ?
+			(struct unit_datum *)object_try_and_get_and_verify_type(player->unit_index, _object_mask_unit) : NULL;
+		long weapon_index = unit && unit->unit.current_weapon_index != NONE ?
+			unit->unit.weapon_object_indices[unit->unit.current_weapon_index] : NONE;
+		struct weapon_datum *weapon = weapon_index != NONE ?
+			(struct weapon_datum *)object_try_and_get_and_verify_type(weapon_index, _object_mask_weapon) : NULL;
+
 		web_feel.press_time = now;
+		web_feel.press_dequeued = 0.0;
+		web_feel.press_busy = !weapon || weapon->weapon.state != _weapon_state_idle;
+	}
 	web_feel.trigger_down = down;
+}
+
+int network_web_trigger_down(void)
+{
+	return web_feel.trigger_down;
+}
+
+long network_web_own_corrections(void)
+{
+	return distributed_web_statistics.own_corrections;
+}
+
+/* (players.c, every tick) the actions a tick takes: when the press reached one */
+void network_web_actions_dequeued(
+	struct player_action const *actions)
+{
+	long player_index = local_player_get_player_index(0);
+
+	if (web_feel.press_time <= 0.0 || web_feel.press_dequeued > 0.0 || player_index == NONE)
+		return;
+	if (actions[DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index)].primary_trigger > 0.0f)
+		web_feel.press_dequeued = emscripten_get_now();
 }
 
 /* (weapons.c) a weapon fired its primary trigger: this machine's player's
@@ -305,9 +352,22 @@ void network_web_weapon_fired(
 {
 	long player_index = owner_object_index != NONE ? player_index_from_unit_index(owner_object_index) : NONE;
 
+	double now = emscripten_get_now();
+
 	if (web_feel.press_time <= 0.0 || player_index == NONE || !distributed_player_is_local(player_index))
 		return;
-	web_feel_sample(web_feel.fire_samples, &web_feel.fire_count, emscripten_get_now() - web_feel.press_time);
+	/* (a press the weapon was not ready for waits on the weapon, not on us) */
+	if (web_feel.press_busy)
+		web_feel.busy_presses++;
+	else
+	{
+		web_feel_sample(web_feel.fire_samples, &web_feel.fire_count, now - web_feel.press_time);
+		if (web_feel.press_dequeued > 0.0)
+		{
+			web_feel_sample(web_feel.queue_samples, &web_feel.queue_count, web_feel.press_dequeued - web_feel.press_time);
+			web_feel_sample(web_feel.weapon_samples, &web_feel.weapon_count, now - web_feel.press_dequeued);
+		}
+	}
 	web_feel.press_time = 0.0;
 }
 
@@ -401,10 +461,16 @@ second; [5] hits confirmed, [6..8] report to the host's damage p50, p99,
 max (ms); [9] other players' corrections, [10..12] their distance p50, p99,
 max (world units), [13] those over a world unit; [14] ticks with no newer
 relayed input, [15] the longest run of them, [16] ticks after two or more,
-[17] hits reported that the host did not answer within a second */
+[17] hits reported that the host did not answer within a second, [18]
+presses made while the weapon was busy (not in [0..3]), [19..21] press to the
+first tick taking it p50, p99, max (ms), [22..24] that tick to the shot */
 void network_distributed_web_feel(
-	double values[18])
+	double values[25])
 {
+	values[18] = (double)web_feel.busy_presses;
+	web_feel.busy_presses = 0;
+	web_feel_take(web_feel.queue_samples, &web_feel.queue_count, &values[19]);
+	web_feel_take(web_feel.weapon_samples, &web_feel.weapon_count, &values[22]);
 	web_feel_expire_hits(emscripten_get_now());
 	values[17] = (double)web_feel.unconfirmed_hits;
 	web_feel.unconfirmed_hits = 0;

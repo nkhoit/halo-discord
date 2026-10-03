@@ -3563,6 +3563,14 @@ void players_update_before_game(
 	profile_enter(PLAYERS_UPDATE_BEFORE_GAME_PROFILE);
 	if (update_client_dequeue(actions))
 	{
+#ifdef HALO_WEB
+		{
+			/* (the browser's feel scorecard, port/linux/game/network_distributed.c) */
+			extern void network_web_actions_dequeued(struct player_action const *actions);
+
+			network_web_actions_dequeued(actions);
+		}
+#endif
 		data_iterator_new(&iterator, player_data);
 		while (player = data_iterator_next(&iterator))
 		{

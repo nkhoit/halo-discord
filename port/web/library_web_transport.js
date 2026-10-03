@@ -456,7 +456,30 @@ addToLibrary({
           remoteErrorMax: feel(12), remoteSnaps: feel(13),
           relayedHeldTicks: feel(14), relayedHeldRunMax: feel(15), relayedBunchedTicks: feel(16),
           unconfirmedHits: feel(17),
+          /* presses while the weapon was busy (left out of fire*), and the
+             fire latency split: press to the first tick taking it, that
+             tick to the shot */
+          busyPresses: feel(18),
+          pressToTickP50Ms: feel(19), pressToTickP99Ms: feel(20), pressToTickMaxMs: feel(21),
+          tickToShotP50Ms: feel(22), tickToShotP99Ms: feel(23), tickToShotMaxMs: feel(24),
         };
+        /* the player's own view (render_interpolation.c): frames whose
+           camera moved back along its path, further or turned further than
+           the time drawn allows, or drawn earlier on the game clock; the
+           worst one's context */
+        var snap = function(offset) { return +HEAPF64[index + 75 + offset].toFixed(3); };
+        game.snaps = {
+          frames: snap(0), snaps: snap(1), backward: snap(2), clockBackward: snap(3), cuts: snap(4),
+          maxStepUnits: snap(5), maxTurnDegrees: +snap(6).toFixed(1),
+          worst: snap(1) ? {
+            stepUnits: snap(7), allowedUnits: snap(8), turnDegrees: +snap(9).toFixed(1),
+            allowedDegrees: +snap(10).toFixed(1), ticksThatFrame: snap(11), fractionBefore: snap(12),
+            fraction: snap(13), frameMs: +snap(14).toFixed(1), msSinceTick: +snap(15).toFixed(1),
+            firing: snap(16), crouching: snap(17), controller: snap(18), ownCorrection: snap(19), cameraCut: snap(20),
+          } : null,
+        };
+        game.frameIntervalMeanMs = +HEAPF64[index + 96].toFixed(2);
+        game.frameIntervalChangeMs = +HEAPF64[index + 97].toFixed(2);
       }
       if (typeof Module['_platform_web_profile_take_gap_maximum'] === 'function') {
         game.frameGapMaxMs = +Module['_platform_web_profile_take_gap_maximum']().toFixed(1);
@@ -613,6 +636,10 @@ addToLibrary({
              longest delay from one's timestamp to the game frame */
           rafIntervalMaxMs: game.rafIntervalMaxMs,
           rafLateMaxMs: game.rafLateMaxMs,
+          /* frame pacing: the mean interval between rendered frames and the
+             mean change from one to the next (even pacing: near 0) */
+          frameIntervalMeanMs: game.frameIntervalMeanMs,
+          frameIntervalChangeMs: game.frameIntervalChangeMs,
           frameCap: typeof Module['_platform_web_frame_cap'] === 'function' ? Module['_platform_web_frame_cap']() : null,
           shaderMs: delta('shaderMs') === null ? null : +delta('shaderMs').toFixed(1),
           shaderMsMax: game.shaderMsMax,
@@ -629,6 +656,10 @@ addToLibrary({
            host's word moved other players each tick (world units; snaps over
            1), and ticks run on the others' last input for want of a newer */
         feel: game.feel || null,
+        snaps: game.snaps || null,
+        /* the hosted page's mouse capture, totals (server/client/hosted.js) */
+        pointerLock: typeof window !== 'undefined' && window.HaloHostedUI && window.HaloHostedUI.pointerLock ?
+          Object.assign({}, window.HaloHostedUI.pointerLock) : null,
         peers: peers,
         relay: relaySummary,
         mainThread: main,
