@@ -278,6 +278,16 @@ int main(void)
 	check(analog_only(press(0, SDL_BUTTON_LEFT, 0), XINPUT_GAMEPAD_RIGHT_TRIGGER), "unstaged controls at their defaults");
 	check(platform_web_apply_input_bindings() && !setting_bindings[0], "applying nothing staged is the defaults");
 
+	/* ---------- the Discord Activity's crouch: Left Ctrl and C, staged by the page */
+	check(button_only(press(SDL_SCANCODE_LCTRL, 0, 0), 0), "(web) left ctrl does nothing by default");
+	check(platform_web_bind_input(_input_crouch, SDL_SCANCODE_LCTRL, SDL_SCANCODE_C, 0, 0), "stage crouch");
+	check(platform_web_apply_input_bindings(), "apply crouch");
+	check(!strcmp(setting_bindings, "crouch=key:224,key:6"), "the Activity's crouch as input.bindings");
+	check(button_only(press(SDL_SCANCODE_LCTRL, 0, 0), XINPUT_GAMEPAD_LEFT_THUMB), "left ctrl crouches when bound");
+	check(button_only(press(SDL_SCANCODE_C, 0, 0), XINPUT_GAMEPAD_LEFT_THUMB), "C still crouches");
+	check(platform_web_apply_input_bindings() && !setting_bindings[0], "and the web defaults again");
+	check(button_only(press(SDL_SCANCODE_LCTRL, 0, 0), 0), "left ctrl unbound again");
+
 	/* ---------- the mouse's settings, live */
 	mouse_settings_refresh();
 	check(mouse_sensitivity_value == 1.0f && !mouse_invert_value, "sensitivity 1, not inverted");

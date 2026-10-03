@@ -24,12 +24,14 @@ interface InputSettings {
   apply(): boolean;
 }
 interface HostedUi {
-  createInputSettings(environment: { storage: Storage; module(name: string): ((...args: number[]) => number) | null }): InputSettings;
-  inputFromEvent(event: Record<string, unknown>): { input?: number; refused?: string };
+  createInputSettings(environment: { storage: Storage; module(name: string): ((...args: number[]) => number) | null;
+    activity?: () => boolean }): InputSettings;
+  inputFromEvent(event: Record<string, unknown>, activity?: boolean): { input?: number; refused?: string };
   inputLabel(input: number): string;
   sensitivityFromSlider(position: number): number;
   sliderFromSensitivity(value: number): number;
   CONTROLS: Control[];
+  ACTIVITY_DEFAULTS: Record<string, number[]>;
 }
 
 function load(): HostedUi {
@@ -73,13 +75,15 @@ const SDL: Record<string, number> = {
   SDL_BUTTON_LEFT: 1, SDL_BUTTON_MIDDLE: 2, SDL_BUTTON_RIGHT: 3, SDL_BUTTON_X1: 4,
 };
 
-/* xinput_sdl.c's controls and their defaults, as the web build compiles them */
-function engineDefaults(): { names: string[]; defaults: number[][] } {
+/* xinput_sdl.c's controls and their defaults, as the web build (or a desktop
+   build) compiles them */
+function engineDefaults(web = true): { names: string[]; defaults: number[][] } {
   const namesText = XINPUT.slice(XINPUT.indexOf("input_control_names[NUMBER_OF_INPUT_CONTROLS] ="));
   const names = [...namesText.slice(0, namesText.indexOf("};")).matchAll(/"([a-z_]+)"/g)].map((match) => match[1]!);
   let table = XINPUT.slice(XINPUT.indexOf("input_default_bindings[NUMBER_OF_INPUT_CONTROLS] ="));
   table = table.slice(table.indexOf("{") + 1, table.indexOf("\n};"));
-  table = table.replace(/#ifdef HALO_WEB\n([\s\S]*?)#else\n[\s\S]*?#endif\n/g, "$1").replace(/\/\*[\s\S]*?\*\//g, "");
+  table = table.replace(/#ifdef HALO_WEB\n([\s\S]*?)#else\n([\s\S]*?)#endif\n/g, web ? "$1" : "$2")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
   const defaults = [...table.matchAll(/\{ (\d+), \{ ([^}]*) \} \}/g)].map((match) => {
     const inputs = match[2]!.split(",").map((token) => token.trim()).map((token) => {
       const mouse = /^INPUT_MOUSE_BUTTON\((\w+)\)$/.exec(token);
@@ -103,6 +107,23 @@ describe("the controls' defaults", () => {
     expect(CONTROLS.map((control) => control.defaults)).toEqual(engine.defaults);
     expect(CONTROLS.map((control) => control.index)).toEqual(engine.names.map((_, index) => index));
   });
+
+  it("in the Discord Activity crouch on Left Ctrl too, as the desktop builds do", () => {
+    const { CONTROLS, ACTIVITY_DEFAULTS } = load();
+    const web = engineDefaults(true), desktop = engineDefaults(false);
+    expect(Object.keys(ACTIVITY_DEFAULTS)).toEqual(["crouch"]);
+    const crouch = web.names.indexOf("crouch");
+    expect(ACTIVITY_DEFAULTS.crouch, "the desktop builds' crouch").toEqual(desktop.defaults[crouch]);
+    expect(ACTIVITY_DEFAULTS.crouch).toEqual([224, 6]);
+    expect(CONTROLS[crouch]!.defaults, "the game's web default stays C").toEqual([6]);
+    const browser = load().createInputSettings({ storage: storage(), module: () => null, activity: () => false });
+    const activity = load().createInputSettings({ storage: storage(), module: () => null, activity: () => true });
+    expect(browser.inputsOf("crouch")).toEqual([6]);
+    expect(activity.inputsOf("crouch")).toEqual([224, 6]);
+    for (const control of CONTROLS.filter((entry) => entry.id !== "crouch")) {
+      expect(activity.inputsOf(control.id), control.id).toEqual(browser.inputsOf(control.id));
+    }
+  });
 });
 
 describe("taking an input", () => {
@@ -121,6 +142,22 @@ describe("taking an input", () => {
     expect(inputLabel(MOUSE + 3)).toBe("Right click");
     expect(inputLabel(WHEEL)).toBe("Wheel");
     expect(inputLabel(88)).toBe("Num Enter");
+  });
+
+  it("takes Ctrl alone in the Discord Activity, never a combination, and nowhere else", () => {
+    const { inputFromEvent } = load();
+    expect(inputFromEvent({ type: "keydown", code: "ControlLeft", ctrlKey: true }, true)).toEqual({ input: 224 });
+    expect(inputFromEvent({ type: "keydown", code: "ControlRight", ctrlKey: true }, true)).toEqual({ input: 228 });
+    expect(inputFromEvent({ type: "keydown", code: "KeyX", ctrlKey: true }, true).refused, "Ctrl+X")
+      .toBe("Combinations with Ctrl, Alt or Cmd belong to the browser");
+    expect(inputFromEvent({ type: "keydown", code: "ControlLeft", ctrlKey: true, altKey: true }, true).refused).toBeTruthy();
+    for (const code of ["ControlLeft", "ControlRight"]) {
+      expect(inputFromEvent({ type: "keydown", code, ctrlKey: true }).refused, code)
+        .toBe("Ctrl makes browser shortcuts (Ctrl+W closes the tab)");
+      expect(inputFromEvent({ type: "keydown", code, ctrlKey: true }, false).refused, code)
+        .toBe("Ctrl makes browser shortcuts (Ctrl+W closes the tab)");
+    }
+    expect(inputFromEvent({ type: "keydown", code: "AltLeft" }, true).refused, "Alt stays refused").toBeTruthy();
   });
 
   it("refuses the keys the page, the browser and Discord keep", () => {
@@ -168,6 +205,41 @@ describe("the settings", () => {
     expect(calls.apply).toBeGreaterThan(0);
     settings.apply();
     expect(calls.bind.length, "nothing staged: every control at its default").toBe(staged);
+  });
+
+  it("in the Discord Activity stage its defaults, keep a player's own, and reset to its defaults", () => {
+    const { calls, module } = game();
+    const store = storage();
+    const activity = load().createInputSettings({ storage: store, module, activity: () => true });
+    expect(activity.apply()).toBe(true);
+    expect(calls.bind, "Left Ctrl and C staged for crouch (control 12)").toEqual([[12, 224, 6, 0, 0]]);
+    expect(activity.settings.bindings, "defaults are not stored").toEqual({});
+
+    activity.unbind("crouch", 224);
+    expect(activity.inputsOf("crouch")).toEqual([6]);
+    expect(activity.settings.bindings.crouch, "C alone is the player's choice here, kept").toEqual([6]);
+    expect(calls.bind.at(-1)).toEqual([12, 6, 0, 0, 0]);
+    const again = load().createInputSettings({ storage: store, module, activity: () => true });
+    expect(again.inputsOf("crouch"), "kept between visits").toEqual([6]);
+
+    again.resetControls();
+    expect(again.inputsOf("crouch")).toEqual([224, 6]);
+    expect(calls.bind.at(-1), "reset stages the Activity's crouch again").toEqual([12, 224, 6, 0, 0]);
+
+    const custom = load().createInputSettings({
+      storage: storage({ "halo-hosted-input": JSON.stringify({ bindings: { crouch: [225] } }) }), module, activity: () => true });
+    expect(custom.inputsOf("crouch"), "a saved custom crouch stays").toEqual([225]);
+    const unchanged = load().createInputSettings({
+      storage: storage({ "halo-hosted-input": JSON.stringify({ bindings: { jump: [13] } }) }), module, activity: () => true });
+    expect(unchanged.inputsOf("crouch"), "unchanged defaults pick up Left Ctrl").toEqual([224, 6]);
+
+    const browserCalls = game();
+    const browser = load().createInputSettings({ storage: storage(), module: browserCalls.module, activity: () => false });
+    browser.apply();
+    expect(browserCalls.calls.bind, "the browser page stages nothing").toEqual([]);
+    browser.bind("crouch", 224);
+    browser.resetControls();
+    expect(browser.inputsOf("crouch"), "reset in the browser: C only").toEqual([6]);
   });
 
   it("keep the mouse's sensitivity and invert, on a logarithmic slider", () => {
