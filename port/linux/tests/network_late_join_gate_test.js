@@ -1,7 +1,8 @@
 // Builds port/linux/tests/network_late_join_gate_test.c against the real
 // predicate the server's broadcasts use to skip a machine loading a match in
 // progress (network_server_manager.c), and checks that the broadcast loops in
-// network_server_message_handler.c go through it. CC defaults to cc; with
+// network_server_message_handler.c go through it, and the pregame lobby's
+// directions line (ui_widget_game_data_input_functions.c). CC defaults to cc; with
 // CC=emcc the test runs under node.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -51,6 +52,12 @@ try {
   ].join('\n\n') + '\n');
   const engine = fs.readFileSync(path.join(root, 'source/game/game_engine.c'), 'utf8').replace(/\r\n/g, '\n');
   fs.writeFileSync(path.join(temp, 'late_join_end.inc'), block(engine, 'boolean game_engine_should_end_game(') + '\n');
+  const ui = fs.readFileSync(path.join(root, 'source/interface/ui_widget_game_data_input_functions.c'), 'utf8')
+    .replace(/\r\n/g, '\n');
+  fs.writeFileSync(path.join(temp, 'late_join_lobby_text.inc'), [
+    block(ui, 'enum multiplayer_game_text_string') + ';',
+    block(ui, 'void multiplayer_game_directions('),
+  ].join('\n\n') + '\n');
 
   /* the three broadcasts (unreliable and reliable per-tick state, and the
      game's own messages) reach a machine by that predicate alone */

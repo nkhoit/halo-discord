@@ -382,6 +382,11 @@ enum
 	remote machines, fewer than the native builds' sessions can hold */
 	NUMBER_OF_REMOTE_MACHINE_PANELS = 3,
 };
+
+/* network_server_manager.c's: players may join a match in progress, and a
+host may start alone */
+boolean network_game_join_in_progress_enabled(
+	void);
 #endif
 
 enum network_game_platform
@@ -399,6 +404,7 @@ enum multiplayer_game_text_string
 	_multiplayer_game_text_string_king_of_the_hill,
 	_multiplayer_game_text_string_race,
 	_multiplayer_game_text_string_unknown_game_type,
+	_multiplayer_game_text_string_accepting_players = 20,
 	_multiplayer_game_text_string_captures = 22,
 	_multiplayer_game_text_string_minutes,
 	_multiplayer_game_text_string_frags,
@@ -2919,6 +2925,23 @@ void multiplayer_game_directions(
 			game &&
 			game->machine_count < 2)
 		{
+#ifdef HALO_LINUX
+			/* (joining a match in progress) a host alone waits for nobody:
+			it may start, and others join later. Its countdown, drawn in
+			this box, shows alone. */
+			if (network_game_join_in_progress_enabled())
+			{
+				if (network_game_client_get_seconds_to_game_start(global_network_game_client_get()) >= 0)
+				{
+					widget->visible = FALSE;
+					return;
+				}
+				widget->parameters.text_box.string_list_index =
+					_multiplayer_game_text_string_accepting_players;
+				widget->visible = TRUE;
+				return;
+			}
+#endif
 			widget->parameters.text_box.string_list_index =
 				_multiplayer_game_text_string_waiting_for_machine;
 			widget->visible = TRUE;
