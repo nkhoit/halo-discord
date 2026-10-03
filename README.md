@@ -22,8 +22,8 @@ works in a desktop browser, with a room link to share.
 
 Refer to [docs/halo-server.md](docs/halo-server.md): the server's settings, the
 Discord application, the tunnel, deployment and operations.
-[docs/websocket-relay-spike.md](docs/websocket-relay-spike.md) records the
-design and the measurements behind it.
+[docs/networking.md](docs/networking.md) records the design and the
+measurements behind it.
 
 ## Game data
 
