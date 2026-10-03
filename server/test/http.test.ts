@@ -317,7 +317,7 @@ describe("development login", () => {
 });
 
 describe("the Discord Activity", () => {
-  const launch = "/?frame_id=f1&instance_id=i-1-gc-2-3&platform=desktop";
+  const launch = "/?frame_id=f1&instance_id=i-1-gc-0-3&platform=desktop";
   const activity = (body: unknown) => fetch(`${server.base}/auth/activity`, {
     method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" },
   });
@@ -383,7 +383,7 @@ describe("the Discord Activity", () => {
 
   it("exchanges an SDK code without a redirect URI, keeping Discord's token on the server", async () => {
     server.discord.users.set("sdk", { id: "77", username: "arbiter", globalName: null });
-    const response = await activity({ code: "sdk", instanceId: "i-1-gc-2-3" });
+    const response = await activity({ code: "sdk", instanceId: "i-1-gc-0-3" });
     expect(response.status).toBe(200);
     const body = await response.json() as Record<string, unknown>;
     expect(body).toMatchObject({ user: { id: "77", name: "arbiter" } });
@@ -393,7 +393,7 @@ describe("the Discord Activity", () => {
     expect(cookies(response).halo_activity).toBe(body.token);
     expect(server.logs.find((entry) => entry.event === "login"))
       .toMatchObject({ via: "activity", user: "77", guild: "0",
-        room: String(activityRoomId(SECRET, "i-1-gc-2-3")).slice(0, 8) });
+        room: String(activityRoomId(SECRET, "i-1-gc-0-3")).slice(0, 8) });
     expect(server.discord.membershipChecks).toEqual([{ code: "sdk", guildIds: ["0"] }]);
     expect(JSON.stringify(server.logs)).not.toContain(String(body.token));
     expect(JSON.stringify(server.logs)).not.toContain("access-sdk");
@@ -409,12 +409,12 @@ describe("the Discord Activity", () => {
     server = await start({ discord: { clientId: "123", clientSecret: "shh", guildIds: ["101", "202"] } });
     server.discord.users.set("activity-second", { id: "2020", username: "member", globalName: null });
     server.discord.memberGuilds.set("activity-second", ["202"]);
-    const response = await activity({ code: "activity-second", instanceId: "i-1-gc-2-3" });
+    const response = await activity({ code: "activity-second", instanceId: "i-1-gc-202-3" });
     expect(response.status).toBe(200);
     expect(server.discord.membershipChecks).toEqual([{ code: "activity-second", guildIds: ["101", "202"] }]);
     expect(server.logs.find((entry) => entry.event === "login"))
       .toMatchObject({ via: "activity", user: "2020", guild: "202",
-        room: String(activityRoomId(SECRET, "i-1-gc-2-3")).slice(0, 8) });
+        room: String(activityRoomId(SECRET, "i-1-gc-202-3")).slice(0, 8) });
     expect(JSON.stringify(server.logs)).not.toContain("access-activity-second");
   });
 
@@ -423,12 +423,12 @@ describe("the Discord Activity", () => {
     server.discord.users.set("b", { id: "2", username: "b", globalName: null });
     const roomOf = async (code: string, instanceId: string) =>
       ((await (await activity({ code, instanceId })).json()) as { roomId: string }).roomId;
-    const first = await roomOf("a", "i-1-gc-2-3");
+    const first = await roomOf("a", "i-1-gc-0-3");
     expect(first).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(await roomOf("b", "i-1-gc-2-3")).toBe(first);
-    expect(await roomOf("a", "i-9-gc-2-3")).not.toBe(first);
-    expect(first).toBe(activityRoomId(SECRET, "i-1-gc-2-3"));
-    expect(activityRoomId("another-secret-another-secret-12345", "i-1-gc-2-3")).not.toBe(first);
+    expect(await roomOf("b", "i-1-gc-0-3")).toBe(first);
+    expect(await roomOf("a", "i-9-gc-0-3")).not.toBe(first);
+    expect(first).toBe(activityRoomId(SECRET, "i-1-gc-0-3"));
+    expect(activityRoomId("another-secret-another-secret-12345", "i-1-gc-0-3")).not.toBe(first);
     expect(first).not.toContain("i-1");
   });
 
@@ -486,7 +486,7 @@ describe("the Discord Activity", () => {
 });
 
 describe("caching", () => {
-  const launch = "/?frame_id=f1&instance_id=i-1-gc-2-3";
+  const launch = "/?frame_id=f1&instance_id=i-1-gc-0-3";
   const IMMUTABLE = "public, max-age=31536000, immutable";
 
   it("pins every asset the page loads to a content version that alone may be cached for good", async () => {

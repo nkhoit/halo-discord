@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { loadConfig } from "../src/config.ts";
 import { HttpDiscordApi } from "../src/discord.ts";
-import { joinBatch, sanitizeName, splitBatch } from "../src/protocol.ts";
+import { instanceLocation, joinBatch, sanitizeName, splitBatch } from "../src/protocol.ts";
 import { buildFile, contentVersion, gameImage,
   hostedPage, LOGIN_SCRIPT, mapFile, parseRange } from "../src/static.ts";
 import { issueToken, verifyToken } from "../src/tokens.ts";
@@ -118,6 +118,27 @@ describe("tokens", () => {
   });
 });
 
+describe("Activity instances and token claims", () => {
+  it("place an instance in its server and voice channel", () => {
+    expect(instanceLocation("i-1555-gc-100-200")).toEqual({ guild: "100", channel: "200" });
+    for (const outside of ["i-1555-pc-200", "i-x-gc-1-2", "i-1-gc-1-2-3", "gc-1-2", ""]) {
+      expect(instanceLocation(outside), outside).toBeNull();
+    }
+  });
+
+  it("carry the servers and instance, and drop malformed ones", () => {
+    const { token } = issueToken(SECRET, "1", "One", 60, undefined, undefined, { guilds: ["100", "200"], inst: "i-1-gc-100-2" });
+    expect(verifyToken(SECRET, token)).toMatchObject({ guilds: ["100", "200"], inst: "i-1-gc-100-2" });
+    const forge = (claims: object) => {
+      const payload = Buffer.from(JSON.stringify({ v: 1, sub: "1", name: "x", exp: 9e9, ...claims })).toString("base64url");
+      return verifyToken(SECRET, `${payload}.${createHmac("sha256", SECRET).update(payload).digest("base64url")}`);
+    };
+    expect(forge({ guilds: ["100", 7] })).not.toHaveProperty("guilds");
+    expect(forge({ guilds: Array.from({ length: 26 }, (_, index) => String(index)) })).not.toHaveProperty("guilds");
+    expect(forge({ inst: "../x" })).not.toHaveProperty("inst");
+  });
+});
+
 describe("display names", () => {
   it("are single-line, printable and bounded", () => {
     expect(sanitizeName("  Master\u0000\nChief \u202e ")).toBe("Master Chief");
@@ -225,17 +246,17 @@ describe("configuration", () => {
 });
 
 describe("Discord API guild lookup", () => {
-  it("checks every allowed guild with one guild-list request and returns the actual match", async () => {
+  it("checks every allowed guild with one guild-list request and returns every match", async () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(String(input)).toBe("https://discord.com/api/v10/users/@me/guilds");
       expect(init?.headers).toEqual({ Authorization: "Bearer access-token" });
-      return new Response(JSON.stringify([{ id: "unrelated" }, { id: "second" }]), { status: 200 });
+      return new Response(JSON.stringify([{ id: "third" }, { id: "unrelated" }, { id: "second" }]), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
     try {
       const api = new HttpDiscordApi("client", "secret");
-      await expect(api.findGuildMembership("access-token", ["first", "second", "third"]))
-        .resolves.toBe("second");
+      await expect(api.allowedGuilds("access-token", ["first", "second", "third"]))
+        .resolves.toEqual(["second", "third"]);
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
@@ -247,7 +268,7 @@ describe("Discord API guild lookup", () => {
     vi.stubGlobal("fetch", fetchMock);
     try {
       const api = new HttpDiscordApi("client", "secret");
-      await expect(api.findGuildMembership("access-token", ["first", "second"]))
+      await expect(api.allowedGuilds("access-token", ["first", "second"]))
         .rejects.toThrow(/failed \(503\)/);
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {

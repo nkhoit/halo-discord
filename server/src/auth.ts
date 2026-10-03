@@ -12,8 +12,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Config } from "./config.ts";
 import type { DiscordApi, DiscordUser } from "./discord.ts";
 import { consoleLog, type Log } from "./relay.ts";
-import { INSTANCE_ID_PATTERN, sanitizeName } from "./protocol.ts";
-import { issueToken, type Session, verifyToken } from "./tokens.ts";
+import { INSTANCE_ID_PATTERN, instanceLocation, sanitizeName } from "./protocol.ts";
+import { type Claims, issueToken, type Session, verifyToken } from "./tokens.ts";
 
 export const SESSION_COOKIE = "halo_session";
 export const ACTIVITY_COOKIE = "halo_activity";
@@ -199,12 +199,12 @@ export class Auth {
     }
     const accessToken = await this.discord.exchangeCode(code, this.redirectUri());
     const user = await this.discord.getUser(accessToken);
-    const guildId = await this.discord.findGuildMembership(accessToken, this.config.discord.guildIds);
-    if (!guildId) {
+    const guilds = await this.discord.allowedGuilds(accessToken, this.config.discord.guildIds);
+    if (!guilds.length) {
       return page(response, 403, "This game is only open to members of its Discord server.");
     }
-    const { token } = this.issue(user);
-    this.log({ event: "login", via: "browser", user: user.id, guild: guildId });
+    const { token } = this.issue(user, { guilds });
+    this.log({ event: "login", via: "browser", user: user.id, guild: guilds[0] });
     response.writeHead(302, {
       Location: safeReturnPath(Buffer.from(returnPath ?? "", "base64url").toString("utf8")),
       "Set-Cookie": [
@@ -227,8 +227,9 @@ export class Auth {
     if (!current || auth === undefined || now / 1000 - auth >= this.config.sessionLifetimeSeconds) {
       return json(response, 401, { error: "login required", loginUrl: "/auth/login" });
     }
+    const { guilds, inst } = current.session;
     const { token, session } = issueToken(this.config.tokenSecret, current.session.sub, current.session.name,
-      this.config.tokenTtlSeconds, now, auth);
+      this.config.tokenTtlSeconds, now, auth, { guilds, inst });
     json(response, 200, { token, user: { id: session.sub, name: session.name }, expiresAt: session.exp }, {
       "Set-Cookie": cookie(this.config, current.activity ? ACTIVITY_COOKIE : SESSION_COOKIE, token,
         { maxAge: this.config.tokenTtlSeconds, partitioned: current.activity }),
@@ -245,8 +246,13 @@ export class Auth {
   /* The Discord Activity: the Embedded App SDK's authorize() gives a code,
      exchanged here like Discord's Activity examples (no redirect URI). The
      Discord access token stays on the server; the Activity gets our session
-     and, given its instance id, the instance's relay room. Under DEV_LOGIN a
-     "dev:<name>" code signs in without Discord, for local tests. */
+     and, given its instance id, the instance's relay room. An instance in a
+     Discord server needs the user to be a member of that server, and the
+     server to be on the allowlist. The session keeps the instance and the
+     user's allowlisted servers, which the relay and the server-wide room
+     list (/v1/guild-rooms) go by. Under DEV_LOGIN a "dev:<name>" code signs
+     in without Discord, as a member of the instance's server, for local
+     tests. */
   private async activity(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const body = await readJson(request);
     const fields = body && typeof body === "object" ? body as { code?: unknown; instanceId?: unknown } : {};
@@ -255,23 +261,30 @@ export class Auth {
     if (instanceId !== undefined && (typeof instanceId !== "string" || !INSTANCE_ID_PATTERN.test(instanceId))) {
       return json(response, 400, { error: "invalid instance" });
     }
+    const location = instanceId ? instanceLocation(instanceId) : null;
+    const inst = instanceId || undefined;
     let issued: { token: string; session: Session };
-    let matchedGuildId: string | null = null;
+    let guild: string | null = location?.guild ?? null;
     if (this.config.devLogin && code.startsWith("dev:")) {
       const name = sanitizeName(code.slice(4));
-      issued = issueToken(this.config.tokenSecret, `dev:${name}`, name, this.config.tokenTtlSeconds);
+      issued = issueToken(this.config.tokenSecret, `dev:${name}`, name, this.config.tokenTtlSeconds, undefined,
+        undefined, { guilds: location ? [location.guild] : [], inst });
     } else {
       if (!this.config.discord || !this.discord) return json(response, 404, { error: "not configured" });
       const accessToken = await this.discord.exchangeCode(code);
       const user = await this.discord.getUser(accessToken);
-      matchedGuildId = await this.discord.findGuildMembership(accessToken, this.config.discord.guildIds);
-      if (!matchedGuildId) return json(response, 403, { error: "not a member of the server" });
-      issued = this.issue(user);
+      const guilds = await this.discord.allowedGuilds(accessToken, this.config.discord.guildIds);
+      if (!guilds.length) return json(response, 403, { error: "not a member of the server" });
+      if (location && !guilds.includes(location.guild)) {
+        return json(response, 403, { error: "not a member of this Discord server" });
+      }
+      guild ??= guilds[0]!;
+      issued = this.issue(user, { guilds, inst });
     }
     const { token, session } = issued;
     const roomId = instanceId ? activityRoomId(this.config.tokenSecret, instanceId) : null;
     this.log({ event: "login", via: "activity", user: session.sub,
-      ...(matchedGuildId ? { guild: matchedGuildId } : {}), room: roomId?.slice(0, 8) ?? null });
+      ...(guild ? { guild } : {}), room: roomId?.slice(0, 8) ?? null });
     json(response, 200, {
       token,
       user: { id: session.sub, name: session.name },
@@ -296,9 +309,9 @@ export class Auth {
     }).end();
   }
 
-  private issue(user: DiscordUser): { token: string; session: Session } {
+  private issue(user: DiscordUser, claims: Claims): { token: string; session: Session } {
     return issueToken(this.config.tokenSecret, user.id, user.globalName ?? user.username,
-      this.config.tokenTtlSeconds);
+      this.config.tokenTtlSeconds, undefined, undefined, claims);
   }
 }
 

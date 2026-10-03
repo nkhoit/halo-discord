@@ -256,7 +256,12 @@ with `frame_id`, `instance_id` and friends in the query; that document gets:
   the code without a redirect URI, as Discord's Activity examples do, checks
   membership of `DISCORD_GUILD_IDS` (or the legacy `DISCORD_GUILD_ID` fallback),
   and keeps Discord's access token to itself; `authenticate` is not called
-  because nothing needs it.
+  because nothing needs it. An instance in a Discord server
+  (`i-<id>-gc-<server>-<channel>`) also needs the user to be a member of that
+  server, and the server to be on the allowlist; otherwise the sign-in gets
+  403. The session token carries the allowlisted servers the user belongs to
+  and the instance id, so the relay authorizes without asking Discord again,
+  and the session lifetime keeps both fresh.
 - One room per Activity instance: `POST /auth/activity` returns the room id,
   an HMAC of the instance id under `TOKEN_SECRET`, so a room id cannot be
   chosen to land in someone's instance. The in-game lobby polls
@@ -264,6 +269,24 @@ with `frame_id`, `instance_id` and friends in the query; that document gets:
   host; the first player to host wins (a second one is refused and returns to
   the lobby). There are no invite links. When the host leaves, guests are
   told "The host left or ended the game." and return to the lobby.
+- One lobby per Discord server: while nobody hosts in a voice channel, its
+  lobby lists the matches hosted from the server's other voice channels
+  ("Matches in this server", from `GET /v1/guild-rooms?build=<build>`, polled
+  every few seconds): host, voice channel, map, game type, players, and
+  whether it is in its lobby, starting, in a match or over. Join moves the
+  player to that room, into its lobby or into the running match; leaving it
+  returns them to their own channel's lobby. Voice stays per channel. The
+  host's page reports the map, game type, state and channel name in its
+  relay phase message. A room learns its server and channel from its own
+  instance's members' sessions (so again after a restart). The relay admits
+  an Activity session to its own instance's room, or to a room of an
+  instance in one of the servers in its token; a browser session to link
+  rooms, or to such a room of its servers. Rooms in other Discord servers are
+  never listed or joinable. Full rooms and rooms of another build are listed
+  but not joinable; the build pin and the room's capacity still apply. Room
+  ids stay unguessable HMACs; the list shows them only to members of the same
+  server. Activity participation itself is not verified with Discord (any
+  member of the server who learns an instance id gets its room).
 
 Expectations and limits:
 
@@ -286,7 +309,10 @@ frame, removes WebRTC from the page: relay pages must never need it), and
 cookies from `http://localhost`) and embed
 `http://localhost:8090/?frame_id=x&instance_id=<id>&dev_user=<name>` in an
 iframe on another site (for example a page on `http://127.0.0.1`). Two
-browser profiles with the same `instance_id` play one match.
+browser profiles with the same `instance_id` play one match. The development
+login makes the player a member of the instance's server; instance ids of the
+form `i-1-gc-100-1` and `i-2-gc-100-2` stand for two voice channels of one
+server (`&channel_name=` names the channel).
 
 ## Expose it: Cloudflare Tunnel (named, locally managed)
 

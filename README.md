@@ -14,7 +14,9 @@ works in a desktop browser, with a room link to share.
 - **Server:** one Node process in [server](server). It serves the page and the
   game data, signs players in with Discord (OAuth2, with an allowlist of
   Discord servers), and relays the game's traffic over WebSockets, one room
-  per Activity instance or link. It runs behind cloudflared.
+  per Activity instance or link. An Activity's lobby also lists and joins the
+  matches hosted from the same Discord server's other voice channels. It runs
+  behind cloudflared.
 - **Netcode:** the distributed netcode
   ([port/linux/NETCODE.md](port/linux/NETCODE.md)). Each machine moves its own
   player at once and the host decides the rest. Players can join a match in

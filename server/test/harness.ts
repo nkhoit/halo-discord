@@ -41,13 +41,13 @@ export class FakeDiscord implements DiscordApi {
     return this.users.get(accessToken.replace(/^access-/, ""))!;
   }
 
-  async findGuildMembership(accessToken: string, guildIds: readonly string[]): Promise<string | null> {
+  async allowedGuilds(accessToken: string, guildIds: readonly string[]): Promise<string[]> {
     const code = accessToken.replace(/^access-/, "");
     this.membershipChecks.push({ code, guildIds: [...guildIds] });
     if (this.membershipFailures.has(code)) throw new Error("guild membership lookup failed");
-    if (this.outsiders.has(code)) return null;
+    if (this.outsiders.has(code)) return [];
     const memberships = this.memberGuilds.get(code) ?? [guildIds[0]!];
-    return guildIds.find((guildId) => memberships.includes(guildId)) ?? null;
+    return guildIds.filter((guildId) => memberships.includes(guildId));
   }
 }
 
