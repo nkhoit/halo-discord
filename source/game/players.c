@@ -1624,6 +1624,11 @@ static void player_pseudo_kill(
 /* Matching status is tracked in the Players object log; this is the ordinary
    combined-PVS calculation used by the game loop. */
 /* Residual instruction scheduling is recorded in the matching log. */
+#ifdef HALO_LINUX
+/* port/linux/game/spectator.c's */
+boolean spectator_sees_with_player(long player_index);
+#endif
+
 static void players_compute_combined_pvs(
 	unsigned long *combined_pvs,
 	boolean local_player_only)
@@ -1646,7 +1651,12 @@ static void players_compute_combined_pvs(
 		data_iterator_new(&iterator, player_data);
 		while (player = data_iterator_next(&iterator))
 		{
-			if (local_player_only && player->local_player_index == NONE)
+			if (local_player_only && player->local_player_index == NONE
+#ifdef HALO_LINUX
+				/* (a spectator sees what its target sees) */
+				&& !spectator_sees_with_player(iterator.datum_index)
+#endif
+				)
 				continue;
 
 			if (player->unit_index != NONE)

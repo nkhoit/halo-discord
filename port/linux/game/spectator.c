@@ -548,16 +548,43 @@ boolean spectator_view_scoped(void)
 	return spectator.scoped;
 }
 
-/* (director.c) the view's perspective, while scoped: its eyes */
-boolean spectator_first_person_view(void)
-{
-	return spectator.scoped;
-}
-
 /* (first_person_weapons.c) the first-person weapon slot of the target's
 unit, for its weapon's events outside the scope, or NONE */
 short spectator_first_person_slot(long unit_index)
 {
 	return spectator.watching && unit_index != NONE && unit_index == spectator.target_unit &&
 		spectator.view == _spectator_view_first_person ? 0 : NONE;
+}
+
+/* (players.c) whether a player counts with this machine's own for what
+they can see: effects and particles (muzzle flashes, impacts, smoke) are
+only made where a local player could see them, and a spectator has none
+but its target */
+boolean spectator_sees_with_player(long player_index)
+{
+	return spectator.watching && player_index != NONE && player_index == spectator.target_player;
+}
+
+/* (director.c) the view's perspective: its eyes, while it is drawn and
+while it is watched from them (its weapon's muzzle effects, made in the
+game's tick, take the first-person weapon's markers only from a
+first-person view) */
+boolean spectator_first_person_view(void)
+{
+	return spectator.scoped || spectator_first_person_slot(spectator.target_unit) != NONE;
+}
+
+/* (first_person_weapons.c) the same for the weapon in the target's hands:
+its shots, reloads and charging happen in the game's tick, outside the
+scope, and their first-person animation, sounds and muzzle effects find
+the first-person weapon by it */
+short spectator_first_person_weapon_slot(long weapon_index)
+{
+	struct unit_datum *unit;
+
+	if (spectator_first_person_slot(spectator.target_unit) == NONE || weapon_index == NONE)
+		return NONE;
+	unit = (struct unit_datum *)object_try_and_get_and_verify_type(spectator.target_unit, _object_mask_unit);
+	return unit && unit->unit.current_weapon_index != NONE &&
+		unit->unit.weapon_object_indices[unit->unit.current_weapon_index] == weapon_index ? 0 : NONE;
 }

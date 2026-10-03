@@ -129,6 +129,7 @@ symbols in this file:
 #ifdef HALO_LINUX
 /* port/linux/game/spectator.c's */
 short spectator_first_person_slot(long unit_index);
+short spectator_first_person_weapon_slot(long weapon_index);
 #endif
 
 /* ---------- constants */
@@ -2234,6 +2235,11 @@ static short first_person_weapon_index_from_weapon_index(
 {
 	short local_player_index;
 
+#ifdef HALO_LINUX
+	/* (a spectator: its target's weapon's events, spectator.c) */
+	if (spectator_first_person_weapon_slot(weapon_index) != NONE)
+		return spectator_first_person_weapon_slot(weapon_index);
+#endif
 	for (local_player_index=0; local_player_index<MAXIMUM_NUMBER_OF_LOCAL_PLAYERS; local_player_index++)
 	{
 		long player_index= local_player_get_player_index(local_player_index);
