@@ -1338,12 +1338,14 @@ boolean network_game_server_countdown_active(
 }
 
 /* a machine that joined the running match and has not finished loading it:
-the match's messages wait until it has */
+the match's messages wait until it has (never without late joins: a
+lockstep or LAN server's machines have all loaded once it is in game,
+network_game_server_all_machines_have_loaded) */
 boolean network_game_server_client_machine_is_loading_in_game(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *client_machine)
 {
-	return server->state == _network_game_server_state_ingame &&
+	return network_game_server_late_joins_enabled(server) &&
 		TEST_FLAG(client_machine->flags, _network_client_machine_validated_bit) &&
 		!TEST_FLAG(client_machine->flags, _network_client_machine_level_loaded_bit);
 }
