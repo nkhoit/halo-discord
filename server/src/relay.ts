@@ -42,8 +42,9 @@ class Room {
   readonly members = new Map<WebSocket, Member>();
   build: string | null = null;
   /* The host's word: its game is past the lobby, so nobody can join until it
-     returns (Halo has no joining a match in progress). */
+     returns, unless its match takes players as it runs (joinable). */
   inMatch = false;
+  joinable = false;
   readonly id: string;
 
   constructor(id: string) {
@@ -158,9 +159,9 @@ export class Relay {
 
   /* Who is in a room, for a lobby that has to choose between hosting and
      joining: the host's display name, if any, and the number of players. */
-  summary(roomId: string): { host: string | null; players: number; inMatch: boolean } {
+  summary(roomId: string): { host: string | null; players: number; inMatch: boolean; joinable: boolean } {
     const room = this.rooms.get(roomId);
-    if (!room) return { host: null, players: 0, inMatch: false };
+    if (!room) return { host: null, players: 0, inMatch: false, joinable: false };
     let host: string | null = null;
     const players = new Set<string>();
     for (const member of room.members.values()) {
@@ -168,7 +169,10 @@ export class Relay {
       players.add(member.id);
       if (member.role === "host") host = member.name;
     }
-    return { host, players: players.size, inMatch: host !== null && room.inMatch };
+    /* (a full room takes nobody, whatever the host's match would) */
+    const roomFull = room.members.size >= MAXIMUM_ROOM_SOCKETS;
+    return { host, players: players.size, inMatch: host !== null && room.inMatch,
+      joinable: host !== null && room.inMatch && room.joinable && !roomFull };
   }
 
   private refuse(socket: WebSocket, roomId: string, joining: Omit<Member, "since">, reason: string): void {
@@ -191,11 +195,13 @@ export class Relay {
     if (carries(member.kind, true) && !room.present(member.id)) this.announce(room, member, "peer-down");
     if (member.role === "host" && ![...room.members.values()].some((other) => other.role === "host")) {
       room.inMatch = false;
+      room.joinable = false;
     }
     if (!room.members.size) this.rooms.delete(room.id);
   }
 
-  /* The one text message after "auth": the host's {"type":"phase","inMatch":boolean}. */
+  /* The one text message after "auth": the host's
+     {"type":"phase","inMatch":boolean,"joinable"?:boolean}. */
   private control(room: Room, sender: Member, data: RawData): boolean {
     const message = data instanceof Buffer ? data : Buffer.concat(data as Buffer[]);
     if (message.byteLength > 256) return false;
@@ -205,12 +211,15 @@ export class Relay {
     } catch {
       return false;
     }
-    const value = parsed as { type?: unknown; inMatch?: unknown } | null;
+    const value = parsed as { type?: unknown; inMatch?: unknown; joinable?: unknown } | null;
     if (!value || value.type !== "phase" || typeof value.inMatch !== "boolean") return false;
-    if (room.inMatch !== value.inMatch) {
-      this.log({ event: "phase", room: room.id.slice(0, 8), user: sender.user, inMatch: value.inMatch });
+    if (value.joinable !== undefined && typeof value.joinable !== "boolean") return false;
+    const joinable = value.inMatch && value.joinable === true;
+    if (room.inMatch !== value.inMatch || room.joinable !== joinable) {
+      this.log({ event: "phase", room: room.id.slice(0, 8), user: sender.user, inMatch: value.inMatch, joinable });
     }
     room.inMatch = value.inMatch;
+    room.joinable = joinable;
     return true;
   }
 

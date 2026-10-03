@@ -103,7 +103,7 @@ describe("the overlay", () => {
 
   it("puts the lobby's views on a panel or a bar", () => {
     const { surfaceFor } = load();
-    for (const view of ["checking", "pick", "joining", "wait-match", "wait-retry", "host-starting"]) {
+    for (const view of ["checking", "pick", "joining", "joining-match", "wait-match", "wait-retry", "host-starting"]) {
       expect(surfaceFor(view), view).toBe("panel");
     }
     expect(surfaceFor("hosting")).toBe("bar");

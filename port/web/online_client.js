@@ -382,7 +382,8 @@
   var JOIN_RETRY_MILLISECONDS = 10000;
   var NOTICE_MILLISECONDS = 15000;
   var CLIENT_STATE = Object.freeze({ PREGAME: 2, INGAME: 3, POSTGAME: 4 });
-  var hostedLobby = { timer: 0, view: null, summary: null, roomId: null, retryAt: 0, notice: null, noticeAt: 0 };
+  var hostedLobby = { timer: 0, view: null, summary: null, roomId: null, retryAt: 0, notice: null, noticeAt: 0,
+    joiningMatch: false };
 
   function hostedPage() {
     var mode = typeof document.querySelector === "function" &&
@@ -453,13 +454,14 @@
     hostedLobby.summary = summary;
     if (!summary.host) {
       hostedLobby.view = "pick";
-    } else if (summary.inMatch) {
+    } else if (summary.inMatch && !summary.joinable) {
       hostedLobby.view = "wait-match";
     } else if (Date.now() < hostedLobby.retryAt) {
       hostedLobby.view = "wait-retry";
     } else {
       /* (if this join fails, the next waits a while) */
-      hostedLobby.view = "joining";
+      hostedLobby.view = summary.inMatch ? "joining-match" : "joining";
+      hostedLobby.joiningMatch = !!summary.inMatch;
       hostedLobby.retryAt = Date.now() + JOIN_RETRY_MILLISECONDS;
       join("room:" + hostedLobby.roomId);
     }
@@ -493,12 +495,34 @@
     }
   }
 
+  /* (hosting through the relay) players may join the match while it runs
+     (network.join_in_progress) */
+  function setJoinInProgress(enabled) {
+    var set = global.Module && global.Module._platform_web_online_set_join_in_progress;
+    if (typeof set === "function") set(enabled ? 1 : 0);
+  }
+
+  /* (the host) its match as the room's status has it: past the lobby (the
+     match loading or running), and whether a player can join it now */
+  function hostMatchPhase(clientState) {
+    var call = function(name) {
+      var fn = global.Module && global.Module[name];
+      try { return typeof fn === "function" ? !!fn() : false; } catch (error) { return false; }
+    };
+    var joinable = clientState === CLIENT_STATE.INGAME && call("_platform_web_online_match_joinable");
+    return {
+      inMatch: clientState === CLIENT_STATE.INGAME || call("_platform_web_online_match_starting"),
+      joinable: joinable,
+    };
+  }
+
   /* What the hosted page's UI shows. view: "booting", "checking" (the room
      not yet polled), "pick" (nobody hosts: choose and host), "joining",
-     "wait-match" (the host is in a match), "wait-retry" (a join failed),
-     "host-starting", "hosting" (the host's Halo lobby), "joined" (a guest in
-     the host's lobby), "match" or "postgame" (a match's results, until the
-     host goes back to the lobby). */
+     "joining-match" (joining the host's match as it runs), "wait-match"
+     (the host's match is loading, over or full), "wait-retry" (a join
+     failed), "host-starting", "hosting" (the host's Halo lobby), "joined" (a
+     guest in the host's lobby), "match" or "postgame" (a match's results,
+     until the host goes back to the lobby). */
   function hostedStatus() {
     var state = -1;
     try { state = session.runtimeReady ? gameState() : -1; } catch (error) { /* starting */ }
@@ -509,7 +533,8 @@
         (session.inMatch ? "match" : session.inPostgame ? "postgame" : "hosting") : "host-starting";
     } else if (session.active) {
       view = state === GAME_STATE.JOINED ?
-        (session.inMatch ? "match" : session.inPostgame ? "postgame" : "joined") : "joining";
+        (session.inMatch ? "match" : session.inPostgame ? "postgame" : "joined") :
+        (hostedLobby.joiningMatch ? "joining-match" : "joining");
     } else view = hostedLobby.view || "checking";
     if (hostedLobby.notice && Date.now() - hostedLobby.noticeAt > NOTICE_MILLISECONDS) hostedLobby.notice = null;
     var summary = hostedLobby.summary || {};
@@ -1873,6 +1898,7 @@
       }
       requireCurrentOperation(operation);
       applyPlayerCustomization(profile);
+      setJoinInProgress(!!relaySettings());
       requestConfiguredHost(settings);
       session.gameCommandIssued = true;
       startGamePolling();
@@ -1985,7 +2011,8 @@
     session.inMatch = clientState === CLIENT_STATE.INGAME;
     session.inPostgame = clientState === CLIENT_STATE.POSTGAME;
     if (session.role === "host" && global.HaloWebTransport && typeof global.HaloWebTransport.setRelayPhase === "function") {
-      global.HaloWebTransport.setRelayPhase(session.inMatch);
+      var phase = hostMatchPhase(clientState);
+      global.HaloWebTransport.setRelayPhase(phase.inMatch, phase.joinable);
     }
     if (state === GAME_STATE.ERROR) {
       fail(new Error(GAME_ERRORS[gameError()] || "Halo could not enter the online lobby."));
