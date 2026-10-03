@@ -1717,6 +1717,13 @@ boolean network_game_client_handle_game_update(
 		message_packet->local_player_count = client->game.player_count;
 	}
 
+#ifdef HALO_LINUX
+	/* (a machine that joined the match while it ran counts its updates from
+	the first it is sent; a distributed client simulates on its own clock,
+	the updates only bring the others' input) */
+	if (network_game_distributed() && client->last_update_time == 0)
+		client->next_update_number = message_packet->update_number;
+#endif
 	if (message_packet->update_number != client->next_update_number)
 	{
 		network_event(

@@ -479,6 +479,10 @@ symbols in this file:
 
 #include "cache/cache_files.h"
 
+#ifdef HALO_LINUX
+int config_boolean(const char *name);
+#endif
+
 /* ---------- constants */
 
 #define NETWORK_SERVER_MANAGER_FILE "c:\\halo\\SOURCE\\networking\\network_server_manager.c"
@@ -1255,11 +1259,40 @@ void network_game_server_close_game(
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x208, server);
 
 	SET_FLAG(server->flags, _network_game_server_game_open_bit, FALSE);
+#ifdef HALO_LINUX
+	/* (joining a match in progress: machines still connect, and join once
+	the match runs) */
+	if (!(network_game_distributed() && config_boolean("network.join_in_progress")))
+#endif
 	network_server_allow_client_connections(server->connection, FALSE);
 	network_event("closing game");
 
 	return;
 }
+
+#ifdef HALO_LINUX
+/* Joining a match in progress (the distributed netcode only: a lockstep
+client must simulate the match from its first tick). The game is closed to
+the lobby's joining while it runs; a machine that joins then loads the map
+and enters the running match, and adds its players as in-game players. */
+boolean network_game_server_joinable_in_game(
+	struct network_game_server *server)
+{
+	return server && server->state == _network_game_server_state_ingame &&
+		network_game_distributed() && config_boolean("network.join_in_progress");
+}
+
+/* a machine that joined the running match and has not finished loading it:
+the match's messages wait until it has */
+boolean network_game_server_client_machine_is_loading_in_game(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *client_machine)
+{
+	return server->state == _network_game_server_state_ingame &&
+		TEST_FLAG(client_machine->flags, _network_client_machine_validated_bit) &&
+		!TEST_FLAG(client_machine->flags, _network_client_machine_level_loaded_bit);
+}
+#endif
 
 boolean network_game_server_start_network_game(
 	struct network_game_server *server)
@@ -3031,7 +3064,11 @@ static boolean network_game_server_add_new_client(
 
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x7D4, server && new_connection);
 
-	if (network_game_server_game_is_open(server))
+	if (network_game_server_game_is_open(server)
+#ifdef HALO_LINUX
+		|| network_game_server_joinable_in_game(server)
+#endif
+		)
 	{
 		for (i = 0; i < MAXIMUM_NETWORK_MACHINE_COUNT; i++)
 		{
