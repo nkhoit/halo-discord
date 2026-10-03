@@ -37,7 +37,7 @@
      Halo's own lobby or over a match's results; in a match (and while
      booting) neither. After a match the host's lobby is a panel again: the
      next match's picker. */
-  var PANEL_VIEWS = ["checking", "pick", "joining", "wait-match", "wait-retry", "host-starting"];
+  var PANEL_VIEWS = ["checking", "pick", "joining", "joining-match", "wait-match", "wait-retry", "host-starting"];
   var BAR_VIEWS = ["hosting", "joined", "postgame"];
 
   function surfaceFor(view, playedMatch) {
@@ -517,7 +517,8 @@
       case "checking": title = "Halo"; body = "Checking who's here…"; break;
       case "pick": title = "Host a game"; body = "Nobody is hosting yet. Pick a map and game type."; break;
       case "joining": title = "Joining " + host + "…"; body = "Connecting to " + host + "'s lobby."; break;
-      case "wait-match": title = host + " is in a match"; body = "You'll join when it ends."; break;
+      case "joining-match": title = "Joining " + host + "'s match…"; body = "Loading the match in progress."; break;
+      case "wait-match": title = host + " is in a match"; body = "You'll join as soon as it lets you in."; break;
       case "wait-retry": title = "Couldn't join " + host + " yet"; body = "Trying again shortly."; break;
       case "host-starting": title = "Opening your lobby…"; body = settingsLabel(status.settings); break;
       case "hosting":

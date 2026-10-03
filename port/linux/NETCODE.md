@@ -100,6 +100,33 @@ Every machine in a game must use the same netcode.
      body falls as the shot had it and the kill is announced with the
      host's killer.
 
+## Joining a match in progress
+
+With `network.join_in_progress` on (the hosted pages turn it on for their
+hosts; off by default), a machine can join the host's match while it runs,
+not only its lobby. Lockstep cannot: its clients simulate the match from its
+first tick.
+
+- The host advertises its running match as open and takes the connection
+  while the match is on, not over, and has room for a player for every
+  machine already loading it.
+- The late machine is sent the game's settings (the map, the game type, the
+  players) and told to begin, as every machine was at the start. It loads
+  the map, takes the match's clock from its first update, asks for the
+  host's objects (stage 3), and adds its player through Halo's in-game add;
+  every machine then runs the game type's player added for it (its team,
+  the smaller one, and its multiplayer data).
+- Until it has loaded, the match's messages skip it; the players who joined
+  or left meanwhile are sent to it once it has. A machine still loading
+  after 90 seconds, or when the match ends, is let go.
+- A player is at the same index on every machine, the one the server gave
+  it (in a match, the first free of the game's players and of those who
+  quit, whom the match keeps): the netcode names players by index, and a
+  late machine never had the datums of those who left before it.
+- Everything else a late joiner needs is what every client is sent all the
+  time: the units, objects, inventories, statistics and the game type's
+  state.
+
 ## Testing
 
 `debug.network_test` (`port/linux/game/network_test.c`) hosts or joins a

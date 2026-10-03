@@ -179,11 +179,14 @@ static void network_test_log_players(
 			length += snprintf(line + length, sizeof(line) - (size_t)length, " player %ld: dead r%ld",
 				(long)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index), (long)player->respawn_timer);
 		}
-		/* the game type's score and the kills and deaths */
+		/* the game type's score and the kills and deaths (and the team, in a
+		team game) */
 		length += snprintf(line + length, sizeof(line) - (size_t)length, " s%ld k%d d%d",
 			game_engine && game_engine->get_player_score ?
 				game_engine->get_player_score(iterator.datum_index, _get_score_individual) : -1L,
 			player->statistics.kills[0], player->statistics.deaths);
+		if (game_engine_has_teams())
+			length += snprintf(line + length, sizeof(line) - (size_t)length, " t%d", (int)player->team_index);
 	}
 	{
 		long sent, received, corrections;

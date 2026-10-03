@@ -398,9 +398,9 @@ describe("the Discord Activity", () => {
     const room = "room-status-0001";
     expect((await get(`/v1/rooms/${room}`)).status).toBe(401);
     const signedIn = { Cookie: `halo_session=${token("9")}` };
-    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: null, players: 0, inMatch: false });
+    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: null, players: 0, inMatch: false, joinable: false });
     const host = await join(server.base, room, "host", "user-h", "020000000001", { name: "Host Person" });
-    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: "Host Person", players: 1, inMatch: false });
+    expect(await (await get(`/v1/rooms/${room}`, signedIn)).json()).toEqual({ host: "Host Person", players: 1, inMatch: false, joinable: false });
     host.socket.close();
     expect((await get("/v1/rooms/bad", signedIn)).status).toBe(404);
   });

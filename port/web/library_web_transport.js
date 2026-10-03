@@ -1219,13 +1219,14 @@ addToLibrary({
       }
     },
 
-    /* (the host) whether its game is past the lobby, for the room's status:
-       others wait for the match to end rather than fail to join. Sent again
-       on every reconnect. */
+    /* (the host) whether its game is past the lobby, and whether a player can
+       join its match as it runs, for the room's status: others join the
+       match, or wait for it to end rather than fail to join. Sent again on
+       every reconnect. */
     relaySendPhase: function(relay) {
       if (!relay || !relay.ready || relay.options.role !== 'host' || relay.inMatch === undefined) return;
       try {
-        relay.reliable.send(JSON.stringify({ type: 'phase', inMatch: relay.inMatch }));
+        relay.reliable.send(JSON.stringify({ type: 'phase', inMatch: relay.inMatch, joinable: !!relay.joinable }));
       } catch (error) {
         /* closing: the next "ready" sends it */
       }
@@ -1735,10 +1736,11 @@ addToLibrary({
         /* Room mode: connects to the configured relay room; its members
            become peers through onRelayPeer. */
         openRelay: function() { runtime.openRelay(); },
-        setRelayPhase: function(inMatch) {
+        setRelayPhase: function(inMatch, joinable) {
           var relay = runtime.relay;
-          if (!relay || relay.inMatch === !!inMatch) return;
+          if (!relay || (relay.inMatch === !!inMatch && relay.joinable === !!joinable)) return;
           relay.inMatch = !!inMatch;
+          relay.joinable = !!joinable;
           runtime.relaySendPhase(relay);
         },
         addPeer: function(options) { return runtime.addPeer(options); },

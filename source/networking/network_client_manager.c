@@ -1717,6 +1717,22 @@ boolean network_game_client_handle_game_update(
 		message_packet->local_player_count = client->game.player_count;
 	}
 
+#ifdef HALO_LINUX
+	/* (a machine that joined the match while it ran counts its updates from
+	the first it is sent, and takes the match's clock from it: a distributed
+	client simulates on its own clock, the updates only bring the others'
+	input) */
+	if (network_game_distributed() && client->last_update_time == 0)
+	{
+		client->next_update_number = message_packet->update_number;
+		if (message_packet->update_number > game_time_get() + TICKS_PER_SECOND)
+		{
+			network_event("joined the match in progress: its clock %ld (update #%ld), ours %ld",
+				message_packet->game_time, message_packet->update_number, game_time_get());
+			game_time_join_in_progress(message_packet->game_time);
+		}
+	}
+#endif
 	if (message_packet->update_number != client->next_update_number)
 	{
 		network_event(
@@ -1922,7 +1938,14 @@ boolean network_game_client_remove_player(
 				}
 			}
 
-			if (network_player_index == MAXIMUM_NUMBER_OF_PLAYERS)
+			if (network_player_index == MAXIMUM_NUMBER_OF_PLAYERS
+#ifdef HALO_LINUX
+				/* (the last of this machine's own players: a machine that joined
+				the match in progress has none until it adds its own, and others
+				may leave before it does) */
+				&& player->machine_index == client->machine_index
+#endif
+				)
 			{
 				network_game_client_all_local_players_have_quit();
 				network_event("no local players remain in the game, exiting the game now");
@@ -2062,6 +2085,24 @@ boolean network_game_client_add_player_to_game(
 
 	if (network_player_is_valid(player))
 	{
+#ifdef HALO_LINUX
+		/* (a machine that joined the match in progress is sent the players
+		who came and went while it loaded; one it already has is no change) */
+		struct network_player player_added = *player;
+		long existing_index;
+
+		for (existing_index = 0; existing_index < MAXIMUM_NUMBER_OF_PLAYERS; existing_index++)
+		{
+			struct network_player *existing = &client->game.players[existing_index];
+
+			if (network_player_is_valid(existing) && existing->machine_index == player->machine_index &&
+				existing->controller_index == player->controller_index &&
+				existing->player_list_index == player->player_list_index)
+			{
+				return TRUE;
+			}
+		}
+#endif
 		success = network_game_add_player(&client->game, player);
 
 		if (success)
@@ -2069,6 +2110,26 @@ boolean network_game_client_add_player_to_game(
 			if (client->state == _network_game_client_state_ingame)
 			{
 				player = &client->game.players[client->game.player_count - 1];
+#ifdef HALO_LINUX
+				/* (the distributed netcode places a player in the slot of its
+				index, network_game_add_player) */
+				if (network_game_distributed())
+				{
+					long slot;
+
+					for (slot = 0; slot < MAXIMUM_NUMBER_OF_PLAYERS; slot++)
+					{
+						struct network_player *added = &client->game.players[slot];
+
+						if (network_player_is_valid(added) && added->machine_index == player_added.machine_index &&
+							added->controller_index == player_added.controller_index)
+						{
+							player = added;
+							break;
+						}
+					}
+				}
+#endif
 
 				success = network_game_spawn_player(player);
 
@@ -2087,6 +2148,17 @@ boolean network_game_client_add_player_to_game(
 
 					if (global_network_game_server_get())
 						update_server_add_player(player_index);
+#ifdef HALO_LINUX
+					/* (the distributed netcode) the game type takes the player
+					as it takes those there at the start (game_initial_pulse):
+					their team (the Xbox game left a player added in game on
+					the default team, blue) and their multiplayer data, with
+					the joined message */
+					extern void game_engine_player_added(long player_index);
+
+					if (network_game_distributed())
+						game_engine_player_added(player_index);
+#endif
 				}
 			}
 

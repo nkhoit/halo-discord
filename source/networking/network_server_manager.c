@@ -464,6 +464,7 @@ symbols in this file:
 #include "interface/ui_widget.h"
 #include "main/main.h"
 #include "math/random_math.h"
+#include "memory/data.h"
 #include "networking/network_client_manager.h"
 #include "networking/network_connection.h"
 #include "networking/network_game_globals.h"
@@ -478,6 +479,11 @@ symbols in this file:
 #include "text/unicode.h"
 
 #include "cache/cache_files.h"
+
+#ifdef HALO_LINUX
+int config_boolean(const char *name);
+boolean game_engine_can_score(void);
+#endif
 
 /* ---------- constants */
 
@@ -530,6 +536,12 @@ enum
 	_network_client_machine_precached_bit,
 	NUMBER_OF_NETWORK_CLIENT_MACHINE_FLAGS,
 	MAXIMUM_NETWORK_MESSAGE_SIZE = 0x800,
+#ifdef HALO_LINUX
+	NETWORK_GAME_SERVER_ROSTER_CHANGES = 64,
+	/* as long as a machine joining the match in progress has to load it (a
+	first visit downloads the map), as long as a browser gives a join */
+	NETWORK_GAME_SERVER_MAXIMUM_LATE_LOADING_TIME = 90 * MILLISECONDS_PER_SECOND,
+#endif
 };
 
 enum
@@ -723,6 +735,19 @@ struct network_game_server
 	and drops any other that arrives meanwhile) */
 	struct network_player waiting_players[MAXIMUM_NETWORK_PLAYER_COUNT];
 	long waiting_player_count;
+	/* joining a match in progress: the players who came and went, for the
+	machines that loaded meanwhile, and when each client machine joined
+	(0: in the lobby) and how far in that record it had its players */
+	struct network_game_server_roster_change
+	{
+		long sequence;
+		boolean added;
+		long reason;
+		struct network_player player;
+	} roster_changes[NETWORK_GAME_SERVER_ROSTER_CHANGES];
+	long roster_sequence;
+	unsigned long late_join_time[MAXIMUM_NETWORK_MACHINE_COUNT];
+	long late_join_roster_sequence[MAXIMUM_NETWORK_MACHINE_COUNT];
 #endif
 };
 
@@ -1255,11 +1280,176 @@ void network_game_server_close_game(
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x208, server);
 
 	SET_FLAG(server->flags, _network_game_server_game_open_bit, FALSE);
+#ifdef HALO_LINUX
+	/* (joining a match in progress: machines still connect, and join once
+	the match runs) */
+	if (!(network_game_distributed() && config_boolean("network.join_in_progress")))
+#endif
 	network_server_allow_client_connections(server->connection, FALSE);
 	network_event("closing game");
 
 	return;
 }
+
+#ifdef HALO_LINUX
+/* Joining a match in progress (the distributed netcode only: a lockstep
+client must simulate the match from its first tick). The game is closed to
+the lobby's joining while it runs; a machine that joins then loads the map
+and enters the running match, and adds its players as in-game players. */
+static boolean network_game_server_late_joins_enabled(
+	struct network_game_server *server)
+{
+	return server && server->state == _network_game_server_state_ingame &&
+		network_game_distributed() && config_boolean("network.join_in_progress");
+}
+
+/* whether a machine can join the running match now: not over, and room for
+it besides the machines already loading it */
+boolean network_game_server_joinable_in_game(
+	struct network_game_server *server)
+{
+	long loading_machines = 0;
+	long index;
+
+	if (!network_game_server_late_joins_enabled(server) || !game_engine_can_score())
+		return FALSE;
+	/* (room for a player for each machine already loading it) */
+	for (index = 0; index < MAXIMUM_NETWORK_MACHINE_COUNT; index++)
+	{
+		if (server->late_join_time[index])
+			loading_machines++;
+	}
+	return server->game.player_count + loading_machines < server->game.maximum_players;
+}
+
+/* the lobby has started its match and the machines are loading it (nobody
+can join until the match runs) */
+boolean network_game_server_match_starting(
+	struct network_game_server *server)
+{
+	return server && server->state == _network_game_server_state_pregame && server->sent_start_game_message;
+}
+
+/* the lobby counts down to its match */
+boolean network_game_server_countdown_active(
+	struct network_game_server *server)
+{
+	return server && server->state == _network_game_server_state_pregame && server->countdown_state.active;
+}
+
+/* a machine that joined the running match and has not finished loading it:
+the match's messages wait until it has (never without late joins: a
+lockstep or LAN server's machines have all loaded once it is in game,
+network_game_server_all_machines_have_loaded) */
+boolean network_game_server_client_machine_is_loading_in_game(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *client_machine)
+{
+	return network_game_server_late_joins_enabled(server) &&
+		TEST_FLAG(client_machine->flags, _network_client_machine_validated_bit) &&
+		!TEST_FLAG(client_machine->flags, _network_client_machine_level_loaded_bit);
+}
+
+/* the players who join and leave the running match, kept for the machines
+loading it meanwhile (the match's messages skip them until they have) */
+void network_game_server_record_roster_change(
+	struct network_game_server *server,
+	struct network_player const *player,
+	boolean added,
+	long reason)
+{
+	struct network_game_server_roster_change *change;
+	long sequence;
+
+	if (!network_game_server_late_joins_enabled(server))
+		return;
+	sequence = ++server->roster_sequence;
+	change = &server->roster_changes[(sequence - 1) % NETWORK_GAME_SERVER_ROSTER_CHANGES];
+	change->sequence = sequence;
+	change->added = added;
+	change->reason = reason;
+	change->player = *player;
+}
+
+void network_game_server_late_machine_joined(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *client_machine)
+{
+	long index = (long)(client_machine - server->client_machines);
+
+	server->late_join_time[index] = system_milliseconds() | 1;
+	server->late_join_roster_sequence[index] = server->roster_sequence;
+}
+
+/* (the late machine has loaded) the players who came and went since it was
+sent the match's settings; FALSE if more than are kept */
+boolean network_game_server_late_machine_loaded(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *client_machine)
+{
+	long index = (long)(client_machine - server->client_machines);
+	long sequence = server->late_join_roster_sequence[index];
+	struct network_machine *machine = network_game_server_get_client_machine(server, client_machine, NULL);
+
+	if (!server->late_join_time[index])
+		return TRUE;
+	server->late_join_time[index] = 0;
+	if (server->roster_sequence - sequence > NETWORK_GAME_SERVER_ROSTER_CHANGES)
+		return FALSE;
+	while (++sequence <= server->roster_sequence)
+	{
+		struct network_game_server_roster_change *change =
+			&server->roster_changes[(sequence - 1) % NETWORK_GAME_SERVER_ROSTER_CHANGES];
+		void *message;
+
+		if (change->added)
+		{
+			struct network_player player = change->player;
+
+			message = create_network_game_message(_message_server_add_player_ingame, &player, sizeof(player));
+		}
+		else
+		{
+			struct message_server_remove_player_ingame removal;
+
+			removal.player = change->player;
+			removal.reason = change->reason;
+			message = create_network_game_message(_message_server_remove_player_ingame, &removal, sizeof(removal));
+		}
+		if (!message || !network_game_server_send_message_to_machine(server, machine, message))
+			return FALSE;
+	}
+	network_event("machine #%d loaded the match in progress (%ld players came or went meanwhile)",
+		client_machine->machine_index, server->roster_sequence - server->late_join_roster_sequence[index]);
+	return TRUE;
+}
+
+/* machines that take too long to load the running match, or are still
+loading it when it ends, are let go (their page joins the next lobby) */
+boolean network_game_server_remove_client_machine_from_game(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *client);
+
+static void network_game_server_drop_late_machines(
+	struct network_game_server *server,
+	boolean match_over)
+{
+	long index;
+
+	for (index = 0; index < MAXIMUM_NETWORK_MACHINE_COUNT; index++)
+	{
+		if (server->late_join_time[index] &&
+			(match_over || system_milliseconds() - server->late_join_time[index] >
+				NETWORK_GAME_SERVER_MAXIMUM_LATE_LOADING_TIME))
+		{
+			network_event("letting go machine #%d, still loading the match in progress", index);
+			server->late_join_time[index] = 0;
+			if (server->client_machines[index].machine_index != NONE)
+				network_game_server_remove_client_machine_from_game(server, &server->client_machines[index]);
+		}
+	}
+}
+#endif
 
 boolean network_game_server_start_network_game(
 	struct network_game_server *server)
@@ -1343,6 +1533,9 @@ void network_game_server_send_player_quit_messages_ingame(
 				network_event(
 					"network_game_server_send_message_to_all_machines() failed in network_game_server_handle_message_client_remove_player_request_ingame()");
 			}
+#ifdef HALO_LINUX
+			network_game_server_record_roster_change(server, player, FALSE, remove_player.reason);
+#endif
 		}
 	}
 
@@ -1359,6 +1552,9 @@ void network_game_server_switch_to_postgame(
 		struct message_server_game_over game_over = { 0 };
 		void *message;
 
+#ifdef HALO_LINUX
+		network_game_server_drop_late_machines(server, TRUE);
+#endif
 		server->state = _network_game_server_state_postgame;
 
 		message = create_network_game_message(
@@ -1726,6 +1922,28 @@ boolean network_game_server_add_player_to_game(
 		player->team_index = (char)network_game_server_next_team_index;
 		network_game_server_next_team_index =
 			(network_game_server_next_team_index + 1) % NUMBER_OF_MULTIPLAYER_TEAMS;
+#ifdef HALO_LINUX
+		/* (joining a match in progress) the smaller team; red when even */
+		if (network_game_server_late_joins_enabled(server) && server->game.variant.universal_variant.teams)
+		{
+			long team_counts[NUMBER_OF_MULTIPLAYER_TEAMS] = { 0, 0 };
+			long index;
+
+			for (index = 0; index < MAXIMUM_NETWORK_PLAYER_COUNT; index++)
+			{
+				struct network_player const *other = &server->game.players[index];
+
+				if (network_player_is_valid((struct network_player *)other) &&
+					other->team_index >= 0 && other->team_index < NUMBER_OF_MULTIPLAYER_TEAMS)
+				{
+					team_counts[other->team_index]++;
+				}
+			}
+			player->team_index = (char)(team_counts[1] < team_counts[0] ? 1 : 0);
+			network_event("a player joining the match in progress takes team %d (%ld red, %ld blue)",
+				player->team_index, team_counts[0], team_counts[1]);
+		}
+#endif
 
 		if (!player->name[0])
 			get_unique_random_name(server, player);
@@ -1735,6 +1953,35 @@ boolean network_game_server_add_player_to_game(
 
 		if (player->primary_color_index == NONE)
 			get_unique_random_color(server, player);
+#ifdef HALO_LINUX
+		/* (the distributed netcode, in a match) the player's index is its
+		player's on every machine (network_game_spawn_player): the first
+		that is free in the game and of the players who quit, whom the match
+		keeps */
+		if (network_game_distributed() && server->state == _network_game_server_state_ingame && player_data)
+		{
+			boolean taken[MAXIMUM_NETWORK_PLAYER_COUNT];
+			struct data_iterator iterator;
+			long index;
+
+			csmemset(taken, 0, sizeof(taken));
+			data_iterator_new(&iterator, player_data);
+			while (data_iterator_next(&iterator))
+			{
+				if (DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index) < MAXIMUM_NETWORK_PLAYER_COUNT)
+					taken[DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index)] = TRUE;
+			}
+			player->player_list_index = NONE;
+			for (index = 0; index < MAXIMUM_NETWORK_PLAYER_COUNT; index++)
+			{
+				if (!taken[index] && server->game.players[index].player_list_index == NONE)
+				{
+					player->player_list_index = (char)index;
+					break;
+				}
+			}
+		}
+#endif
 
 		success = network_game_add_player(&server->game, player);
 		if (success == TRUE)
@@ -2404,6 +2651,7 @@ boolean network_game_server_remove_client_machine_from_game(
 				machine that joins later may get its index */
 				long waiting_index = 0;
 
+				server->late_join_time[i] = 0;
 				if (server->queued_player_valid &&
 					server->queued_player.machine_index == client->machine_index)
 				{
@@ -3031,7 +3279,11 @@ static boolean network_game_server_add_new_client(
 
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x7D4, server && new_connection);
 
-	if (network_game_server_game_is_open(server))
+	if (network_game_server_game_is_open(server)
+#ifdef HALO_LINUX
+		|| network_game_server_joinable_in_game(server)
+#endif
+		)
 	{
 		for (i = 0; i < MAXIMUM_NETWORK_MACHINE_COUNT; i++)
 		{
@@ -3136,6 +3388,10 @@ static boolean network_game_server_handle_client_machines(
 
 	match_assert(NETWORK_SERVER_MANAGER_FILE, 0x827, server);
 
+#ifdef HALO_LINUX
+	if (server->state == _network_game_server_state_ingame)
+		network_game_server_drop_late_machines(server, FALSE);
+#endif
 	for (i = 0; success && i < MAXIMUM_NETWORK_MACHINE_COUNT; i++)
 	{
 		if (server->client_machines[i].machine_index != NONE)

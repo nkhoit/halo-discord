@@ -149,7 +149,7 @@ describe("the host's phase", () => {
     const room = newRoom();
     const host = await join(server.base, room, "host", "user-h", HOST, { name: "Chief" });
     const guest = await join(server.base, room, "guest", "user-a", GUEST_A);
-    expect(server.app.relay.summary(room)).toEqual({ host: "Chief", players: 2, inMatch: false });
+    expect(server.app.relay.summary(room)).toEqual({ host: "Chief", players: 2, inMatch: false, joinable: false });
     host.socket.send(JSON.stringify({ type: "phase", inMatch: true }));
     await until(() => server.app.relay.summary(room).inMatch);
     host.socket.send(frame(Channel.Reliable, GUEST_A, undefined, 7));
@@ -163,6 +163,39 @@ describe("the host's phase", () => {
     expect(server.app.relay.summary(room).inMatch).toBe(false);
   });
 
+  it("lets the host say its running match takes players, until the match or the host goes", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST, { name: "Chief" });
+    await join(server.base, room, "guest", "user-a", GUEST_A);
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: true }));
+    await until(() => server.app.relay.summary(room).joinable);
+    expect(server.app.relay.summary(room)).toEqual({ host: "Chief", players: 2, inMatch: true, joinable: true });
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: false }));
+    await until(() => !server.app.relay.summary(room).joinable);
+    expect(server.app.relay.summary(room).inMatch).toBe(true);
+    /* (a lobby is not a running match, whatever joinable says) */
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: false, joinable: true }));
+    await until(() => !server.app.relay.summary(room).inMatch);
+    expect(server.app.relay.summary(room).joinable).toBe(false);
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: true }));
+    await until(() => server.app.relay.summary(room).joinable);
+    expect(server.logs.filter((entry) => entry.event === "phase").at(-1)).toMatchObject({ inMatch: true, joinable: true });
+    host.socket.close();
+    await until(() => server.app.relay.summary(room).host === null);
+    expect(server.app.relay.summary(room)).toMatchObject({ inMatch: false, joinable: false });
+  });
+
+  it("says a full room's match takes nobody", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST, { name: "Chief" });
+    for (let index = 1; index < MAXIMUM_ROOM_SOCKETS; index++) {
+      await join(server.base, room, "guest", `user-${index}`, (0x030000000000 + index).toString(16).padStart(12, "0"));
+    }
+    host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: true }));
+    await until(() => server.app.relay.summary(room).inMatch);
+    expect(server.app.relay.summary(room).joinable).toBe(false);
+  });
+
   it("closes a guest's text and the host's malformed text", async () => {
     const room = newRoom();
     const host = await join(server.base, room, "host", "user-h", HOST);
@@ -172,6 +205,9 @@ describe("the host's phase", () => {
     expect(server.app.relay.summary(room).inMatch).toBe(false);
     host.socket.send(JSON.stringify({ type: "phase", inMatch: "yes" }));
     expect((await host.closed).code).toBe(1003);
+    const another = await join(server.base, newRoom(), "host", "user-h2", HOST);
+    another.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: "yes" }));
+    expect((await another.closed).code).toBe(1003);
   });
 });
 

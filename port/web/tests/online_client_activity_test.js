@@ -46,6 +46,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' } }) {
     /* (the Activity's first session request finds it expired; a browser page is signed in) */
     sessionStatus: activity ? [401, 200] : [200], signIns: 0, fetches: [], configured: [], relayOpened: 0, disconnects: 0,
     windowListeners: {}, customizations: [], phases: [], replaced: [], assigned: [], configured_matches: [],
+    joinable: false, joinablePhases: [], joinInProgress: [], matchJoinable: 0, matchStarting: 0,
   };
   const elements = page.elements;
   const styleInputs = ['sage', 'red'].map(value => element({ checked: value === 'sage', value }));
@@ -70,7 +71,8 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' } }) {
     fetch: async url => {
       page.fetches.push(String(url));
       if (/\/v1\/rooms\//.test(url)) {
-        return json(200, { host: page.roomHost, players: page.roomHost ? 1 : 0, inMatch: page.inMatch });
+        return json(200, { host: page.roomHost, players: page.roomHost ? 1 : 0, inMatch: page.inMatch,
+          joinable: page.joinable });
       }
       if (/\/auth\/session$/.test(url)) {
         const status = page.sessionStatus.length > 1 ? page.sessionStatus.shift() : page.sessionStatus[0];
@@ -96,7 +98,10 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' } }) {
       openRelay() { page.relayOpened++; },
       removePeer() {},
       /* (sends only changes, as the transport does) */
-      setRelayPhase(inMatch) { if (page.phases.at(-1) !== inMatch) page.phases.push(inMatch); },
+      setRelayPhase(inMatch, joinable) {
+        if (page.phases.at(-1) !== inMatch) page.phases.push(inMatch);
+        if (page.joinablePhases.at(-1) !== joinable) page.joinablePhases.push(joinable);
+      },
     },
     history: { replaceState(state, title, url) { page.replaced.push(url); location.hash = url; } },
     localStorage: { getItem: () => null, setItem() {} },
@@ -110,6 +115,9 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' } }) {
       _platform_web_online_set_player_customization: (...values) => { page.customizations.push(values); return 1; },
       _platform_web_online_set_transport_state() {},
       _platform_web_online_configure: (map, mode) => { page.configured_matches.push([map, mode]); return 1; },
+      _platform_web_online_set_join_in_progress: enabled => { page.joinInProgress.push(enabled); return 1; },
+      _platform_web_online_match_joinable: () => page.matchJoinable,
+      _platform_web_online_match_starting: () => page.matchStarting,
     },
     navigator: {},
     URL,
@@ -236,6 +244,51 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   page.windowListeners.pagehide();
   await settle();
   assert(page.disconnects > before, 'leaving the page (or entering the back/forward cache) closes the room');
+
+  /* ---------- joining a match in progress (#4) */
+  const late = load({ activity: true });
+  late.context.HaloOnline.runtimeReady();
+  late.roomHost = 'Alice';
+  late.inMatch = true;
+  late.joinable = false;
+  await late.tick();
+  await settle();
+  assert.equal(late.status().view, 'wait-match', 'a match that takes nobody now is waited for');
+  assert.equal(late.relayOpened, 0);
+  late.joinable = true;
+  await late.tick();
+  await settle();
+  assert.equal(late.relayOpened, 1, 'a match that takes players is joined at once');
+  assert.equal(late.status().view, 'joining-match', '"Joining Alice\'s match…" while it loads');
+  assert.equal(late.status().host, 'Alice');
+  const lateGuest = late.configured.at(-1);
+  lateGuest.onRelayPeer({ peerId: 'relay-020000000002', identifier: '020000000002', name: 'Alice', role: 'host' });
+  lateGuest.onStateChange({ peerId: 'relay-020000000002', state: 'connected' });
+  late.gameState = 6;
+  late.clientState = 3;
+  late.poll();
+  assert.equal(late.status().view, 'match', 'in the match once its player is in');
+
+  const hosting = load({ activity: true });
+  hosting.context.HaloOnline.runtimeReady();
+  await hosting.tick();
+  await hosting.context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
+  assert.deepEqual(hosting.joinInProgress, [1], 'a relay host lets players join its match as it runs');
+  hosting.gameState = 3;
+  hosting.poll();
+  hosting.matchStarting = 1;
+  hosting.poll();
+  hosting.matchStarting = 0;
+  hosting.clientState = 3;
+  hosting.matchJoinable = 1;
+  hosting.poll();
+  hosting.matchJoinable = 0;
+  hosting.poll();
+  hosting.clientState = 4;
+  hosting.poll();
+  assert.deepEqual(hosting.phases, [false, true, false],
+    'past the lobby from the start (loading) to the end of the match');
+  assert.deepEqual(hosting.joinablePhases, [false, true, false], 'joinable only while the match takes players');
 
   /* ---------- the browser page: the room is in the address */
   const browser = load({ activity: false, user: { id: '9', name: 'Cortana' } });
