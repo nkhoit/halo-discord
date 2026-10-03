@@ -855,6 +855,9 @@ boolean network_game_server_send_player_joined_info_ingame(
 			network_event(
 				"network_game_server_send_message_to_all_machines() failed in network_game_server_send_player_joined_info_ingame()");
 		}
+#ifdef HALO_LINUX
+		network_game_server_record_roster_change(server, player, TRUE, NONE);
+#endif
 
 		return result;
 	}
@@ -1840,6 +1843,8 @@ static boolean network_game_server_handle_message_client_join_game_request(
 									if (network_game_server_joinable_in_game(server))
 									{
 										result = network_game_server_begin_game_for_late_machine(server, server_client_machine);
+										if (result)
+											network_game_server_late_machine_joined(server, server_client_machine);
 									}
 									else
 #endif
@@ -2340,6 +2345,14 @@ static boolean network_game_server_handle_message_client_loaded(
 			&packet_version,
 			_network_game_packet_class_client_ingame))
 		{
+#ifdef HALO_LINUX
+			if (network_game_server_client_machine_is_loading_in_game(server, client_machine) &&
+				!network_game_server_late_machine_loaded(server, client_machine))
+			{
+				network_event("a machine missed more of the match's players than are kept while it loaded");
+				return FALSE;
+			}
+#endif
 			network_game_server_client_machine_game_loading_complete(server, client_machine);
 		}
 		else
@@ -2473,6 +2486,9 @@ static boolean network_game_server_handle_message_client_remove_player_request_i
 						network_event(
 							"network_game_server_send_message_to_all_machines() failed in network_game_server_handle_message_client_remove_player_request_ingame()");
 					}
+#ifdef HALO_LINUX
+					network_game_server_record_roster_change(server, &player, FALSE, remove_player.game_time);
+#endif
 
 					return result;
 				}

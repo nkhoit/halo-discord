@@ -480,6 +480,23 @@ void game_time_start(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* (a distributed client that joined the match in progress) the match's
+clock, as the host has it: what is timed by the clock (players who quit,
+the game's periodic checks) keeps the host's time. Nothing it ran ahead of
+the jump was more than its first few ticks. */
+void game_time_join_in_progress(
+	long time)
+{
+	match_assert("c:\\halo\\SOURCE\\game\\game_time.c", 0, game_time_globals && game_time_globals->initialized);
+	if (time > game_time_globals->local_time)
+	{
+		game_time_globals->local_time = time;
+		game_time_globals->server_time = time;
+	}
+}
+#endif
+
 void game_time_update(
 	real time_delta_sec)
 {

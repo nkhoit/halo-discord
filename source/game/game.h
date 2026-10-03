@@ -185,6 +185,9 @@ real game_time_get_speed(void);
 void game_time_set_speed(real speed);
 void game_time_start(void);
 void game_time_update(real time_delta_sec);
+#ifdef HALO_LINUX
+void game_time_join_in_progress(long time);
+#endif
 
 /* ---------- prototypes/MAIN.C */
 

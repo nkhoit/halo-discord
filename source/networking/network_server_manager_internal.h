@@ -104,6 +104,17 @@ boolean network_game_server_joinable_in_game(
 boolean network_game_server_client_machine_is_loading_in_game(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *client_machine);
+void network_game_server_record_roster_change(
+	struct network_game_server *server,
+	struct network_player const *player,
+	boolean added,
+	long reason);
+void network_game_server_late_machine_joined(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *client_machine);
+boolean network_game_server_late_machine_loaded(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *client_machine);
 #endif
 /* ---------- globals */
 
