@@ -56,7 +56,10 @@
     } catch (error) {
       /* first visit, or storage refused: full volume, sound on */
     }
-    var state = { presented: false, view: "booting", locked: false, everLocked: false };
+    /* blocked: the browser refused the mouse (some Discord clients do);
+       play goes on without mouse look rather than behind the overlay */
+    var state = { presented: false, view: "booting", locked: false, everLocked: false, blocked: false };
+    var lock = { requests: 0, successes: 0, failures: 0 };
 
     function saveAudio() {
       try {
@@ -74,16 +77,29 @@
          (released: Escape, a switch to another window, a dialog). In Halo's
          lobby the bar is the UI and a click on the game takes the mouse. */
       overlay: function() {
-        if (!state.presented || state.view !== "match" || state.locked) return "none";
+        if (!state.presented || state.view !== "match" || state.locked || state.blocked) return "none";
         return state.everLocked ? "paused" : "play";
       },
+      lock: lock,
+      lockRequested: function() { lock.requests++; },
+      lockFailed: function() {
+        lock.failures++;
+        state.blocked = true;
+        state.everLocked = true;
+      },
+      /* the overlay again (Escape or the notice's Menu while blocked) */
+      showMenu: function() { state.blocked = false; },
       update: function(presented, view) {
         state.presented = !!presented;
         state.view = view;
       },
       pointerLock: function(locked) {
+        if (locked && !state.locked) lock.successes++;
         state.locked = !!locked;
-        if (locked) state.everLocked = true;
+        if (locked) {
+          state.everLocked = true;
+          state.blocked = false;
+        }
       },
       setMuted: function(muted) {
         audio.muted = !!muted;
@@ -98,7 +114,8 @@
     };
   }
 
-  global.HaloHostedUI = { createController: createController, surfaceFor: surfaceFor, MAPS: MAPS, MODES: MODES };
+  global.HaloHostedUI = { createController: createController, surfaceFor: surfaceFor, MAPS: MAPS, MODES: MODES,
+    pointerLock: null };
 
   var document = global.document;
   if (!document || typeof document.createElement !== "function" || !document.documentElement ||
@@ -122,7 +139,7 @@
     return typeof fn === "function" ? fn : null;
   }
 
-  var controller = createController({
+  var controller = global.HaloHostedUI.controller = createController({
     storage: global.localStorage,
     applyAudio: function(muted, volume) {
       var setVolume = module("platform_web_set_volume");
@@ -198,7 +215,13 @@
     element("span", { id: "hosted-map-loading-label" }),
     element("progress", { id: "hosted-map-loading-progress", max: "100", value: "0" }),
   ]);
-  var root = element("div", { id: "hosted-ui" }, [panel, bar, overlay, mapLoading]);
+  var lockNotice = element("div", { id: "hosted-lock-notice", hidden: true, role: "status" }, [
+    element("span", { text: "Mouse capture was blocked by this Discord client; fully restart Discord (Quit from the tray) " +
+      "and relaunch. Playing without mouse look." }),
+    element("button", { type: "button", id: "hosted-lock-retry", text: "Retry" }),
+    element("button", { type: "button", id: "hosted-lock-menu", text: "Menu" }),
+  ]);
+  var root = element("div", { id: "hosted-ui" }, [panel, bar, overlay, mapLoading, lockNotice]);
 
   function byId(id) { return document.getElementById(id); }
 
@@ -214,6 +237,10 @@
   global.addEventListener("keydown", function(event) {
     if (event.key === "Escape" || event.code === "Escape") {
       event.stopImmediatePropagation();
+      if (controller.state.blocked && !event.repeat) {
+        controller.showMenu();
+        render();
+      }
     } else if (event.key === "F11" && !event.repeat) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -234,12 +261,75 @@
     }
   }
 
-  function play() {
-    if (typeof global.captureGameInput === "function") global.captureGameInput();
-    else {
-      var canvas = byId("canvas");
-      if (canvas && canvas.requestPointerLock) canvas.requestPointerLock();
+  function reportError(kind, error) {
+    try {
+      fetch("v1/client-errors", {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: kind,
+          name: String(error && error.name || "Error").slice(0, 100),
+          message: String(error && error.message || error).slice(0, 300),
+          userAgent: String(global.navigator.userAgent || "").slice(0, 400),
+          at: new Date().toISOString(),
+        }),
+      }).catch(function() {});
+    } catch (failure) {
+      /* best effort */
     }
+  }
+
+  /* Takes the mouse. A refusal (the promise, pointerlockerror, or nothing
+     within 1.5 s) never leaves the player behind the overlay: it goes, the
+     game keeps the keyboard, and a notice explains and offers a retry. */
+  var lockAttempt = { pending: false, timer: 0, reported: false };
+
+  function lockFailed(error) {
+    if (!lockAttempt.pending) return;
+    lockAttempt.pending = false;
+    global.clearTimeout(lockAttempt.timer);
+    controller.lockFailed();
+    if (!lockAttempt.reported) {
+      lockAttempt.reported = true;
+      reportError("pointer-lock", error);
+    }
+    focusGame();
+    render();
+  }
+
+  function focusGame() {
+    var canvas = byId("canvas");
+    if (!canvas) return;
+    try {
+      canvas.focus({ preventScroll: true });
+    } catch (error) {
+      canvas.focus();
+    }
+  }
+
+  function requestLock() {
+    var canvas = byId("canvas");
+    focusGame();
+    if (!canvas || document.pointerLockElement === canvas) return;
+    controller.lockRequested();
+    lockAttempt.pending = true;
+    global.clearTimeout(lockAttempt.timer);
+    lockAttempt.timer = global.setTimeout(function() {
+      if (document.pointerLockElement !== canvas) lockFailed(new Error("no pointer lock within 1.5 s"));
+    }, 1500);
+    try {
+      if (typeof canvas.requestPointerLock !== "function") throw new Error("requestPointerLock is unavailable");
+      var request = canvas.requestPointerLock();
+      if (request && typeof request.then === "function") request.then(null, lockFailed);
+    } catch (error) {
+      lockFailed(error);
+    }
+  }
+
+  function play() {
+    requestLock();
     controller.applyAudio();
     if (!controller.audio.muted && typeof global.resumeBrowserAudio === "function") global.resumeBrowserAudio();
   }
@@ -309,7 +399,20 @@
     var canvas = byId("canvas");
     if (canvas) canvas.addEventListener("click", function() { if (!document.pointerLockElement) play(); });
     document.addEventListener("pointerlockchange", function() {
-      controller.pointerLock(document.pointerLockElement === canvas);
+      var locked = document.pointerLockElement === canvas;
+      if (locked) {
+        lockAttempt.pending = false;
+        global.clearTimeout(lockAttempt.timer);
+      }
+      controller.pointerLock(locked);
+      render();
+    });
+    document.addEventListener("pointerlockerror", function() {
+      lockFailed(new Error("pointerlockerror"));
+    });
+    byId("hosted-lock-retry").addEventListener("click", play);
+    byId("hosted-lock-menu").addEventListener("click", function() {
+      controller.showMenu();
       render();
     });
   }
@@ -387,6 +490,7 @@
 
     var mode = controller.overlay();
     show(overlay, mode !== "none");
+    show(lockNotice, controller.state.blocked && status.view === "match");
     text("hosted-overlay-title", mode === "paused" ? "Paused" : "Click to play");
     text("hosted-resume", mode === "paused" ? "Resume" : "Play");
     show(byId("hosted-menu"), status.view === "match");
@@ -409,6 +513,9 @@
       byId("hosted-map-loading-progress").value = Math.round(loading * 100);
     }
   }
+
+  /* (netstats: library_web_transport.js) */
+  global.HaloHostedUI.pointerLock = controller.lock;
 
   function install() {
     document.body.appendChild(root);

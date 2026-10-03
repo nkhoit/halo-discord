@@ -10,7 +10,11 @@ const SCRIPT = readFileSync(new URL("../client/hosted.js", import.meta.url), "ut
 const STYLE = readFileSync(new URL("../client/hosted.css", import.meta.url), "utf8");
 
 interface Controller {
-  state: { presented: boolean; view: string; locked: boolean; everLocked: boolean };
+  state: { presented: boolean; view: string; locked: boolean; everLocked: boolean; blocked: boolean };
+  lock: { requests: number; successes: number; failures: number };
+  lockRequested(): void;
+  lockFailed(): void;
+  showMenu(): void;
   audio: { muted: boolean; volume: number };
   overlay(): string;
   update(presented: boolean, view: string): void;
@@ -63,6 +67,24 @@ describe("the overlay", () => {
     expect(controller.overlay(), "back in the lobby after the match").toBe("none");
     controller.update(true, "wait-match");
     expect(controller.overlay()).toBe("none");
+  });
+
+  it("never keeps the player behind it when the browser refuses the mouse", () => {
+    const controller = load().createController({ storage: storage(), applyAudio() {} });
+    controller.update(true, "match");
+    expect(controller.overlay()).toBe("play");
+    controller.lockRequested();
+    controller.lockFailed();
+    expect(controller.overlay(), "playing on without mouse look").toBe("none");
+    expect(controller.state.blocked).toBe(true);
+    controller.showMenu();
+    expect(controller.overlay(), "Escape or the notice's Menu brings it back").toBe("paused");
+    controller.lockRequested();
+    controller.pointerLock(true);
+    expect(controller.state.blocked).toBe(false);
+    expect(controller.lock).toEqual({ requests: 2, successes: 1, failures: 1 });
+    controller.pointerLock(false);
+    expect(controller.overlay()).toBe("paused");
   });
 
   it("puts the lobby's views on a panel or a bar", () => {
