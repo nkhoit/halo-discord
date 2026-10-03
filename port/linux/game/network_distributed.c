@@ -62,6 +62,7 @@ void network_player_attach_unit(long player_index, long unit_index);
 void network_player_detach_unit(long player_index);
 void network_player_show_pickup(long player_index, short kind, long definition_index, short count);
 /* game_engine.c's */
+void game_engine_client_respawned(long player_index);
 long game_engine_write_network_state(byte *buffer, long size);
 void game_engine_read_network_state(byte const *buffer, long size);
 
@@ -861,6 +862,7 @@ static void distributed_handle_unit_states(
 			if (player->unit_index != NONE)
 				network_player_detach_unit(player_index);
 			network_player_attach_unit(player_index, state->unit_index);
+			game_engine_client_respawned(player_index);
 			/* (a unit of a life this machine missed the end of, no player's
 			now: unit_kill_no_statistics is for players' units only) */
 			if (unit_index != NONE && unit_index != state->unit_index)

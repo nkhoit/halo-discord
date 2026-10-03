@@ -7981,8 +7981,11 @@ boolean game_engine_should_spawn_player(
 the host spawns everyone. A dead player's respawn_timer counts down here, as
 there, and follows the host's (network_distributed.c, every tick); the local
 player hears the 3-2-1 countdown and the respawn sound once each, as the
-timer passes 90, 60, 30 and 1, however host corrections move it. */
+timer passes 90, 60, 30 and 1, however host corrections move it (only a jump
+of more than a second, a new death, starts the sounds over). */
 void platform_log(const char *format, ...);
+
+#define CLIENT_RESPAWN_NEW_COUNTDOWN_TICKS 30
 
 static long client_respawn_previous[HALO_PORT_MAXIMUM_NETWORK_PLAYERS];
 static short client_respawn_next_sound[HALO_PORT_MAXIMUM_NETWORK_PLAYERS];
@@ -8011,9 +8014,11 @@ void game_engine_client_respawn_countdown(
 		return;
 	}
 	timer = player->respawn_timer;
-	/* a new countdown (a death, or the host's timer above ours): its first
-	sound is the highest at or below it */
-	if (timer > client_respawn_previous[absolute_index])
+	/* a new countdown (a death): its first sound is the highest at or below
+	it. The host's corrections move a countdown by a few ticks either way
+	and never sound one again. */
+	if (timer > 0 && (client_respawn_previous[absolute_index] <= 0 ||
+		timer > client_respawn_previous[absolute_index] + CLIENT_RESPAWN_NEW_COUNTDOWN_TICKS))
 	{
 		client_respawn_next_sound[absolute_index] = timer >= 90 ? 90 : timer >= 60 ? 60 : timer >= 30 ? 30 :
 			timer >= 1 ? 1 : 0;
@@ -8038,6 +8043,26 @@ void game_engine_client_respawn_countdown(
 	if (timer > 0)
 		player->respawn_timer = --timer;
 	client_respawn_previous[absolute_index] = timer;
+}
+
+/* (a client of the distributed netcode) the host spawned the player: a
+countdown running behind the host's still owes the respawn sound */
+void game_engine_client_respawned(
+	long player_index)
+{
+	struct player_datum *player;
+	short absolute_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index);
+
+	if (!game_engine || absolute_index < 0 || absolute_index >= HALO_PORT_MAXIMUM_NETWORK_PLAYERS)
+		return;
+	player = player_get(player_index);
+	if (client_respawn_next_sound[absolute_index] && player->local_player_index != NONE)
+	{
+		game_engine_play_multiplayer_sound(_multiplayer_sound_respawn);
+		platform_log("respawn countdown: respawn on spawning at %ld ticks", (long)player->respawn_timer);
+	}
+	client_respawn_next_sound[absolute_index] = 0;
+	client_respawn_previous[absolute_index] = 0;
 }
 #endif
 
