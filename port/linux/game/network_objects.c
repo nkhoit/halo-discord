@@ -613,6 +613,216 @@ static void distributed_host_send_inventories(
 	}
 }
 
+#ifdef HALO_WEB
+/* ---------- compact inventories (the browser builds)
+
+An inventory: the unit, its grenades, the weapon in hand and which slots
+hold one; then each held weapon, its rounds and its age (a half float).
+The host sends a unit's when it changes, at least once a second, and every
+one when a machine has loaded. */
+
+enum
+{
+	INVENTORY_REFRESH_TICKS = 30,
+	COMPACT_WEAPON_SIZE = 4 + 4 + 4 + 2,
+	COMPACT_INVENTORY_MAXIMUM_SIZE = 4 + NUMBER_OF_UNIT_GRENADE_TYPES + 2 + MAXIMUM_WEAPONS_PER_UNIT * COMPACT_WEAPON_SIZE,
+};
+
+/* the host: each unit's inventory as last sent (by absolute index) */
+static struct
+{
+	long unit_index;
+	unsigned int checksum;
+	long sent_time;
+} objects_inventories_sent[MAXIMUM_TRACKED_OBJECTS];
+
+/* the inventory in the compact form at out (room bytes free): its size, or
+0 if it does not fit */
+static short distributed_compact_inventory_write(
+	byte *out,
+	short room,
+	struct distributed_inventory const *inventory)
+{
+	byte buffer[COMPACT_INVENTORY_MAXIMUM_SIZE];
+	short size = 0;
+	byte slots = 0;
+	int value = (int)inventory->unit_index;
+	short weapon_slot;
+
+	csmemcpy(buffer, &value, 4);
+	size += 4;
+	csmemcpy(buffer + size, inventory->grenade_counts, NUMBER_OF_UNIT_GRENADE_TYPES);
+	size += NUMBER_OF_UNIT_GRENADE_TYPES;
+	buffer[size++] = (byte)inventory->current_weapon_index;
+	size++;
+	for (weapon_slot = 0; weapon_slot < MAXIMUM_WEAPONS_PER_UNIT; weapon_slot++)
+	{
+		word age;
+
+		if (inventory->weapon_indices[weapon_slot] == NONE)
+			continue;
+		slots |= (byte)(1 << weapon_slot);
+		value = (int)inventory->weapon_indices[weapon_slot];
+		csmemcpy(buffer + size, &value, 4);
+		csmemcpy(buffer + size + 4, inventory->rounds_total[weapon_slot], 4);
+		csmemcpy(buffer + size + 8, inventory->rounds_loaded[weapon_slot], 4);
+		age = distributed_half_from_real(inventory->age[weapon_slot]);
+		csmemcpy(buffer + size + 12, &age, 2);
+		size += COMPACT_WEAPON_SIZE;
+	}
+	buffer[4 + NUMBER_OF_UNIT_GRENADE_TYPES + 1] = slots;
+	if (size > room)
+		return 0;
+	csmemcpy(out, buffer, size);
+	return size;
+}
+
+/* an inventory from its compact form: the bytes read, or 0 if malformed */
+static short distributed_compact_inventory_read(
+	byte const *in,
+	long available,
+	struct distributed_inventory *inventory)
+{
+	short size = 4 + NUMBER_OF_UNIT_GRENADE_TYPES + 2;
+	byte slots;
+	int value;
+	short weapon_slot;
+
+	if (available < size)
+		return 0;
+	csmemset(inventory, 0, sizeof(*inventory));
+	csmemcpy(&value, in, 4);
+	inventory->unit_index = value;
+	csmemcpy(inventory->grenade_counts, in + 4, NUMBER_OF_UNIT_GRENADE_TYPES);
+	inventory->current_weapon_index = (char)in[4 + NUMBER_OF_UNIT_GRENADE_TYPES];
+	slots = in[4 + NUMBER_OF_UNIT_GRENADE_TYPES + 1];
+	for (weapon_slot = 0; weapon_slot < MAXIMUM_WEAPONS_PER_UNIT; weapon_slot++)
+	{
+		word age;
+
+		inventory->weapon_indices[weapon_slot] = NONE;
+		if (!(slots & (1 << weapon_slot)))
+			continue;
+		if (size + COMPACT_WEAPON_SIZE > available)
+			return 0;
+		csmemcpy(&value, in + size, 4);
+		inventory->weapon_indices[weapon_slot] = value;
+		csmemcpy(inventory->rounds_total[weapon_slot], in + size + 4, 4);
+		csmemcpy(inventory->rounds_loaded[weapon_slot], in + size + 8, 4);
+		csmemcpy(&age, in + size + 12, 2);
+		inventory->age[weapon_slot] = distributed_real_from_half(age);
+		size += COMPACT_WEAPON_SIZE;
+	}
+	return size;
+}
+
+static unsigned int distributed_checksum(
+	byte const *data,
+	short size)
+{
+	unsigned int hash = 2166136261u;
+	short index;
+
+	for (index = 0; index < size; index++)
+		hash = (hash ^ data[index]) * 16777619u;
+	return hash;
+}
+
+void network_objects_inventories_due(
+	void)
+{
+	long absolute_index;
+
+	for (absolute_index = 0; absolute_index < MAXIMUM_TRACKED_OBJECTS; absolute_index++)
+		objects_inventories_sent[absolute_index].unit_index = NONE;
+}
+
+/* what the units carry that changed, or was last sent a second ago */
+static void distributed_host_send_compact_inventories(
+	void)
+{
+	struct
+	{
+		struct distributed_message_header header;
+		byte data[DATAGRAM_MAXIMUM_SIZE];
+	} message;
+	short room = (short)(DATAGRAM_MAXIMUM_SIZE - sizeof(message.header));
+	struct object_iterator iterator;
+	short count = 0;
+	short size = 0;
+
+	object_iterator_new(&iterator, _object_mask_unit, 0);
+	while (object_iterator_next(&iterator))
+	{
+		struct unit_datum *unit = unit_get(iterator.index);
+		struct distributed_inventory inventory;
+		byte compact[COMPACT_INVENTORY_MAXIMUM_SIZE];
+		short compact_size;
+		short weapon_slot;
+		unsigned int checksum;
+		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index);
+		boolean carries = unit->unit.grenade_counts[0] || unit->unit.grenade_counts[1];
+
+		for (weapon_slot = 0; weapon_slot < MAXIMUM_WEAPONS_PER_UNIT; weapon_slot++)
+			carries |= unit->unit.weapon_object_indices[weapon_slot] != NONE;
+		if (!carries || !distributed_object_networked(iterator.index) ||
+			TEST_FLAG(unit->object.damage_flags, _object_dead_bit))
+		{
+			continue;
+		}
+		distributed_inventory_from_unit(iterator.index, &inventory);
+		compact_size = distributed_compact_inventory_write(compact, sizeof(compact), &inventory);
+		checksum = distributed_checksum(compact, compact_size);
+		if (objects_inventories_sent[absolute_index].unit_index == iterator.index &&
+			objects_inventories_sent[absolute_index].checksum == checksum &&
+			game_time_get() - objects_inventories_sent[absolute_index].sent_time < INVENTORY_REFRESH_TICKS)
+		{
+			continue;
+		}
+		objects_inventories_sent[absolute_index].unit_index = iterator.index;
+		objects_inventories_sent[absolute_index].checksum = checksum;
+		objects_inventories_sent[absolute_index].sent_time = game_time_get();
+		if (size + compact_size > room || count == MAXIMUM_ENTRIES_PER_MESSAGE)
+		{
+			distributed_send(&message, _distributed_message_compact_inventories, count,
+				(word)(sizeof(message.header) + size), _distributed_to_clients);
+			count = 0;
+			size = 0;
+		}
+		csmemcpy(message.data + size, compact, compact_size);
+		size += compact_size;
+		count++;
+	}
+	if (count)
+	{
+		distributed_send(&message, _distributed_message_compact_inventories, count,
+			(word)(sizeof(message.header) + size), _distributed_to_clients);
+	}
+}
+
+void network_objects_handle_compact_inventories(
+	void const *data,
+	long size,
+	short count)
+{
+	struct distributed_inventory inventories[MAXIMUM_ENTRIES_PER_MESSAGE];
+	byte const *in = (byte const *)data;
+	short decoded = 0;
+
+	while (decoded < count && decoded < MAXIMUM_ENTRIES_PER_MESSAGE)
+	{
+		short read = distributed_compact_inventory_read(in, size, &inventories[decoded]);
+
+		if (!read)
+			break;
+		in += read;
+		size -= read;
+		decoded++;
+	}
+	network_objects_handle_inventories(inventories, decoded);
+}
+#endif
+
 /* (a client) the vehicles its own players drive: taken as they are,
 within a tolerance, if that machine's player drives it */
 void network_objects_handle_vehicle_prediction(
@@ -656,7 +866,13 @@ void network_objects_host_tick(
 	distributed_host_update_objects();
 	distributed_host_send_states();
 	if (game_time_get() % INVENTORY_INTERVAL_TICKS == 0)
+	{
+#ifdef HALO_WEB
+		distributed_host_send_compact_inventories();
+#else
 		distributed_host_send_inventories();
+#endif
+	}
 }
 
 /* ---------- a client */
@@ -1095,4 +1311,7 @@ void network_objects_new_game(
 	objects_client_creating_index = NONE;
 	objects_client_creating = FALSE;
 	objects_client_deleting = FALSE;
+#ifdef HALO_WEB
+	network_objects_inventories_due();
+#endif
 }
