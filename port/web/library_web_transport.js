@@ -564,6 +564,9 @@ addToLibrary({
           framesSent: relay.framesSent,
           messagesSent: relay.messagesSent,
           framesPerMessage: relay.messagesSent ? +(relay.framesSent / relay.messagesSent).toFixed(2) : null,
+          kilobytesSent: Math.round(relay.bytesSent / 1024),
+          multicastFrames: relay.multicastFrames,
+          multicastCopies: relay.multicastCopies,
         };
         relaySummary.messagesReceived = relay.messagesReceived || 0;
         relaySummary.kilobytesReceived = Math.round((relay.bytesReceived || 0) / 1024);
@@ -571,6 +574,9 @@ addToLibrary({
         relay.bytesReceived = 0;
         relay.framesSent = 0;
         relay.messagesSent = 0;
+        relay.bytesSent = 0;
+        relay.multicastFrames = 0;
+        relay.multicastCopies = 0;
         relay.echo = [[], []];
         relay.maxBuffered = [0, 0];
         relay.closeCodes = [];
@@ -1094,6 +1100,16 @@ addToLibrary({
     }),
     RELAY_HEADER_BYTES: 7,
     RELAY_SEQUENCE_BYTES: 8,
+    /* relay protocol 2 (server/src/protocol.ts): the host may send a frame
+       once for many guests */
+    RELAY_PROTOCOL: 2,
+    RELAY_MULTICAST: 8,
+    RELAY_MAXIMUM_SLOTS: 32,
+    RELAY_MULTICAST_RELIABLE_ENTRY_BYTES: 14,
+    RELAY_MULTICAST_UNRELIABLE_ENTRY_BYTES: 2,
+    /* (a reliable frame's loopback frame) the per-connection word, which the
+       relay writes for each recipient */
+    RELAY_MULTICAST_WORD_OFFSET: 4,
     RELAY_DATAGRAM_DROP_BYTES: 4096,
     RELAY_PROBE_MILLISECONDS: 250,
     RELAY_RESEND_LIMIT: 4 * 1024 * 1024,
@@ -1169,6 +1185,13 @@ addToLibrary({
         flushTimer: 0,
         framesSent: 0,
         messagesSent: 0,
+        bytesSent: 0,
+        /* (protocol 2) frames sent once for several guests, and the copies the
+           relay made of them */
+        multicastFrames: 0,
+        multicastCopies: 0,
+        /* (protocol 2) counterparts' relay slots: identifier -> {slot, generation} */
+        slots: new Map(),
         names: new Map(),
         discovering: new Set(),
       };
@@ -1207,7 +1230,8 @@ addToLibrary({
              first message, and the relay answers it with "ready". */
           var auth = relay.options.auth;
           if (auth) {
-            var hello = { type: 'auth', token: auth.getToken(), id: identifier, build: auth.build };
+            var hello = { type: 'auth', token: auth.getToken(), id: identifier, build: auth.build,
+              protocol: runtime.RELAY_PROTOCOL };
             /* (a guest that watches the match without a player, #52) */
             if (typeof auth.spectator === 'function' && auth.spectator()) hello.spectator = true;
             socket.send(JSON.stringify(hello));
@@ -1337,54 +1361,117 @@ addToLibrary({
 
     /* A game frame's datagrams for a peer, as few relay frames as they make:
        datagrams for the same ports in one bundle (web_loopback_net.c), each
-       with its length. A single one goes as it is. */
+       with its length. A single one goes as it is. (Protocol 2, the host)
+       datagrams the same for several guests first go once for all of them
+       (relayMulticastDatagrams). */
     relayFlushDatagrams: function(relay) {
       var runtime = HaloWebTransportRuntime;
+      var pending = [];
       runtime.relayPeers.forEach(function(record) {
-        var pending = record.pendingDatagrams;
-        if (!pending || !pending.length) return;
+        var datagrams = record.pendingDatagrams;
+        if (!datagrams || !datagrams.length) return;
         record.pendingDatagrams = [];
-        var socket = runtime.relayLinked(record) && relay.unreliable;
-        if (!socket) {
-          record.staleDatagrams += pending.length;
+        if (!runtime.relayLinked(record) || !relay.unreliable) {
+          record.staleDatagrams += datagrams.length;
           return;
         }
-        var group = [];
-        var groupBytes = 0;
-        var sendGroup = function() {
-          if (!group.length) return;
-          var halo = group[0];
-          if (group.length > 1) {
-            halo = new Uint8Array(runtime.LOOPBACK_HEADER_BYTES + groupBytes);
-            halo.set(group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES));
-            halo[2] = runtime.LOOPBACK_DATAGRAM_BUNDLE;
-            var offset = runtime.LOOPBACK_HEADER_BYTES;
-            group.forEach(function(datagram) {
-              var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
-              halo[offset] = length >> 8;
-              halo[offset + 1] = length & 255;
-              halo.set(datagram.subarray(runtime.LOOPBACK_HEADER_BYTES), offset + 2);
-              offset += 2 + length;
-            });
-          }
-          runtime.relayTransmit(record, socket, runtime.relayDatagramFrame(record, halo));
-          group = [];
-          groupBytes = 0;
-        };
-        pending.forEach(function(datagram) {
-          var bundled = datagram.byteLength > runtime.LOOPBACK_HEADER_BYTES &&
-            datagram[2] === runtime.LOOPBACK_DATAGRAM;
-          var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
-          var sameHeader = group.length && bundled && group[0][2] === runtime.LOOPBACK_DATAGRAM &&
-            group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES).every(function(value, index) {
-              return value === datagram[index];
-            });
-          if (!sameHeader || groupBytes + 2 + length > runtime.LOOPBACK_BUNDLE_LIMIT) sendGroup();
-          group.push(datagram);
-          groupBytes += 2 + length;
-          if (!bundled) sendGroup();
+        pending.push({ record: record, datagrams: datagrams });
+      });
+      runtime.relayMulticastDatagrams(relay, pending);
+      pending.forEach(function(entry) {
+        runtime.relayBundles(entry.datagrams, function(halo) {
+          runtime.relayTransmit(entry.record, relay.unreliable, runtime.relayDatagramFrame(entry.record, halo));
         });
-        sendGroup();
+      });
+    },
+
+    /* Loopback datagrams as bundles (web_loopback_net.c): emit(halo) for each. */
+    relayBundles: function(datagrams, emit) {
+      var runtime = HaloWebTransportRuntime;
+      var group = [];
+      var groupBytes = 0;
+      var sendGroup = function() {
+        if (!group.length) return;
+        var halo = group[0];
+        if (group.length > 1) {
+          halo = new Uint8Array(runtime.LOOPBACK_HEADER_BYTES + groupBytes);
+          halo.set(group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES));
+          halo[2] = runtime.LOOPBACK_DATAGRAM_BUNDLE;
+          var offset = runtime.LOOPBACK_HEADER_BYTES;
+          group.forEach(function(datagram) {
+            var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
+            halo[offset] = length >> 8;
+            halo[offset + 1] = length & 255;
+            halo.set(datagram.subarray(runtime.LOOPBACK_HEADER_BYTES), offset + 2);
+            offset += 2 + length;
+          });
+        }
+        emit(halo);
+        group = [];
+        groupBytes = 0;
+      };
+      datagrams.forEach(function(datagram) {
+        var bundled = datagram.byteLength > runtime.LOOPBACK_HEADER_BYTES &&
+          datagram[2] === runtime.LOOPBACK_DATAGRAM;
+        var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
+        var sameHeader = group.length && bundled && group[0][2] === runtime.LOOPBACK_DATAGRAM &&
+          group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES).every(function(value, index) {
+            return value === datagram[index];
+          });
+        if (!sameHeader || groupBytes + 2 + length > runtime.LOOPBACK_BUNDLE_LIMIT) sendGroup();
+        group.push(datagram);
+        groupBytes += 2 + length;
+        if (!bundled) sendGroup();
+      });
+      sendGroup();
+    },
+
+    /* (protocol 2, the host) a game frame's datagrams that are the same for
+       several guests, taken out of their pending lists and sent once for each
+       set of guests that has them, bundled as relayBundles would. */
+    relayMulticastDatagrams: function(relay, pending) {
+      var runtime = HaloWebTransportRuntime;
+      if (relay.options.role !== 'host' || !relay.slots.size || pending.length < 2) return;
+      var groups = [];
+      pending.forEach(function(entry) {
+        if (!relay.slots.has(entry.record.identifier)) return;
+        entry.datagrams.forEach(function(datagram) {
+          var group = null;
+          for (var index = 0; index < groups.length && !group; index++) {
+            var candidate = groups[index];
+            if (candidate.entries.indexOf(entry) < 0 && candidate.entries.length < runtime.RELAY_MAXIMUM_SLOTS &&
+                runtime.relaySameContent(candidate.datagram, datagram, 0, -1)) group = candidate;
+          }
+          if (group) group.entries.push(entry);
+          else groups.push({ datagram: datagram, entries: [entry] });
+        });
+      });
+      var sets = new Map();
+      groups.forEach(function(group) {
+        if (group.entries.length < 2) return;
+        var key = group.entries.map(function(entry) { return entry.record.identifier; }).sort().join(',');
+        var set = sets.get(key);
+        if (!set) sets.set(key, set = { entries: group.entries, datagrams: [] });
+        set.datagrams.push(group.datagram);
+        group.entries.forEach(function(entry) {
+          for (var index = 0; index < entry.datagrams.length; index++) {
+            if (runtime.relaySameContent(entry.datagrams[index], group.datagram, 0, -1)) {
+              entry.datagrams.splice(index, 1);
+              break;
+            }
+          }
+        });
+      });
+      sets.forEach(function(set) {
+        runtime.relayBundles(set.datagrams, function(halo) {
+          var frame = new Uint8Array(runtime.RELAY_HEADER_BYTES + halo.byteLength);
+          frame[0] = runtime.RELAY_CHANNEL.UNRELIABLE;
+          frame.set(halo, runtime.RELAY_HEADER_BYTES);
+          runtime.relayQueue(relay.unreliable, runtime.relayMulticastFrame(relay, false,
+            set.entries.map(function(entry) {
+              return { frame: frame, slot: relay.slots.get(entry.record.identifier) };
+            })));
+        });
       });
     },
 
@@ -1397,8 +1484,120 @@ addToLibrary({
       return frame;
     },
 
+    /* (protocol 2) a counterpart's slot, as the relay announced it */
+    relaySetSlot: function(relay, id, entry) {
+      var valid = Array.isArray(entry) && entry.length === 2 && entry.every(function(value) {
+        return Number.isInteger(value) && value >= 0 && value <= 255;
+      }) && entry[0] < HaloWebTransportRuntime.RELAY_MAXIMUM_SLOTS;
+      if (valid) relay.slots.set(id, { slot: entry[0], generation: entry[1] });
+      else relay.slots.delete(id);
+    },
+
+    /* Whether two frames carry the same bytes from offset on, but for the
+       four at offset + skip (skip < 0: none). */
+    relaySameContent: function(a, b, offset, skip) {
+      if (a.byteLength !== b.byteLength) return false;
+      for (var index = offset; index < a.byteLength; index++) {
+        if (skip >= 0 && index >= offset + skip && index < offset + skip + 4) continue;
+        if (a[index] !== b[index]) return false;
+      }
+      return true;
+    },
+
+    /* (protocol 2, the host) a message's frames with those the relay can fan
+       out sent once (server/src/protocol.ts): a run of reliable frames side by
+       side for different guests, the same but for each one's sequence,
+       acknowledgement and loopback connection word (the engine writing one
+       message to every machine), and datagrams the same for several guests.
+       A guest's reliable frames keep their order: only neighbours merge. */
+    relayMulticast: function(relay, frames) {
+      var runtime = HaloWebTransportRuntime;
+      var channels = runtime.RELAY_CHANNEL;
+      if (relay.options.role !== 'host' || !relay.slots.size || frames.length < 2) return frames;
+      var header = runtime.RELAY_HEADER_BYTES;
+      var reliablePrefix = header + runtime.RELAY_SEQUENCE_BYTES;
+      var slotOf = function(frame) {
+        return relay.slots.get(runtime.identifierText(frame.subarray(1, header))) || null;
+      };
+      var out = [];
+      var datagrams = [];
+      for (var index = 0; index < frames.length;) {
+        var frame = frames[index];
+        var slot = frame[0] === channels.RELIABLE || frame[0] === channels.UNRELIABLE ? slotOf(frame) : null;
+        if (slot && frame[0] === channels.UNRELIABLE && frame.byteLength > header) {
+          var group = null;
+          for (var at = 0; at < datagrams.length && !group; at++) {
+            var candidate = datagrams[at];
+            if (candidate.length < runtime.RELAY_MAXIMUM_SLOTS &&
+                !candidate.some(function(entry) { return entry.slot.slot === slot.slot; }) &&
+                runtime.relaySameContent(candidate[0].frame, frame, header, -1)) group = candidate;
+          }
+          if (!group) {
+            group = [];
+            datagrams.push(group);
+            out.push(group);
+          }
+          group.push({ frame: frame, slot: slot });
+          index++;
+          continue;
+        }
+        if (slot && frame[0] === channels.RELIABLE && frame.byteLength >= reliablePrefix + 8) {
+          var run = [{ frame: frame, slot: slot }];
+          var next = index + 1;
+          while (next < frames.length && run.length < runtime.RELAY_MAXIMUM_SLOTS) {
+            var following = frames[next];
+            var followingSlot = following[0] === channels.RELIABLE ? slotOf(following) : null;
+            if (!followingSlot || run.some(function(entry) { return entry.slot.slot === followingSlot.slot; }) ||
+                !runtime.relaySameContent(frame, following, reliablePrefix, runtime.RELAY_MULTICAST_WORD_OFFSET)) break;
+            run.push({ frame: following, slot: followingSlot });
+            next++;
+          }
+          if (run.length > 1) {
+            out.push(runtime.relayMulticastFrame(relay, true, run));
+            index = next;
+            continue;
+          }
+        }
+        out.push(frame);
+        index++;
+      }
+      return out.map(function(entry) {
+        if (!Array.isArray(entry)) return entry;
+        return entry.length > 1 ? runtime.relayMulticastFrame(relay, false, entry) : entry[0].frame;
+      });
+    },
+
+    relayMulticastFrame: function(relay, reliable, entries) {
+      var runtime = HaloWebTransportRuntime;
+      var prefix = runtime.RELAY_HEADER_BYTES + (reliable ? runtime.RELAY_SEQUENCE_BYTES : 0);
+      var entryBytes = reliable ? runtime.RELAY_MULTICAST_RELIABLE_ENTRY_BYTES :
+        runtime.RELAY_MULTICAST_UNRELIABLE_ENTRY_BYTES;
+      var payload = entries[0].frame.subarray(prefix);
+      var frame = new Uint8Array(3 + entries.length * entryBytes + payload.byteLength);
+      var view = new DataView(frame.buffer);
+      frame[0] = runtime.RELAY_MULTICAST;
+      frame[1] = reliable ? runtime.RELAY_CHANNEL.RELIABLE : runtime.RELAY_CHANNEL.UNRELIABLE;
+      frame[2] = entries.length;
+      entries.forEach(function(entry, index) {
+        var offset = 3 + index * entryBytes;
+        frame[offset] = entry.slot.slot;
+        frame[offset + 1] = entry.slot.generation;
+        if (reliable) {
+          var source = new DataView(entry.frame.buffer, entry.frame.byteOffset, entry.frame.byteLength);
+          view.setUint32(offset + 2, source.getUint32(runtime.RELAY_HEADER_BYTES));
+          view.setUint32(offset + 6, source.getUint32(runtime.RELAY_HEADER_BYTES + 4));
+          view.setUint32(offset + 10, source.getUint32(prefix + runtime.RELAY_MULTICAST_WORD_OFFSET));
+        }
+      });
+      frame.set(payload, 3 + entries.length * entryBytes);
+      relay.multicastFrames++;
+      relay.multicastCopies += entries.length;
+      return frame;
+    },
+
     relaySendMessage: function(relay, socket, frames) {
       if (socket.readyState !== 1) return;
+      frames = HaloWebTransportRuntime.relayMulticast(relay, frames);
       /* (a probe that waited for this message: timed from now) */
       var channels = HaloWebTransportRuntime.RELAY_CHANNEL;
       frames.forEach(function(frame) {
@@ -1430,6 +1629,7 @@ addToLibrary({
       }
       relay.framesSent += frames.length;
       relay.messagesSent++;
+      relay.bytesSent += message.byteLength;
       var index = socket === relay.reliable ? 0 : 1;
       if (socket.bufferedAmount > relay.maxBuffered[index]) relay.maxBuffered[index] = socket.bufferedAmount;
     },
@@ -1486,6 +1686,10 @@ addToLibrary({
           }
           if (message.colo) relay.colo = message.colo;
           relay.present = new Set(Array.isArray(message.peers) ? message.peers : []);
+          relay.slots = new Map();
+          if (message.slots && typeof message.slots === 'object') {
+            Object.keys(message.slots).forEach(function(id) { runtime.relaySetSlot(relay, id, message.slots[id]); });
+          }
           if (message.names && typeof message.names === 'object') {
             Object.keys(message.names).forEach(function(id) { relay.names.set(id, String(message.names[id])); });
           }
@@ -1497,6 +1701,7 @@ addToLibrary({
         }
         if (message.type === 'peer-up') {
           relay.present.add(message.id);
+          runtime.relaySetSlot(relay, message.id, [message.slot, message.generation]);
           if (typeof message.name === 'string') relay.names.set(message.id, message.name);
           /* The peer's previous socket may have taken frames with it. */
           var returned = runtime.relayPeers.get(message.id);
@@ -1505,6 +1710,7 @@ addToLibrary({
           runtime.relayDiscover(relay, message.id);
         } else if (message.type === 'peer-down') {
           relay.present.delete(message.id);
+          relay.slots.delete(message.id);
           runtime.relaySyncAll();
         }
         return;
@@ -1691,8 +1897,15 @@ addToLibrary({
         return 1;
       }
       var size = header + runtime.RELAY_SEQUENCE_BYTES + length;
-      if (record.resendBytes + size > runtime.RELAY_RESEND_LIMIT ||
-          (linked && relay.reliable.bufferedAmount > runtime.RELIABLE_HIGH_WATER)) {
+      /* A peer that has left this much unacknowledged is dropped (its client
+         rejoins) rather than waited for: the host's writes to it would block,
+         and with them its writes to everyone else. */
+      if (record.resendBytes + size > runtime.RELAY_RESEND_LIMIT) {
+        record.resendOverflows = (record.resendOverflows || 0) + 1;
+        runtime.failPeer(record, new Error('The peer fell too far behind'));
+        return 0;
+      }
+      if (linked && relay.reliable.bufferedAmount > runtime.RELIABLE_HIGH_WATER) {
         record.relayBlocked = true;
         record.needsStateSync = true;
         runtime.schedulePump();

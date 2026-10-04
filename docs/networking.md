@@ -120,10 +120,59 @@ Current caps:
 - max room sockets: 32 (32 players on one socket each, or 16 with separate
   reliable and unreliable sockets);
 - max Halo payload: 16,396 bytes;
+- max multicast frame (protocol 2): 3 + 32 × 14 + 16,396 bytes;
 - max WebSocket message: 64 KiB;
 - host control messages: 256 bytes.
 
 The relay enforces the caps before forwarding.
+
+### Backpressure
+
+The relay watches each receiving socket's backlog (`bufferedAmount`):
+
+- past 256 KiB, frames on the unreliable channels to it are dropped (a later
+  tick's state overtakes them); reliable frames and acknowledgements still go;
+- past 4 MiB, it is closed (code 4008, then terminated: its close frame would
+  wait behind the backlog), and its client reconnects and resumes.
+
+Other members are unaffected. The relay logs `backpressure` when a socket
+starts and stops dropping and `backlogged` when it closes one; every `close`
+log carries the socket's dropped frames and bytes, its largest backlog and
+the room's counts.
+
+### Protocol 2: fan-out
+
+Without fan-out the host uploads its whole per-tick stream once per guest.
+With relay protocol 2 it sends what is the same for several guests once, and
+the relay copies it:
+
+```text
+[8][inner channel][n][n entries][payload]
+entry: [slot: u8][generation: u8], and for a reliable frame
+       [u32 sequence][u32 acknowledgement][u32 word]
+```
+
+- The client says `protocol: 2` in its auth; a room pins its protocol as it
+  pins its build, so the two never mix.
+- Every member identity has a relay slot and a generation, bumped whenever the
+  slot changes hands, sent in `ready` and `peer-up`. A frame naming a slot
+  whose holder changed reaches nobody, as if sent to someone who left.
+- Each recipient gets exactly the frame the host would have sent it alone: its
+  own sequence and acknowledgement, and its loopback connection identifier
+  (`word`) in payload bytes 4 to 7. Guests and the engine are unchanged.
+- The host's transport merges, at the end of a game frame, a run of reliable
+  frames side by side for different guests that are the same but for those
+  fields (the engine writing one message to every machine), and datagrams that
+  are the same for several guests. Only neighbouring reliable frames merge, so
+  a guest's reliable frames keep their order: unicast and broadcast frames to
+  one guest share its sequence, in the order the engine wrote them.
+- Recipients are whoever the engine wrote to, so machines still loading and
+  per-machine messages (object sync, joins) are as before. A guest without a
+  slot gets its own frames.
+
+Lab, four machines, bots: host upload 278 kbit/s without fan-out, 137 with it,
+against about 100 for one guest's download. The rest is per guest: TCP
+acknowledgements of its uploads, its multicast entries, and probes.
 
 ### Batching
 
@@ -176,7 +225,8 @@ Reliable delivery is exactly-once and in order across reconnects:
 
 - reliable frames have sequence numbers;
 - acknowledgements are cumulative;
-- each side keeps unacknowledged reliable frames up to 4 MiB;
+- each side keeps unacknowledged reliable frames up to 4 MiB; a peer past it is
+  dropped and rejoins, rather than blocking the host's writes to everyone;
 - duplicates after replay are discarded;
 - unreliable frames without a path are dropped;
 - a peer without a path for 20 s fails.
