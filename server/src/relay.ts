@@ -11,7 +11,9 @@ import {
   CloseCode,
   HEADER_BYTES,
   MAXIMUM_FRAME_BYTES,
+  MAXIMUM_MULTICAST_FRAME_BYTES,
   MAXIMUM_ROOM_SOCKETS,
+  MAXIMUM_SLOTS,
   type Role,
   type SocketKind,
   carries,
@@ -19,6 +21,8 @@ import {
   identifierText,
   isReliableChannel,
   joinBatch,
+  multicastCopy,
+  parseMulticast,
   sanitizeName,
   splitBatch,
   writeIdentifier,
@@ -35,6 +39,8 @@ export interface Member {
   /* (a guest) it watches the match without a player of its own (#52): it
      joined to watch, until it says it plays */
   spectator: boolean;
+  /* the relay protocol its client speaks (protocol.ts), 1 if it does not say */
+  protocol?: number;
   since: number;
 }
 
@@ -131,10 +137,46 @@ class Room {
   map: number | null = null;
   mode: number | null = null;
   channelName: string | null = null;
+  /* the relay protocol of its members' clients, from the first to join */
+  protocol: number | null = null;
+  /* (protocol 2) every member identity's slot, and each slot's holder and
+     generation (bumped whenever it changes hands) */
+  readonly slotOf = new Map<string, number>();
+  readonly slotHolders: (string | null)[] = new Array<string | null>(MAXIMUM_SLOTS).fill(null);
+  readonly generations = new Uint8Array(MAXIMUM_SLOTS);
+  private nextSlot = 0;
   readonly id: string;
 
   constructor(id: string) {
     this.id = id;
+  }
+
+  /* A slot for an identity that has none, taken in turn so that one just
+     given up is the last to be handed out again. */
+  assignSlot(id: string): void {
+    if (this.slotOf.has(id)) return;
+    for (let step = 0; step < MAXIMUM_SLOTS; step++) {
+      const slot = (this.nextSlot + step) % MAXIMUM_SLOTS;
+      if (this.slotHolders[slot] !== null) continue;
+      this.slotHolders[slot] = id;
+      this.generations[slot] = (this.generations[slot]! + 1) & 0xff;
+      this.slotOf.set(id, slot);
+      this.nextSlot = (slot + 1) % MAXIMUM_SLOTS;
+      return;
+    }
+  }
+
+  releaseSlot(id: string): void {
+    const slot = this.slotOf.get(id);
+    if (slot === undefined) return;
+    this.slotOf.delete(id);
+    this.slotHolders[slot] = null;
+  }
+
+  /* [slot, generation] of an identity, for its counterparts */
+  slotEntry(id: string): [number, number] | null {
+    const slot = this.slotOf.get(id);
+    return slot === undefined ? null : [slot, this.generations[slot]!];
   }
 
   present(id: string): boolean {
@@ -195,7 +237,9 @@ export class Relay {
     }
     const replaced: WebSocket[] = [];
     let error: string | null = null;
+    const protocol = joining.protocol ?? 1;
     if (room.build && room.build !== build) error = "build mismatch";
+    else if (room.protocol !== null && room.protocol !== protocol) error = "protocol mismatch";
     for (const [other, member] of room.members) {
       if (error) break;
       if (member.role === "host" && joining.role === "host" && member.user !== joining.user) {
@@ -217,6 +261,8 @@ export class Relay {
       close(other, CloseCode.Replaced, "replaced by a new connection");
     }
     room.build ??= build;
+    room.protocol ??= protocol;
+    room.assignSlot(joining.id);
     if (access.own) {
       room.activity = true;
       room.guild ??= access.own.guild;
@@ -241,13 +287,22 @@ export class Relay {
 
     const peers: string[] = [];
     const names: Record<string, string> = {};
+    const slots: Record<string, [number, number]> = {};
     for (const other of room.members.values()) {
       if (counterpart(member, other) && carries(other.kind, true) && !peers.includes(other.id)) {
         peers.push(other.id);
         names[other.id] = other.name;
+        slots[other.id] = room.slotEntry(other.id)!;
       }
     }
-    send(socket, JSON.stringify({
+    const own = room.slotEntry(member.id)!;
+    send(socket, JSON.stringify(room.protocol === 2 ? {
+      type: "ready",
+      self: { id: member.id, role: member.role, kind: member.kind, name: member.name, slot: own[0], generation: own[1] },
+      peers,
+      names,
+      slots,
+    } : {
       type: "ready",
       self: { id: member.id, role: member.role, kind: member.kind, name: member.name },
       peers,
@@ -305,8 +360,10 @@ export class Relay {
   }
 
   private announce(room: Room, about: Member, type: "peer-up" | "peer-down", except?: WebSocket): void {
-    const message = JSON.stringify(type === "peer-up" ?
-      { type, id: about.id, name: about.name } : { type, id: about.id });
+    const slot = room.slotEntry(about.id);
+    const message = JSON.stringify(type === "peer-down" ? { type, id: about.id } :
+      room.protocol === 2 && slot ? { type, id: about.id, name: about.name, slot: slot[0], generation: slot[1] } :
+      { type, id: about.id, name: about.name });
     for (const [socket, member] of room.members) {
       if (socket !== except && counterpart(about, member) && carries(member.kind, true)) send(socket, message);
     }
@@ -318,6 +375,7 @@ export class Relay {
     if (!member) return;
     room.members.delete(socket);
     if (carries(member.kind, true) && !room.present(member.id)) this.announce(room, member, "peer-down");
+    if (![...room.members.values()].some((other) => other.id === member.id)) room.releaseSlot(member.id);
     if (member.role === "host" && ![...room.members.values()].some((other) => other.role === "host")) {
       room.inMatch = false;
       room.joinable = false;
@@ -403,7 +461,9 @@ export class Relay {
       if (!split) return close(socket, CloseCode.PolicyViolation, "malformed batch");
       frames = split;
     } else {
-      if (bytes.byteLength > MAXIMUM_FRAME_BYTES) return close(socket, CloseCode.MessageTooBig, "frame too large");
+      if (bytes.byteLength > (bytes[0] === Channel.Multicast ? MAXIMUM_MULTICAST_FRAME_BYTES : MAXIMUM_FRAME_BYTES)) {
+        return close(socket, CloseCode.MessageTooBig, "frame too large");
+      }
       frames = [bytes];
     }
 
@@ -413,6 +473,29 @@ export class Relay {
       if (list) list.push(frame); else outgoing.set(target, [frame]);
     };
     for (const frame of frames) {
+      if (frame[0] === Channel.Multicast) {
+        if (room.protocol !== 2 || sender.role !== "host") {
+          return close(socket, CloseCode.PolicyViolation, "multicast not allowed");
+        }
+        const multicast = parseMulticast(frame);
+        if (!multicast) return close(socket, CloseCode.PolicyViolation, "malformed multicast");
+        if (!carries(sender.kind, multicast.reliable)) {
+          return close(socket, CloseCode.PolicyViolation, "channel not carried by this socket");
+        }
+        for (const recipient of multicast.recipients) {
+          const id = room.slotHolders[recipient.slot];
+          /* (a slot nobody holds now, or that changed hands: as if sent to
+             someone who left) */
+          if (!id || room.generations[recipient.slot] !== recipient.generation) continue;
+          for (const [target, member] of room.members) {
+            if (member.id === id && counterpart(sender, member) && carries(member.kind, multicast.reliable)) {
+              queue(target, multicastCopy(multicast, recipient, sender.id));
+              break;
+            }
+          }
+        }
+        continue;
+      }
       if (!frameValid(frame)) return close(socket, CloseCode.PolicyViolation, "malformed frame");
       const channel = frame[0]!;
       if (channel === Channel.RelayEcho) {

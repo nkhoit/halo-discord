@@ -174,14 +174,15 @@ export async function until(condition: () => boolean, milliseconds = 2000): Prom
 }
 
 export async function join(base: string, room: string, role: string, user: string, id: string,
-    options: { ch?: string; build?: string; name?: string; spectator?: boolean } = {}): Promise<Client> {
+    options: { ch?: string; build?: string; name?: string; spectator?: boolean; protocol?: unknown } = {}): Promise<Client> {
   const client = open(base, room, role, options.ch);
   await new Promise<void>((resolve, reject) => {
     client.socket.once("open", () => resolve());
     client.socket.once("error", reject);
   });
   client.socket.send(JSON.stringify({ type: "auth", token: token(user, options.name), id, build: options.build ?? "b1",
-    ...(options.spectator ? { spectator: true } : {}) }));
+    ...(options.spectator ? { spectator: true } : {}),
+    ...(options.protocol !== undefined ? { protocol: options.protocol } : {}) }));
   await until(() => client.texts.some((text) => text.type === "ready"));
   return client;
 }

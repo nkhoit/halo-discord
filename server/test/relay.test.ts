@@ -17,6 +17,31 @@ const newRoom = () => `room-${++roomCounter}-${Math.random().toString(36).slice(
 beforeEach(async () => { server = await start(); });
 afterEach(async () => { await server.close(); });
 
+describe("relay protocol 2", () => {
+  it("takes the protocol in the auth message and fans a host's multicast out to its guests", async () => {
+    const room = newRoom();
+    const host = await join(server.base, room, "host", "user-h", HOST, { protocol: 2 });
+    const a = await join(server.base, room, "guest", "user-a", GUEST_A, { protocol: 2 });
+    const b = await join(server.base, room, "guest", "user-b", GUEST_B, { protocol: 2 });
+    await until(() => host.texts.filter((text) => text.type === "peer-up").length === 2);
+    const slots = host.texts.filter((text) => text.type === "peer-up")
+      .map((text) => [text.slot as number, text.generation as number]);
+    const multicast = new Uint8Array(3 + 2 * 2 + 12);
+    multicast.set([Channel.Multicast, Channel.Unreliable, 2, ...slots[0]!, ...slots[1]!, 0x48]);
+    host.socket.send(joinBatch([multicast, frame(Channel.Unreliable, GUEST_A)]));
+    await until(() => a.frames.length === 2 && b.frames.length === 1);
+    expect([...a.frames, ...b.frames].every((bytes) => sender(bytes) === HOST)).toBe(true);
+    for (const client of [host, a, b]) client.socket.close();
+  });
+
+  it("refuses a protocol it does not speak", async () => {
+    const client = open(server.base, newRoom(), "host");
+    await new Promise((resolve) => client.socket.once("open", resolve));
+    client.socket.send(JSON.stringify({ type: "auth", token: token("user-h"), id: HOST, build: "b1", protocol: 3 }));
+    expect((await client.closed).code).toBe(4401);
+  });
+});
+
 describe("authentication", () => {
   it("rejects bad paths, parameters and origins before upgrading", async () => {
     const room = newRoom();
