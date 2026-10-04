@@ -46,5 +46,7 @@ jobs:
         run: node --test port/linux/tests/spectator_view_test.js
       - name: Test a spectator's effects (native C, no game assets)
         run: node --test port/linux/tests/effect_views_test.js
+      - name: Test a client's replay of the host's relayed inputs (native C, no game assets)
+        run: node --test port/linux/tests/relayed_input_test.js
       - name: Test browser JavaScript
         run: node --test port/web/tests/*.js
