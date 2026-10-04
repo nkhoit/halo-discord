@@ -1173,6 +1173,13 @@ static void gl_initialize(void)
 	debug_settings.dump_shaders = *config_string("debug.gpu_dump_shaders") ?
 		config_string("debug.gpu_dump_shaders") : NULL;
 	debug_settings.statistics = config_boolean("debug.gpu_stats");
+	{
+		/* main.c's console global: the game draws nothing in a match */
+		extern unsigned char debug_no_drawing;
+
+		if (config_boolean("debug.no_drawing"))
+			debug_no_drawing = 1;
+	}
 	xgpu_gl_state_invalidate();
 	device.gl_ready = TRUE;
 }

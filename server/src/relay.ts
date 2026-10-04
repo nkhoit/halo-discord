@@ -12,7 +12,9 @@ import {
   HEADER_BYTES,
   MAXIMUM_FRAME_BYTES,
   MAXIMUM_MULTICAST_FRAME_BYTES,
+  MAXIMUM_ROOM_PLAYERS,
   MAXIMUM_ROOM_SOCKETS,
+  MAXIMUM_ROOM_SPECTATORS,
   MAXIMUM_SLOTS,
   type Role,
   type SocketKind,
@@ -60,8 +62,8 @@ const BROWSER_ACCESS: Access = { own: null, guilds: [], activity: false };
 export type MatchState = "lobby" | "starting" | "match" | "postgame";
 const MATCH_STATES = new Set<string>(["lobby", "starting", "match", "postgame"]);
 
-/* Halo's player limit, and so a room's capacity in players. */
-export const MAXIMUM_PLAYERS = MAXIMUM_ROOM_SOCKETS / 2;
+/* a room's capacity in players (machines with players) */
+export const MAXIMUM_PLAYERS = MAXIMUM_ROOM_PLAYERS;
 
 /* A room in a server-wide list (GET /v1/guild-rooms). */
 export interface GuildRoom {
@@ -179,6 +181,16 @@ class Room {
     return slot === undefined ? null : [slot, this.generations[slot]!];
   }
 
+  /* the identities here, players and spectators, but for any of except */
+  identities(except: readonly WebSocket[] = []): { players: Set<string>; spectators: Set<string> } {
+    const players = new Set<string>();
+    const spectators = new Set<string>();
+    for (const [socket, member] of this.members) {
+      if (!except.includes(socket)) (member.spectator ? spectators : players).add(member.id);
+    }
+    return { players, spectators };
+  }
+
   present(id: string): boolean {
     for (const member of this.members.values()) {
       if (member.id === id && carries(member.kind, true)) return true;
@@ -252,6 +264,14 @@ export class Relay {
       }
     }
     if (!error && room.members.size - replaced.length >= MAXIMUM_ROOM_SOCKETS) error = "room full";
+    if (!error) {
+      /* (a machine already here adds or replaces a socket; a new one needs room) */
+      const { players, spectators } = room.identities(replaced);
+      if (!players.has(joining.id) && !spectators.has(joining.id) &&
+          (joining.spectator ? spectators.size >= MAXIMUM_ROOM_SPECTATORS : players.size >= MAXIMUM_ROOM_PLAYERS)) {
+        error = "room full";
+      }
+    }
     if (error) {
       if (!room.members.size) this.rooms.delete(roomId);
       return this.refuse(socket, roomId, joining, error);
@@ -328,10 +348,11 @@ export class Relay {
       if (member.role === "host") host = member.name;
     }
     /* (a full room takes nobody, whatever the host's match would) */
-    const roomFull = room.members.size >= MAXIMUM_ROOM_SOCKETS;
+    const playersFull = players.size >= MAXIMUM_ROOM_PLAYERS || room.members.size >= MAXIMUM_ROOM_SOCKETS;
+    const spectatorsFull = spectators.size >= MAXIMUM_ROOM_SPECTATORS || room.members.size >= MAXIMUM_ROOM_SOCKETS;
     return { host, players: players.size, spectators: spectators.size, inMatch: host !== null && room.inMatch,
-      joinable: host !== null && room.inMatch && room.joinable && !roomFull,
-      watchable: host !== null && room.inMatch && room.watchable && !roomFull };
+      joinable: host !== null && room.inMatch && room.joinable && !playersFull,
+      watchable: host !== null && room.inMatch && room.watchable && !spectatorsFull };
   }
 
   /* The rooms of Activity instances in a Discord server that have a host, but
@@ -435,6 +456,12 @@ export class Relay {
       return false;
     }
     if (!value || value.type !== "spectating" || typeof value.value !== "boolean") return false;
+    if (sender.spectator && !value.value && room.identities().players.size >= MAXIMUM_ROOM_PLAYERS) {
+      /* (no room for another machine with players: it watches on) */
+      this.log({ event: "spectating", room: room.id.slice(0, 8), user: sender.user, id: sender.id,
+        spectating: true, refused: "room full" });
+      return true;
+    }
     if (sender.spectator !== value.value) {
       this.log({ event: "spectating", room: room.id.slice(0, 8), user: sender.user, id: sender.id,
         spectating: value.value });

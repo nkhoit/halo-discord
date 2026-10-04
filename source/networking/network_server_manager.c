@@ -3378,7 +3378,11 @@ static boolean network_game_server_setup_game_from_playlist(
 		server->game.name[NETWORK_GAME_NAME_LENGTH - 1] = L'\0';
 		server->game.map.version = 0;
 		server->game.minimum_players = 2;
+#ifdef HALO_WEB
+		server->game.maximum_players = HALO_WEB_MAXIMUM_PLAYERS;
+#else
 		server->game.maximum_players = MAXIMUM_NETWORK_PLAYER_COUNT;
+#endif
 
 		if (server->game.variant.universal_variant.teams)
 		{

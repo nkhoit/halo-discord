@@ -3,7 +3,8 @@ import { connect } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { BATCH_MARKER, Channel, joinBatch, MAXIMUM_HALO_FRAME_BYTES, MAXIMUM_ROOM_SOCKETS, SEQUENCE_BYTES }
+import { BATCH_MARKER, Channel, joinBatch, MAXIMUM_HALO_FRAME_BYTES, MAXIMUM_ROOM_PLAYERS, MAXIMUM_ROOM_SOCKETS,
+  MAXIMUM_ROOM_SPECTATORS, SEQUENCE_BYTES }
   from "../src/protocol.ts";
 import { frame, join, open, type Running, sender, settle, start, token, until } from "./harness.ts";
 
@@ -225,16 +226,34 @@ describe("admission", () => {
     expect(reliable.socket.readyState).toBe(reliable.socket.OPEN);
   });
 
-  it("caps sockets per room and forgets empty rooms", async () => {
+  it("takes 32 machines with players and 8 watching, each on two sockets, and forgets empty rooms", async () => {
     const room = newRoom();
-    const host = await join(server.base, room, "host", "user-h", HOST);
-    for (let index = 1; index < MAXIMUM_ROOM_SOCKETS; index++) {
-      await join(server.base, room, "guest", `user-${index}`, (0x030000000000 + index).toString(16).padStart(12, "0"));
+    const id = (index: number) => (0x030000000000 + index).toString(16).padStart(12, "0");
+    const host = await join(server.base, room, "host", "user-h", HOST, { ch: "r" });
+    await join(server.base, room, "host", "user-h", HOST, { ch: "u" });
+    for (let index = 1; index < MAXIMUM_ROOM_PLAYERS; index++) {
+      await join(server.base, room, "guest", `user-${index}`, id(index), { ch: "r" });
+      await join(server.base, room, "guest", `user-${index}`, id(index), { ch: "u" });
     }
-    const late = open(server.base, room, "guest");
-    await new Promise((resolve) => late.socket.once("open", resolve));
-    late.socket.send(JSON.stringify({ type: "auth", token: token("late"), id: "040000000000", build: "b1" }));
-    expect(await late.closed).toEqual({ code: 4409, reason: "room full" });
+    expect(server.app.relay.summary(room).players, "the 32nd player is in").toBe(MAXIMUM_ROOM_PLAYERS);
+    const refuse = async (spectator: boolean) => {
+      const late = open(server.base, room, "guest");
+      await new Promise((resolve) => late.socket.once("open", resolve));
+      late.socket.send(JSON.stringify({ type: "auth", token: token("late"), id: "040000000000", build: "b1", spectator }));
+      return late.closed;
+    };
+    expect(await refuse(false), "the 33rd is not").toEqual({ code: 4409, reason: "room full" });
+    for (let index = 0; index < MAXIMUM_ROOM_SPECTATORS; index++) {
+      const watcher = await join(server.base, room, "guest", `watcher-${index}`, id(100 + index), { ch: "r", spectator: true });
+      expect(watcher.texts[0]).toMatchObject({ type: "ready" });
+      await join(server.base, room, "guest", `watcher-${index}`, id(100 + index), { ch: "u", spectator: true });
+    }
+    expect(server.app.relay.summary(room)).toMatchObject({ players: MAXIMUM_ROOM_PLAYERS, spectators: MAXIMUM_ROOM_SPECTATORS });
+    expect(server.app.relay.rooms.get(room)?.members.size).toBe(MAXIMUM_ROOM_SOCKETS);
+    expect(await refuse(true), "nor a ninth watching").toEqual({ code: 4409, reason: "room full" });
+    /* a machine here reconnecting is not new */
+    const again = await join(server.base, room, "guest", "user-1", id(1), { ch: "r" });
+    expect(again.texts[0]).toMatchObject({ type: "ready" });
     expect(server.app.relay.rooms.has(room)).toBe(true);
     host.socket.close();
     await settle();
@@ -311,21 +330,28 @@ describe("spectators (#52)", () => {
     expect(server.app.relay.summary(room).spectators, "a host never watches").toBe(0);
   });
 
-  it("use the room's sockets: a full room takes no spectator either", async () => {
+  it("have their own room: a match full of players is still watched, until 8 watch", async () => {
     const room = newRoom();
+    const id = (index: number) => (0x030000000000 + index).toString(16).padStart(12, "0");
     const host = await join(server.base, room, "host", "user-h", HOST);
-    for (let index = 1; index < MAXIMUM_ROOM_SOCKETS; index++) {
-      await join(server.base, room, "guest", `user-${index}`, (0x030000000000 + index).toString(16).padStart(12, "0"),
-        { spectator: index % 2 === 0 });
+    for (let index = 1; index < MAXIMUM_ROOM_PLAYERS; index++) {
+      await join(server.base, room, "guest", `user-${index}`, id(index));
     }
     host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: true, watchable: true }));
     await until(() => server.app.relay.summary(room).inMatch);
+    expect(server.app.relay.summary(room)).toMatchObject({ joinable: false, watchable: true,
+      players: MAXIMUM_ROOM_PLAYERS, spectators: 0 });
+    const watchers = [];
+    for (let index = 0; index < MAXIMUM_ROOM_SPECTATORS; index++) {
+      watchers.push(await join(server.base, room, "guest", `watcher-${index}`, id(100 + index), { spectator: true }));
+    }
     expect(server.app.relay.summary(room)).toMatchObject({ joinable: false, watchable: false,
-      players: MAXIMUM_ROOM_SOCKETS / 2 + 1, spectators: MAXIMUM_ROOM_SOCKETS / 2 - 1 });
-    const late = open(server.base, room, "guest");
-    await new Promise((resolve) => late.socket.once("open", resolve));
-    late.socket.send(JSON.stringify({ type: "auth", token: token("late"), id: "040000000000", build: "b1", spectator: true }));
-    expect(await late.closed).toEqual({ code: 4409, reason: "room full" });
+      spectators: MAXIMUM_ROOM_SPECTATORS });
+    /* (one watching says it plays: no room for it, it watches on) */
+    watchers[0]!.socket.send(JSON.stringify({ type: "spectating", value: false }));
+    await until(() => server.logs.some((entry) => entry.event === "spectating" && entry.refused === "room full"));
+    expect(server.app.relay.summary(room)).toMatchObject({ players: MAXIMUM_ROOM_PLAYERS, spectators: MAXIMUM_ROOM_SPECTATORS });
+    expect(watchers[0]!.socket.readyState).toBe(watchers[0]!.socket.OPEN);
   });
 });
 
@@ -375,7 +401,7 @@ describe("the host's phase", () => {
   it("says a full room's match takes nobody", async () => {
     const room = newRoom();
     const host = await join(server.base, room, "host", "user-h", HOST, { name: "Chief" });
-    for (let index = 1; index < MAXIMUM_ROOM_SOCKETS; index++) {
+    for (let index = 1; index < MAXIMUM_ROOM_PLAYERS; index++) {
       await join(server.base, room, "guest", `user-${index}`, (0x030000000000 + index).toString(16).padStart(12, "0"));
     }
     host.socket.send(JSON.stringify({ type: "phase", inMatch: true, joinable: true }));

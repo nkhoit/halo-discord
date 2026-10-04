@@ -117,10 +117,15 @@ Current caps:
 - build id: 1 to 96 characters;
 - peer id: 12 hex digits;
 - max rooms: configurable, default 64;
-- max room sockets: 32 (32 players on one socket each, or 16 with separate
-  reliable and unreliable sockets);
+- a room: 32 machines with players (a match holds 32 players; a machine of
+  split screen players counts once here), plus 8 machines watching without a
+  player, each machine on one socket or a reliable and an unreliable one: 80
+  sockets. A machine already in the room may reconnect or add its second
+  socket; a new one is refused when its kind is full, and a spectator that
+  says it plays stays a spectator while the players are full;
 - max Halo payload: 16,396 bytes;
-- max multicast frame (protocol 2): 3 + 32 × 14 + 16,396 bytes;
+- max multicast frame (protocol 2): 3 + 40 × 14 + 16,396 bytes (a slot for
+  each of the room's 40 machines);
 - max WebSocket message: 64 KiB;
 - host control messages: 256 bytes.
 

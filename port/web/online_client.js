@@ -11,6 +11,8 @@
 
   var PROTOCOL_VERSION = 1;
   var ROOM_CAPACITY = 128;
+  /* a relay room's machines with players (server/src/protocol.ts MAXIMUM_ROOM_PLAYERS) */
+  var RELAY_ROOM_CAPACITY = 32;
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
   var GAME_POLL_MILLISECONDS = 200;
@@ -1065,10 +1067,16 @@
       return leftName.localeCompare(rightName);
     });
     if (elements.playerCount) {
-      elements.playerCount.textContent = players.length + "/" + ROOM_CAPACITY;
+      var capacity = ROOM_CAPACITY;
+      try {
+        if (relaySettings()) capacity = RELAY_ROOM_CAPACITY;
+      } catch (error) {
+        /* (a relay misconfigured: the room says so elsewhere) */
+      }
+      elements.playerCount.textContent = players.length + "/" + capacity;
       elements.playerCount.setAttribute(
         "aria-label",
-        "Players in room: " + players.length + " of " + ROOM_CAPACITY);
+        "Players in room: " + players.length + " of " + capacity);
     }
     if (elements.playerEmpty) elements.playerEmpty.hidden = players.length !== 0;
     if (elements.playerList && typeof document.createElement === "function") {
