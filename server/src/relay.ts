@@ -88,12 +88,32 @@ export interface RoomSummary {
   watchable: boolean;
 }
 
+/* Backpressure: bytes the relay has written to a receiver's socket that have
+   not gone out yet. Above the first, frames on the unreliable channels to it
+   are dropped (a later tick's overtake them); above the second it is closed,
+   and its client reconnects and resumes. */
+export const RELAY_DROP_BUFFERED_BYTES = 256 * 1024;
+export const RELAY_CLOSE_BUFFERED_BYTES = 4 * 1024 * 1024;
+
 export type Log = (entry: Record<string, unknown>) => void;
 
 export const consoleLog: Log = (entry) => console.log(JSON.stringify({ at: new Date().toISOString(), ...entry }));
 
+/* A receiving socket's backpressure. */
+interface Flow {
+  dropping: boolean;
+  droppedFrames: number;
+  droppedBytes: number;
+  maxBuffered: number;
+}
+
 class Room {
   readonly members = new Map<WebSocket, Member>();
+  readonly flows = new Map<WebSocket, Flow>();
+  /* frames dropped to receivers past RELAY_DROP_BUFFERED_BYTES, and receivers
+     closed past RELAY_CLOSE_BUFFERED_BYTES, since the room opened */
+  droppedFrames = 0;
+  backlogCloses = 0;
   build: string | null = null;
   /* The host's word: its game is past the lobby, so nobody can join until it
      returns, unless its match takes players as it runs (joinable). */
@@ -209,9 +229,13 @@ export class Relay {
 
     socket.on("message", (data, isBinary) => this.receive(room, socket, data, isBinary));
     socket.on("close", (code, reason) => {
+      const flow = room.flows.get(socket);
       this.log({ event: "close", room: roomId.slice(0, 8), user: member.user, id: member.id,
         kind: member.kind, code, reason: reason.toString(), ageMs: Date.now() - member.since,
-        current: room.members.get(socket) === member });
+        current: room.members.get(socket) === member,
+        droppedFrames: flow?.droppedFrames ?? 0, droppedBytes: flow?.droppedBytes ?? 0,
+        maxBuffered: flow?.maxBuffered ?? 0, roomDroppedFrames: room.droppedFrames,
+        roomBacklogCloses: room.backlogCloses });
       this.remove(room, socket);
     });
 
@@ -290,6 +314,7 @@ export class Relay {
 
   private remove(room: Room, socket: WebSocket): void {
     const member = room.members.get(socket);
+    room.flows.delete(socket);
     if (!member) return;
     room.members.delete(socket);
     if (carries(member.kind, true) && !room.present(member.id)) this.announce(room, member, "peer-down");
@@ -410,6 +435,58 @@ export class Relay {
       /* No such counterpart (left, not yet joined, or not allowed): dropped, as
          a network would. */
     }
-    for (const [target, list] of outgoing) send(target, list.length === 1 ? list[0]! : joinBatch(list));
+    for (const [target, list] of outgoing) this.deliver(room, target, list);
+  }
+
+  /* Sends a receiver its frames, as its backlog allows (RELAY_DROP_BUFFERED_BYTES,
+     RELAY_CLOSE_BUFFERED_BYTES). */
+  private deliver(room: Room, target: WebSocket, frames: Uint8Array[]): void {
+    if (target.readyState !== target.OPEN) return;
+    let flow = room.flows.get(target);
+    if (!flow) {
+      flow = { dropping: false, droppedFrames: 0, droppedBytes: 0, maxBuffered: 0 };
+      room.flows.set(target, flow);
+    }
+    const buffered = target.bufferedAmount;
+    if (buffered > RELAY_CLOSE_BUFFERED_BYTES) return this.backlogged(room, target, buffered);
+    if (buffered > RELAY_DROP_BUFFERED_BYTES) {
+      const kept = frames.filter((frame) => isReliableChannel(frame[0]!));
+      if (kept.length < frames.length) {
+        let bytes = 0;
+        for (const frame of frames) if (!isReliableChannel(frame[0]!)) bytes += frame.byteLength;
+        flow.droppedFrames += frames.length - kept.length;
+        flow.droppedBytes += bytes;
+        room.droppedFrames += frames.length - kept.length;
+        if (!flow.dropping) {
+          flow.dropping = true;
+          const member = room.members.get(target);
+          this.log({ event: "backpressure", room: room.id.slice(0, 8), user: member?.user, id: member?.id,
+            kind: member?.kind, buffered, dropping: true });
+        }
+      }
+      frames = kept;
+    } else if (flow.dropping) {
+      flow.dropping = false;
+      const member = room.members.get(target);
+      this.log({ event: "backpressure", room: room.id.slice(0, 8), user: member?.user, id: member?.id,
+        kind: member?.kind, buffered, dropping: false, droppedFrames: flow.droppedFrames,
+        droppedBytes: flow.droppedBytes });
+    }
+    if (!frames.length) return;
+    target.send(frames.length === 1 ? frames[0]! : joinBatch(frames));
+    const after = target.bufferedAmount;
+    if (after > flow.maxBuffered) flow.maxBuffered = after;
+    if (after > RELAY_CLOSE_BUFFERED_BYTES) this.backlogged(room, target, after);
+  }
+
+  private backlogged(room: Room, target: WebSocket, buffered: number): void {
+    const member = room.members.get(target);
+    const flow = room.flows.get(target);
+    room.backlogCloses++;
+    this.log({ event: "backlogged", room: room.id.slice(0, 8), user: member?.user, id: member?.id,
+      kind: member?.kind, buffered, droppedFrames: flow?.droppedFrames ?? 0 });
+    close(target, CloseCode.Backlogged, "receiver too far behind");
+    /* (its close frame would wait behind the backlog it cannot drain) */
+    target.terminate();
   }
 }
