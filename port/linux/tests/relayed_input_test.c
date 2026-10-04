@@ -1,9 +1,10 @@
-/* A client's replay of the host's relayed updates (source/game/player_queues_new.c,
-   the distributed netcode): one a tick, in order, once it has a spare. The
-   host's taps reach the other players as the host made them: the same
-   presses, and the same length while updates come no more than a tick late;
-   after a longer stall it catches up without losing a press. The functions
-   come from the real source (relayed_input_test.js extracts them). */
+/* A browser client's replay of the host's relayed updates
+   (source/game/player_queues_new.c, the distributed netcode): one a tick, in
+   order, once it has a spare. The host's taps reach the other players as the
+   host made them: the same presses, and the same length while updates come no
+   more than a tick late or a frame at a time; after a longer stall it catches
+   up without losing a press. (The native builds run the newest instead.) The
+   functions come from the real source (relayed_input_test.js extracts them). */
 #include <stdio.h>
 #include <string.h>
 
@@ -14,6 +15,7 @@ typedef unsigned short word;
 #define FALSE 0
 #define NONE (-1)
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define csmemset memset
 #define MAXIMUM_NUMBER_OF_PLAYERS 16
 
@@ -165,6 +167,19 @@ int main(void)
 			arrival[tick] = arrival[tick - 1];
 	replay(arrival, FALSE);
 	check(same_as_host(1), "single late updates: exact");
+
+	/* a client drawing 10 frames a second: updates are handled once a frame,
+	then the frame runs three ticks (never taken for being behind) */
+	for (tick = 0; tick < TICKS; tick++)
+		arrival[tick] = (tick / 3 + 1) * 3;
+	replay(arrival, FALSE);
+	check(same_as_host(3), "slow frames: the host's taps exactly, a frame behind");
+
+	/* the host's frames slow too: its updates come three at once */
+	for (tick = 0; tick < TICKS; tick++)
+		arrival[tick] = (tick / 3) * 3 + 2;
+	replay(arrival, FALSE);
+	check(same_as_host(2), "bunched by the host's frames: still exact (a tick later)");
 
 	/* a stall of five ticks in the middle of a tap, then all at once */
 	for (tick = 0; tick < TICKS; tick++)

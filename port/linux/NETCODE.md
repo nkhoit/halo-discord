@@ -15,13 +15,15 @@ with ideas from VALORANT's netcode articles, keeping the 30 Hz tick:
   client no longer runs only the ticks the host has sent.
 - **Own player predicted.** A client drives its own player (and the
   vehicle it drives) from its local input at once. Remote players are
-  driven by the inputs the host relays (the existing per-tick game update),
-  replayed in order a tick each with one in hand to spare, so a press and
-  its length reach every machine as the player made them while updates
-  come no more than a tick late. Further behind, a client catches up two a
-  tick (their buttons and the trigger merged, so no press is lost); with
-  none in hand it holds the last (`source/game/player_queues_new.c`,
-  `tests/relayed_input_test`).
+  driven by the inputs the host relays (the existing per-tick game update).
+  A browser client, whose updates come over the internet relay unevenly,
+  replays them in order a tick each with one in hand to spare, so a press
+  and its length reach it as the player made them while updates come no
+  more than a tick late or a frame at a time; kept behind for a while, it
+  catches up two a tick where that changes no press or release; with none
+  in hand it holds the last (`source/game/player_queues_new.c`,
+  `tests/relayed_input_test`). The native builds run the newest, held until
+  a newer arrives.
 - **Host authoritative.** The host alone decides damage, deaths, spawns,
   pickups, scores and the game's objects; clients do not decide them but
   apply what the host sends.

@@ -22,7 +22,7 @@ try {
   const queues = fs.readFileSync(path.join(root, 'source/game/player_queues_new.c'), 'utf8').replace(/\r\n/g, '\n');
   fs.writeFileSync(path.join(temp, 'relayed_input.inc'), lines(queues,
     '/* the distributed netcode (port/linux/NETCODE.md): the action a client\'s',
-    '\t\tupdate_client_relayed_apply(update_client_relayed_take(), TRUE);\n}\n') + '\n');
+    '\t\tupdate_client_relayed_queue.window_ticks = 0;\n\t}\n}\n') + '\n');
   const cc = process.env.CC || 'cc';
   const web = /emcc/.test(path.basename(cc));
   const output = path.join(temp, web ? 'relayed-input-test.js' : 'relayed-input-test');

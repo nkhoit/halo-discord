@@ -290,22 +290,29 @@ static struct
 	unsigned long pending_control_flags;
 } update_client_relayed_actions[MAXIMUM_NUMBER_OF_PLAYERS];
 
-/* The host relays its players' actions once a tick, and they reach a client
-unevenly: none for a tick or more, then several at once. Running only the
-newest each tick lost a press whose release came with it and held a trigger
-down until the next arrived (a remote plasma pistol charged and overheated
-from taps). A client replays them in order, a tick each, once it has a
-spare: an update late by a tick takes the spare. When it falls further
-behind it catches up two a tick, the second merged into the first: both
-updates' buttons pressed, the trigger as far down as either had it. */
+/* (the browser builds) The host relays its players' actions once a tick,
+and over the internet relay they reach a client unevenly: none for a tick or
+more, then several at once. Running only the newest each tick lost a press
+whose release came with it and held a trigger down until the next arrived
+(a remote plasma pistol charged and overheated from taps). A browser client
+replays them in order, a tick each, once it has one to spare: an update late
+by a tick takes the spare. Updates are handled once a frame and a slow frame
+runs several ticks, so it only counts as behind when it has kept more than
+its spare for a while; then it catches up two a tick where that changes no
+press or release (the next update's trigger is up or down as the one just
+taken), its buttons pressed too: holds and pauses shorten, taps stay. The
+native builds (LAN, where updates come evenly) keep running the newest,
+without the spare's tick. */
 enum
 {
 	/* (a second of the host's ticks) */
 	RELAYED_UPDATE_QUEUE_SIZE = 32,
 	/* updates in hand before replay starts (again, after running dry) */
 	RELAYED_UPDATE_CUSHION = 2,
-	/* updates left after a tick's beyond which it takes two */
-	RELAYED_UPDATE_MAXIMUM_SPARE = 2,
+	/* updates left after a tick, in step */
+	RELAYED_UPDATE_SPARE = 1,
+	/* ticks over which it must have kept more to be behind */
+	RELAYED_UPDATE_BEHIND_WINDOW = 8,
 };
 
 static struct
@@ -316,8 +323,12 @@ static struct
 	boolean buffering;
 	/* updates merged on arrival (the queue full): the next tick's joins them */
 	boolean carry;
+	/* the fewest updates left after a tick in this window, and its ticks */
+	short window_minimum;
+	short window_ticks;
+	boolean behind;
 	struct server_update updates[RELAYED_UPDATE_QUEUE_SIZE];
-} update_client_relayed_queue = { NONE, 0, 0, TRUE, FALSE };
+} update_client_relayed_queue = { NONE, 0, 0, TRUE, FALSE, RELAYED_UPDATE_QUEUE_SIZE, 0, FALSE };
 
 static void update_client_relayed_reset(
 	void)
@@ -326,6 +337,7 @@ static void update_client_relayed_reset(
 	csmemset(&update_client_relayed_queue, 0, sizeof(update_client_relayed_queue));
 	update_client_relayed_queue.last_update_number = NONE;
 	update_client_relayed_queue.buffering = TRUE;
+	update_client_relayed_queue.window_minimum = RELAYED_UPDATE_QUEUE_SIZE;
 }
 
 /* an update's actions become the tick's, or (merge) join the tick's */
@@ -349,6 +361,28 @@ static void update_client_relayed_apply(
 		update_client_relayed_actions[action_index].action.primary_trigger = primary_trigger;
 		update_client_relayed_actions[action_index].pending_control_flags |= action->control_flags;
 	}
+}
+
+/* whether every player's trigger is up or down in the next update as in the
+tick's */
+static boolean update_client_relayed_next_continues(
+	void)
+{
+	struct server_update const *next =
+		&update_client_relayed_queue.updates[update_client_relayed_queue.first];
+	short action_index;
+
+	for (action_index = 0;
+		action_index < next->action_count && action_index < MAXIMUM_NUMBER_OF_PLAYERS;
+		action_index++)
+	{
+		if ((next->actions[action_index].primary_trigger > 0.0f) !=
+			(update_client_relayed_actions[action_index].action.primary_trigger > 0.0f))
+		{
+			return FALSE;
+		}
+	}
+	return TRUE;
 }
 
 static struct server_update const *update_client_relayed_take(
@@ -399,12 +433,24 @@ static void update_client_relayed_tick(
 	if (update_client_relayed_queue.count == 0)
 	{
 		update_client_relayed_queue.buffering = TRUE;
+		update_client_relayed_queue.behind = FALSE;
 		return;
 	}
 	update_client_relayed_apply(update_client_relayed_take(), update_client_relayed_queue.carry);
 	update_client_relayed_queue.carry = FALSE;
-	if (update_client_relayed_queue.count > RELAYED_UPDATE_MAXIMUM_SPARE)
+	if (update_client_relayed_queue.behind && update_client_relayed_queue.count > RELAYED_UPDATE_SPARE &&
+		update_client_relayed_next_continues())
+	{
 		update_client_relayed_apply(update_client_relayed_take(), TRUE);
+	}
+	update_client_relayed_queue.window_minimum =
+		MIN(update_client_relayed_queue.window_minimum, update_client_relayed_queue.count);
+	if (++update_client_relayed_queue.window_ticks >= RELAYED_UPDATE_BEHIND_WINDOW)
+	{
+		update_client_relayed_queue.behind = update_client_relayed_queue.window_minimum > RELAYED_UPDATE_SPARE;
+		update_client_relayed_queue.window_minimum = RELAYED_UPDATE_QUEUE_SIZE;
+		update_client_relayed_queue.window_ticks = 0;
+	}
 }
 
 #endif
@@ -763,7 +809,9 @@ static boolean update_client_dequeue_distributed(
 	struct update_client_queue_datum *queue = (struct update_client_queue_datum *)update_client_globals.queues->data;
 	short queue_index;
 
+#ifdef HALO_WEB
 	update_client_relayed_tick();
+#endif
 	for (queue_index = 0; queue_index < update_client_globals.queues->count; ++queue_index, ++queue)
 	{
 		struct player_action action;
@@ -1000,8 +1048,20 @@ void update_client_handle_server_update(
 	{
 #ifdef HALO_WEB
 		network_web_relayed_update();
-#endif
 		update_client_relayed_push(update, update_number);
+#else
+		short action_index;
+
+		/* (the native builds) the newest, until the next */
+		for (action_index = 0;
+			action_index < update->action_count && action_index < MAXIMUM_NUMBER_OF_PLAYERS;
+			action_index++)
+		{
+			update_client_relayed_actions[action_index].valid = TRUE;
+			update_client_relayed_actions[action_index].action = update->actions[action_index];
+			update_client_relayed_actions[action_index].pending_control_flags |= update->actions[action_index].control_flags;
+		}
+#endif
 	}
 #endif
 	if (client_update)
