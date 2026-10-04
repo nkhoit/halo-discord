@@ -1361,54 +1361,117 @@ addToLibrary({
 
     /* A game frame's datagrams for a peer, as few relay frames as they make:
        datagrams for the same ports in one bundle (web_loopback_net.c), each
-       with its length. A single one goes as it is. */
+       with its length. A single one goes as it is. (Protocol 2, the host)
+       datagrams the same for several guests first go once for all of them
+       (relayMulticastDatagrams). */
     relayFlushDatagrams: function(relay) {
       var runtime = HaloWebTransportRuntime;
+      var pending = [];
       runtime.relayPeers.forEach(function(record) {
-        var pending = record.pendingDatagrams;
-        if (!pending || !pending.length) return;
+        var datagrams = record.pendingDatagrams;
+        if (!datagrams || !datagrams.length) return;
         record.pendingDatagrams = [];
-        var socket = runtime.relayLinked(record) && relay.unreliable;
-        if (!socket) {
-          record.staleDatagrams += pending.length;
+        if (!runtime.relayLinked(record) || !relay.unreliable) {
+          record.staleDatagrams += datagrams.length;
           return;
         }
-        var group = [];
-        var groupBytes = 0;
-        var sendGroup = function() {
-          if (!group.length) return;
-          var halo = group[0];
-          if (group.length > 1) {
-            halo = new Uint8Array(runtime.LOOPBACK_HEADER_BYTES + groupBytes);
-            halo.set(group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES));
-            halo[2] = runtime.LOOPBACK_DATAGRAM_BUNDLE;
-            var offset = runtime.LOOPBACK_HEADER_BYTES;
-            group.forEach(function(datagram) {
-              var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
-              halo[offset] = length >> 8;
-              halo[offset + 1] = length & 255;
-              halo.set(datagram.subarray(runtime.LOOPBACK_HEADER_BYTES), offset + 2);
-              offset += 2 + length;
-            });
-          }
-          runtime.relayTransmit(record, socket, runtime.relayDatagramFrame(record, halo));
-          group = [];
-          groupBytes = 0;
-        };
-        pending.forEach(function(datagram) {
-          var bundled = datagram.byteLength > runtime.LOOPBACK_HEADER_BYTES &&
-            datagram[2] === runtime.LOOPBACK_DATAGRAM;
-          var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
-          var sameHeader = group.length && bundled && group[0][2] === runtime.LOOPBACK_DATAGRAM &&
-            group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES).every(function(value, index) {
-              return value === datagram[index];
-            });
-          if (!sameHeader || groupBytes + 2 + length > runtime.LOOPBACK_BUNDLE_LIMIT) sendGroup();
-          group.push(datagram);
-          groupBytes += 2 + length;
-          if (!bundled) sendGroup();
+        pending.push({ record: record, datagrams: datagrams });
+      });
+      runtime.relayMulticastDatagrams(relay, pending);
+      pending.forEach(function(entry) {
+        runtime.relayBundles(entry.datagrams, function(halo) {
+          runtime.relayTransmit(entry.record, relay.unreliable, runtime.relayDatagramFrame(entry.record, halo));
         });
-        sendGroup();
+      });
+    },
+
+    /* Loopback datagrams as bundles (web_loopback_net.c): emit(halo) for each. */
+    relayBundles: function(datagrams, emit) {
+      var runtime = HaloWebTransportRuntime;
+      var group = [];
+      var groupBytes = 0;
+      var sendGroup = function() {
+        if (!group.length) return;
+        var halo = group[0];
+        if (group.length > 1) {
+          halo = new Uint8Array(runtime.LOOPBACK_HEADER_BYTES + groupBytes);
+          halo.set(group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES));
+          halo[2] = runtime.LOOPBACK_DATAGRAM_BUNDLE;
+          var offset = runtime.LOOPBACK_HEADER_BYTES;
+          group.forEach(function(datagram) {
+            var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
+            halo[offset] = length >> 8;
+            halo[offset + 1] = length & 255;
+            halo.set(datagram.subarray(runtime.LOOPBACK_HEADER_BYTES), offset + 2);
+            offset += 2 + length;
+          });
+        }
+        emit(halo);
+        group = [];
+        groupBytes = 0;
+      };
+      datagrams.forEach(function(datagram) {
+        var bundled = datagram.byteLength > runtime.LOOPBACK_HEADER_BYTES &&
+          datagram[2] === runtime.LOOPBACK_DATAGRAM;
+        var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
+        var sameHeader = group.length && bundled && group[0][2] === runtime.LOOPBACK_DATAGRAM &&
+          group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES).every(function(value, index) {
+            return value === datagram[index];
+          });
+        if (!sameHeader || groupBytes + 2 + length > runtime.LOOPBACK_BUNDLE_LIMIT) sendGroup();
+        group.push(datagram);
+        groupBytes += 2 + length;
+        if (!bundled) sendGroup();
+      });
+      sendGroup();
+    },
+
+    /* (protocol 2, the host) a game frame's datagrams that are the same for
+       several guests, taken out of their pending lists and sent once for each
+       set of guests that has them, bundled as relayBundles would. */
+    relayMulticastDatagrams: function(relay, pending) {
+      var runtime = HaloWebTransportRuntime;
+      if (relay.options.role !== 'host' || !relay.slots.size || pending.length < 2) return;
+      var groups = [];
+      pending.forEach(function(entry) {
+        if (!relay.slots.has(entry.record.identifier)) return;
+        entry.datagrams.forEach(function(datagram) {
+          var group = null;
+          for (var index = 0; index < groups.length && !group; index++) {
+            var candidate = groups[index];
+            if (candidate.entries.indexOf(entry) < 0 && candidate.entries.length < runtime.RELAY_MAXIMUM_SLOTS &&
+                runtime.relaySameContent(candidate.datagram, datagram, 0, -1)) group = candidate;
+          }
+          if (group) group.entries.push(entry);
+          else groups.push({ datagram: datagram, entries: [entry] });
+        });
+      });
+      var sets = new Map();
+      groups.forEach(function(group) {
+        if (group.entries.length < 2) return;
+        var key = group.entries.map(function(entry) { return entry.record.identifier; }).sort().join(',');
+        var set = sets.get(key);
+        if (!set) sets.set(key, set = { entries: group.entries, datagrams: [] });
+        set.datagrams.push(group.datagram);
+        group.entries.forEach(function(entry) {
+          for (var index = 0; index < entry.datagrams.length; index++) {
+            if (runtime.relaySameContent(entry.datagrams[index], group.datagram, 0, -1)) {
+              entry.datagrams.splice(index, 1);
+              break;
+            }
+          }
+        });
+      });
+      sets.forEach(function(set) {
+        runtime.relayBundles(set.datagrams, function(halo) {
+          var frame = new Uint8Array(runtime.RELAY_HEADER_BYTES + halo.byteLength);
+          frame[0] = runtime.RELAY_CHANNEL.UNRELIABLE;
+          frame.set(halo, runtime.RELAY_HEADER_BYTES);
+          runtime.relayQueue(relay.unreliable, runtime.relayMulticastFrame(relay, false,
+            set.entries.map(function(entry) {
+              return { frame: frame, slot: relay.slots.get(entry.record.identifier) };
+            })));
+        });
       });
     },
 

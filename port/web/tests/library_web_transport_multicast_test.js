@@ -141,14 +141,26 @@ const SLOTS = { [GUESTS[0]]: [1, 1], [GUESTS[1]]: [2, 7], [GUESTS[2]]: [3, 1] };
     'each guest its slot, sequence, acknowledgement and connection word');
   assert.deepEqual(Array.from(multicast.subarray(3 + 3 * 14 + 12)), message);
   const datagram = frames.filter(frame => frame[0] === 8 && frame[1] === 1);
-  assert.equal(datagram.length, 1, 'the same datagrams once');
-  assert.equal(datagram[0][2], 2, 'for the two guests whose datagrams were the same');
-  assert.deepEqual([datagram[0][3], datagram[0][5]].sort(), [1, 2]);
+  assert.equal(datagram.length, 1, 'the same datagram once');
+  assert.equal(datagram[0][2], 3, 'for all three guests, though the third had another');
+  assert.deepEqual([datagram[0][3], datagram[0][5], datagram[0][7]], [1, 2, 3]);
+  assert.deepEqual(Array.from(datagram[0].subarray(3 + 3 * 2 + 12)), [1, 2, 3]);
   const unicast = frames.filter(frame => frame[0] === 1);
-  assert.equal(unicast.length, 1, 'the third guest got one more datagram: its own bundle');
+  assert.equal(unicast.length, 1, 'the third guest\'s other datagram on its own');
   assert.equal(hex(unicast[0].subarray(1, 7)), GUESTS[2]);
+  assert.deepEqual(Array.from(unicast[0].subarray(7 + 12)), [4]);
   assert.equal(runtime.relay.multicastFrames, 2);
-  assert.equal(runtime.relay.multicastCopies, 5);
+  assert.equal(runtime.relay.multicastCopies, 6);
+
+  // A datagram a guest had twice goes once with the other guest, once alone.
+  socket.sent.length = 0;
+  send(GUESTS[0], false, 2048, loopback(2048, 1, 0, [7, 7]));
+  send(GUESTS[0], false, 2048, loopback(2048, 1, 0, [7, 7]));
+  send(GUESTS[1], false, 2048, loopback(2048, 1, 0, [7, 7]));
+  library.web_transport_flush();
+  frames = framesOf(socket);
+  assert.deepEqual(frames.map(frame => frame[0] === 8 ? 'multi:' + frame[2] : hex(frame.subarray(1, 7))),
+    ['multi:2', GUESTS[0]]);
 
   // A guest's reliable frames keep their order: only neighbours merge.
   socket.sent.length = 0;
