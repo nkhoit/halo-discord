@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { build } from "esbuild";
+import { build, stop } from "esbuild";
 
 const ENTRY = fileURLToPath(new URL("../client/activity.js", import.meta.url));
 
@@ -51,7 +51,10 @@ export function activityBundle(): Promise<string> {
     metafile: true,
     legalComments: "none",
     logLevel: "silent",
-  }).then((result) => licenses(Object.keys(result.metafile.inputs)) + result.outputFiles[0]!.text);
+  }).then((result) => licenses(Object.keys(result.metafile.inputs)) + result.outputFiles[0]!.text)
+    /* (esbuild's service process would otherwise stay resident beside the
+       server; a later build starts another) */
+    .finally(() => stop().catch(() => {}));
   bundle.catch(() => { bundle = null; });
   return bundle;
 }
