@@ -85,6 +85,8 @@ static SDL_JoystickID SDL_GetGamepadID(SDL_Gamepad *p) { return p->id; }
 static int SDL_GetGamepadButton(SDL_Gamepad *p, SDL_GamepadButton b) { return p->buttons[b]; }
 static SHORT SDL_GetGamepadAxis(SDL_Gamepad *p, int a) { return p->axes[a]; }
 static const char *config_string(const char *key) { (void)key; return bot_enabled ? "bot:0" : ""; }
+/* (debug.test_players: its default, one scripted controller) */
+static long config_integer(const char *key) { (void)key; return 1; }
 static void platform_pump_events(void) {}
 static void platform_input_read(struct platform_input_state *out,int consume) { (void)consume; *out=physical_input; }
 static int sdl_gamepads(SDL_Gamepad **out) { for(int i=0;i<pad_count;i++)out[i]=&pads[i]; return pad_count; }

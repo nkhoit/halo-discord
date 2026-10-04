@@ -37,7 +37,8 @@ try {
  const functions = ['unsigned halo_linux_keyboard_movement_axes', 'static void aim_look_states_initialize_locked',
   'static void aim_look_reset_port_locked', 'static void aim_look_update_gamepad_locked',
   'int halo_linux_camera_assist_enabled', 'static void mouse_poll', 'static BYTE analog',
-  'static void keyboard_gamepad', 'void test_input_hold_action', 'static int test_input_gamepad',
+  'static void keyboard_gamepad', 'void test_input_hold_action', 'static int test_input_seed',
+  'static int test_input_ports', 'static int test_input_gamepad',
   'static SHORT stick', 'static void merge_button', 'static void sdl_gamepad_state',
   'HANDLE WINAPI XInputOpen', 'VOID WINAPI XInputClose', 'static int controller_port', 'DWORD WINAPI XInputGetState'];
  fs.writeFileSync(path.join(temp, 'xinput_movement.inc'),
