@@ -104,7 +104,7 @@ const states = [];
   assert.equal(states[0], 'connecting');
 
   socket.open();
-  assert.deepEqual(socket.texts, [{ type: 'auth', token: 'session-token', id: HOST, build: 'web-1' }],
+  assert.deepEqual(socket.texts, [{ type: 'auth', token: 'session-token', id: HOST, build: 'web-1', protocol: 2 }],
     'the session token is the first message');
   assert.equal(lastState(), '0,0,0', 'not connected until the relay reports the peer');
   socket.text({ type: 'ready', self: { id: HOST }, peers: [] });
@@ -308,7 +308,7 @@ const states = [];
   const [watchReliable, watchUnreliable] = sockets.slice(-2);
   watchReliable.open();
   watchUnreliable.open();
-  assert.deepEqual(watchReliable.texts, [{ type: 'auth', token: 'session-token', id: HOST, build: 'web-1', spectator: true }]);
+  assert.deepEqual(watchReliable.texts, [{ type: 'auth', token: 'session-token', id: HOST, build: 'web-1', protocol: 2, spectator: true }]);
   assert.equal(watchUnreliable.texts[0].spectator, true, 'on each socket');
   watchReliable.text({ type: 'ready', self: { id: HOST }, peers: [] });
   watching = false;
