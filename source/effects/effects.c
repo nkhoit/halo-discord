@@ -1053,6 +1053,7 @@ void effects_update(
 {
 	long effect_index;
 
+
 	profile_enter(effects_update_section);
 
 	for (effect_index = data_next_index(effect_data, NONE);
@@ -1230,6 +1231,16 @@ void effects_reconnect_to_structure_bsp(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* how many views share the effects (split screen divides them): a spectator,
+with no player of its own, draws one, its target's */
+static long effect_view_count(
+	void)
+{
+	return MAX(1, (long)local_player_count());
+}
+#endif
+
 struct effect_location_datum *effect_location_get_next_instance(
 	struct effect_datum const *effect,
 	long *location_datum_index,
@@ -1254,7 +1265,11 @@ struct effect_location_datum *effect_location_get_next_instance(
 		if (camera_mode == _effect_camera_mode_first_person_only ||
 			(camera_mode == _effect_camera_mode_both &&
 			effect->local_player_index != NONE &&
+#ifdef HALO_LINUX
+			effect_view_count() == 1))
+#else
 			local_player_count() == 1))
+#endif
 		{
 			if (location->node_designator == NONE ||
 				!TEST_FLAG(location->node_designator, _effect_location_first_person_bit))
@@ -2460,7 +2475,11 @@ static void effect_update(
 				{
 					effect->particle_counts[particle_index] = (byte)(long)
 						(((real)count - MAXIMUM_SPLIT_SCREEN_PARTICLE_COUNT) /
+#ifdef HALO_LINUX
+						effect_view_count() +
+#else
 						local_player_count() +
+#endif
 						MAXIMUM_SPLIT_SCREEN_PARTICLE_COUNT);
 				}
 			}

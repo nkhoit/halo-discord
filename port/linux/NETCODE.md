@@ -168,12 +168,15 @@ outside that scope; the first-person weapon still takes those events for
 the weapon in their hands (the firing animation, recoil and muzzle flash),
 and the target counts with this machine's players for what can be seen,
 which decides where effects and particles are made at all (muzzle flashes,
-impacts, smoke): a spectator has no player of its own. A player in a
-vehicle is seen from behind and above it (a seat's own views follow its
-player's controls). Zoom is a player's own input, which no other machine
-has: the view never zooms. With nobody to watch the view holds; on Blood
-Gulch it starts on a shot of the map. Positional audio still follows
-nobody.
+impacts, smoke): a spectator has no player of its own. For the effects'
+split-screen rules (each player's share of an effect's particles, and
+whether a weapon's effects sit on its first-person model) a spectator
+counts as one view, as a player does (`tests/effect_views_test`).
+A player in a vehicle is seen from behind and above it (a seat's own views
+follow its player's controls). Zoom is a player's own input, which no
+other machine has: the view never zooms. With nobody to watch the view
+holds; on Blood Gulch it starts on a shot of the map. Positional audio
+still follows nobody.
 
 ## Testing
 
