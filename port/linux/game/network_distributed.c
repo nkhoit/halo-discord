@@ -64,6 +64,9 @@ boolean network_distributed_client_send_reliably(void *message, word size);
 boolean network_distributed_server_send_to_all(void *message, word size);
 boolean network_distributed_server_send_to_all_reliably(void *message, word size);
 boolean network_distributed_server_send_to_machine_reliably(long machine_index, void *message, word size);
+#ifdef HALO_WEB
+boolean network_distributed_server_send_to_machine(long machine_index, void *message, word size);
+#endif
 /* spectator.c's: drawing a spectator's target as local player 0 */
 boolean spectator_view_scoped(void);
 /* players.c's */
@@ -723,6 +726,35 @@ static short distributed_pickup_count;
 the host has it */
 static short distributed_seat_disagreements[MAXIMUM_TRACKED_PLAYERS];
 #ifdef HALO_WEB
+/* (the host) ticks between a machine's own players' states, while they move
+as they were moving and nothing else of them changes: their machine moves them
+itself, and the host's word corrects it only past LOCAL_CORRECTION_TOLERANCE.
+Off (1, every tick) by default: above 1 the host sends each machine its own
+unit-state message, encoded for it, which a relay fanning one message out to
+every guest could not carry; in a firefight shields and health change nearly
+every tick, so it saves little (NETCODE.md) */
+#ifndef OWN_UNIT_STATE_INTERVAL_TICKS
+#define OWN_UNIT_STATE_INTERVAL_TICKS 1
+#endif
+#endif
+#if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
+/* (a client) when it last had the host's word on each player's seat: its
+disagreements are counted in ticks, its own players' states coming less often */
+static long distributed_seat_times[MAXIMUM_TRACKED_PLAYERS];
+
+/* world units: further than this from where the last one said it would be
+(a teleporter, a push), it goes at once */
+#define OWN_UNIT_STATE_JUMP 0.5f
+
+/* (the host) each player's unit's last state its own machine was sent */
+static struct distributed_own_unit_sent
+{
+	boolean valid;
+	long time;
+	struct distributed_unit_state state;
+} distributed_own_sent[MAXIMUM_TRACKED_PLAYERS];
+#endif
+#ifdef HALO_WEB
 /* the host (the browser builds): the game type's state as last sent, sent
 again when it changes, at least once a second, and whenever a machine has
 loaded */
@@ -1121,6 +1153,27 @@ void distributed_send_to_machine_reliably(
 	network_distributed_server_send_to_machine_reliably(machine_index, message, size);
 }
 
+#if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
+/* unreliably to one machine in the game (the host) */
+static void distributed_send_to_machine(
+	long machine_index,
+	void *message,
+	byte type,
+	short count,
+	word size)
+{
+	struct distributed_message_header *header = (struct distributed_message_header *)message;
+
+	header->type = type;
+	header->count = (byte)count;
+	header->game_time = game_time_get();
+	header->header = 0;
+	build_message_header(&header->header, size, 2, 0);
+	if (network_distributed_server_send_to_machine(machine_index, message, size))
+		distributed_statistics.sent++;
+}
+#endif
+
 struct player_datum *distributed_player(
 	short player_index)
 {
@@ -1285,6 +1338,180 @@ static void distributed_compact_bounds(
 	}
 }
 
+/* (a client, the browser builds) its own players' units, compactly: as
+distributed_send_unit_states picks them */
+static void distributed_send_compact_predictions(
+	void)
+{
+	struct
+	{
+		struct distributed_message_header header;
+		byte data[DATAGRAM_MAXIMUM_SIZE];
+	} message;
+	short room = (short)(DATAGRAM_MAXIMUM_SIZE - sizeof(message.header));
+	struct data_iterator iterator;
+	struct player_datum *player;
+	real_rectangle3d bounds;
+	short count = 0;
+	short size = 0;
+
+	distributed_compact_bounds(&bounds);
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		struct distributed_unit_state state;
+		long unit_index = distributed_living_unit(player);
+		short written;
+
+		if (player->local_player_index == NONE || unit_index == NONE ||
+			object_get(unit_index)->object.parent_object_index != NONE)
+		{
+			continue;
+		}
+		distributed_state_from_player((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index), &state);
+		written = distributed_compact_unit_state_write(message.data + size, (short)(room - size), &state, &bounds);
+		if (!written)
+			break;
+		size += written;
+		count++;
+	}
+	if (count)
+	{
+		distributed_send(&message, _distributed_message_compact_player_prediction, count,
+			(word)(sizeof(message.header) + size), _distributed_to_host);
+	}
+}
+
+#if OWN_UNIT_STATE_INTERVAL_TICKS > 1
+/* (the host) whether a player's own machine can do without its unit's
+state this tick: it had one less than OWN_UNIT_STATE_INTERVAL_TICKS ago, and
+since then the unit has only moved, about as it was moving */
+static boolean distributed_own_state_can_wait(
+	short player_index,
+	struct distributed_unit_state const *state)
+{
+	struct distributed_own_unit_sent const *sent;
+	struct distributed_unit_state now;
+	struct distributed_unit_state then;
+	long ticks;
+	real dx;
+	real dy;
+	real dz;
+
+	if (player_index < 0 || player_index >= MAXIMUM_TRACKED_PLAYERS)
+		return FALSE;
+	sent = &distributed_own_sent[player_index];
+	ticks = game_time_get() - sent->time;
+	if (!sent->valid || ticks <= 0 || ticks >= OWN_UNIT_STATE_INTERVAL_TICKS ||
+		state->unit_index == NONE || !TEST_FLAG(state->flags, _distributed_unit_placed_bit))
+	{
+		return FALSE;
+	}
+	/* (a seat, a life, shields, health, powerups: anything else at once) */
+	now = *state;
+	then = sent->state;
+	csmemset(&now.position, 0, sizeof(now.position));
+	csmemset(&now.velocity, 0, sizeof(now.velocity));
+	csmemset(&now.forward, 0, sizeof(now.forward));
+	csmemset(&now.up, 0, sizeof(now.up));
+	csmemset(&then.position, 0, sizeof(then.position));
+	csmemset(&then.velocity, 0, sizeof(then.velocity));
+	csmemset(&then.forward, 0, sizeof(then.forward));
+	csmemset(&then.up, 0, sizeof(then.up));
+	if (csmemcmp(&now, &then, sizeof(now)) != 0)
+		return FALSE;
+	dx = state->position.x - (sent->state.position.x + sent->state.velocity.i * ticks);
+	dy = state->position.y - (sent->state.position.y + sent->state.velocity.j * ticks);
+	dz = state->position.z - (sent->state.position.z + sent->state.velocity.k * ticks);
+	return dx * dx + dy * dy + dz * dz <= OWN_UNIT_STATE_JUMP * OWN_UNIT_STATE_JUMP;
+}
+
+/* (the host, the browser builds) every player's unit, compactly, to each
+machine: its own players' as distributed_own_state_can_wait allows */
+static void distributed_send_compact_unit_states(
+	void)
+{
+	struct
+	{
+		struct distributed_message_header header;
+		byte data[DATAGRAM_MAXIMUM_SIZE];
+	} message;
+	short room = (short)(DATAGRAM_MAXIMUM_SIZE - sizeof(message.header));
+	byte encoded[MAXIMUM_TRACKED_PLAYERS][COMPACT_UNIT_STATE_MAXIMUM_SIZE];
+	short encoded_size[MAXIMUM_TRACKED_PLAYERS];
+	/* the machine that does without it this tick, NONE for none */
+	long waiting[MAXIMUM_TRACKED_PLAYERS];
+	short players = 0;
+	struct data_iterator iterator;
+	struct player_datum *player;
+	real_rectangle3d bounds;
+	long machine_index;
+
+	distributed_compact_bounds(&bounds);
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL &&
+		players < MAXIMUM_TRACKED_PLAYERS)
+	{
+		short player_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index);
+		struct distributed_unit_state state;
+		long owner = NONE;
+
+		distributed_state_from_player(player_index, &state);
+		encoded_size[players] = distributed_compact_unit_state_write(encoded[players],
+			COMPACT_UNIT_STATE_MAXIMUM_SIZE, &state, &bounds);
+		if (!encoded_size[players])
+			continue;
+		/* (the host's own players are its own word) */
+		if (player->local_player_index == NONE)
+		{
+			for (machine_index = 0; machine_index < HALO_PORT_MAXIMUM_NETWORK_MACHINES; machine_index++)
+			{
+				if (distributed_machine_has_player(machine_index, player_index))
+					owner = machine_index;
+			}
+		}
+		waiting[players] = NONE;
+		if (owner != NONE && distributed_own_state_can_wait(player_index, &state))
+		{
+			waiting[players] = owner;
+		}
+		else if (player_index < MAXIMUM_TRACKED_PLAYERS)
+		{
+			distributed_own_sent[player_index].valid = TRUE;
+			distributed_own_sent[player_index].time = game_time_get();
+			distributed_own_sent[player_index].state = state;
+		}
+		players++;
+	}
+	for (machine_index = 0; machine_index < HALO_PORT_MAXIMUM_NETWORK_MACHINES; machine_index++)
+	{
+		short count = 0;
+		short size = 0;
+		short index;
+
+		for (index = 0; index < players; index++)
+		{
+			if (waiting[index] == machine_index)
+				continue;
+			if (size + encoded_size[index] > room || count == MAXIMUM_UNIT_STATES_PER_MESSAGE)
+			{
+				distributed_send_to_machine(machine_index, &message, _distributed_message_compact_unit_states,
+					count, (word)(sizeof(message.header) + size));
+				count = 0;
+				size = 0;
+			}
+			csmemcpy(message.data + size, encoded[index], encoded_size[index]);
+			size += encoded_size[index];
+			count++;
+		}
+		if (count)
+		{
+			distributed_send_to_machine(machine_index, &message, _distributed_message_compact_unit_states,
+				count, (word)(sizeof(message.header) + size));
+		}
+	}
+}
+#else
 /* (the host, the browser builds) every player's unit, compactly */
 static void distributed_send_compact_unit_states(
 	void)
@@ -1328,6 +1555,7 @@ static void distributed_send_compact_unit_states(
 	}
 }
 #endif
+#endif
 
 static void distributed_send_unit_states(
 	boolean host)
@@ -1341,10 +1569,10 @@ static void distributed_send_unit_states(
 
 #ifdef HALO_WEB
 	if (host)
-	{
 		distributed_send_compact_unit_states();
-		return;
-	}
+	else
+		distributed_send_compact_predictions();
+	return;
 #endif
 	data_iterator_new(&iterator, player_data);
 	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
@@ -1492,6 +1720,14 @@ static void distributed_handle_unit_states(
 				(vehicle_index == NONE || unit->unit.parent_seat_index == state->seat_index);
 			short *disagreement = &distributed_seat_disagreements[state->player_index];
 
+#if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
+			long elapsed = game_time_get() - distributed_seat_times[state->player_index];
+
+			distributed_seat_times[state->player_index] = game_time_get();
+			elapsed = elapsed < 1 ? 1 : elapsed > SEAT_DISAGREEMENT_TICKS ? SEAT_DISAGREEMENT_TICKS : elapsed;
+			if (!same)
+				*disagreement += (short)(elapsed - 1);
+#endif
 			if (same)
 				*disagreement = 0;
 			else if (!local || ++*disagreement > SEAT_DISAGREEMENT_TICKS)
@@ -1802,6 +2038,10 @@ void network_distributed_new_game(
 	distributed_last_sent_time = NONE;
 	csmemset(distributed_deaths, 0, sizeof(distributed_deaths));
 	csmemset(distributed_seat_disagreements, 0, sizeof(distributed_seat_disagreements));
+#if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
+	csmemset(distributed_seat_times, 0, sizeof(distributed_seat_times));
+	csmemset(distributed_own_sent, 0, sizeof(distributed_own_sent));
+#endif
 	distributed_statistics_due = FALSE;
 	distributed_pickup_count = 0;
 #ifdef HALO_WEB
@@ -1881,7 +2121,8 @@ void network_distributed_handle_message(
 	/* (their entries vary in size: read as they come) */
 	case _distributed_message_compact_unit_states:
 	case _distributed_message_compact_inventories:
-	case _distributed_message_compact_game_state: entry_size = 0; break;
+	case _distributed_message_compact_game_state:
+	case _distributed_message_compact_player_prediction: entry_size = 0; break;
 #endif
 	default: entry_size = network_objects_entry_size(header.type); break;
 	}
@@ -1899,6 +2140,9 @@ void network_distributed_handle_message(
 	case _distributed_message_client_ready:
 	case _distributed_message_hit_reports:
 	case _distributed_message_vehicle_prediction:
+#ifdef HALO_WEB
+	case _distributed_message_compact_player_prediction:
+#endif
 		if (machine_index == NONE || game_connection() != _game_connection_network_server)
 			return;
 		break;
@@ -1968,6 +2212,28 @@ void network_distributed_handle_message(
 	case _distributed_message_compact_inventories:
 		network_objects_handle_compact_inventories(entries, size - (long)sizeof(header), header.count);
 		break;
+	case _distributed_message_compact_player_prediction:
+	{
+		struct distributed_unit_state states[MAXIMUM_LOCAL_PLAYERS];
+		byte const *data = (byte const *)entries;
+		long available = size - (long)sizeof(header);
+		real_rectangle3d bounds;
+		short count = 0;
+
+		distributed_compact_bounds(&bounds);
+		while (count < header.count && count < MAXIMUM_LOCAL_PLAYERS)
+		{
+			short read = distributed_compact_unit_state_read(data, available, &states[count], &bounds);
+
+			if (!read)
+				break;
+			data += read;
+			available -= read;
+			count++;
+		}
+		distributed_handle_predictions(machine_index, states, count);
+		break;
+	}
 	case _distributed_message_compact_game_state:
 	{
 		byte state[MAXIMUM_GAME_STATE_SIZE];

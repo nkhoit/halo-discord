@@ -47,7 +47,8 @@ function webOnlyLines(source) {
   return source.split('\n').map(line => {
     const directive = line.trim();
     if (/^#\s*if/.test(directive)) {
-      stack.push({kind: /^#\s*ifdef\s+HALO_WEB\b/.test(directive) ? 'web' :
+      stack.push({kind: /^#\s*ifdef\s+HALO_WEB\b/.test(directive) ||
+        /^#\s*if\s+defined\s*\(\s*HALO_WEB\s*\)\s*&&/.test(directive) ? 'web' :
         /^#\s*ifndef\s+HALO_WEB\b/.test(directive) ? 'not-web' : 'other', inElse: false});
     } else if (/^#\s*else/.test(directive) && stack.length) {
       stack[stack.length - 1].inElse = true;
@@ -61,15 +62,22 @@ function webOnlyLines(source) {
 try {
   const distributed = read('port/linux/game/network_distributed.c');
   const objects = read('port/linux/game/network_objects.c');
+  const server = read('source/networking/network_server_message_handler.c');
 
-  /* only the browser builds name the compact forms */
-  for (const [file, source] of [['network_distributed.c', distributed], ['network_objects.c', objects]]) {
+  /* only the browser builds name the compact forms, or send a machine's own
+  players' states less often */
+  for (const [file, source] of [['network_distributed.c', distributed], ['network_objects.c', objects],
+    ['network_server_message_handler.c', server]]) {
     for (const {line, web} of webOnlyLines(source)) {
-      if (/compact|inventories_due|game_state_due|zero_runs/i.test(line) && !/^\s*(\/\*|\*)/.test(line)) {
+      if (/compact|inventories_due|game_state_due|zero_runs|own_sent|own_state|seat_times|send_to_machine\(/i.test(line) &&
+        !/^\s*(\/\*|\*)/.test(line)) {
         assert(web, `${file}: a compact form outside HALO_WEB: ${line.trim()}`);
       }
     }
   }
+  /* (a machine's own players' unit states less often: off unless a build sets it) */
+  assert(/#ifndef OWN_UNIT_STATE_INTERVAL_TICKS\n#define OWN_UNIT_STATE_INTERVAL_TICKS 1\n#endif/.test(distributed),
+    'network_distributed.c: own-unit states every tick by default');
   /* and the native builds still send the plain ones */
   for (const [file, source, kinds] of [
     ['network_distributed.c', distributed, ['_distributed_message_unit_states', '_distributed_message_game_state']],

@@ -622,6 +622,345 @@ static byte network_game_message_buffer[HALO_PORT_MAXIMUM_NETWORK_MESSAGE_SIZE +
 static byte network_game_message_buffer[0x604];
 #endif
 
+
+#ifdef HALO_WEB
+/* ---------- compact input (the browser builds)
+
+Every tick the host relays every player's input, and each client sends its
+own: the game's codec spends 30 bytes on a player's. The browser builds
+quantize an input where it is made (update_client_queue, on every machine,
+the host's own player's included), before it is used or sent, so the host,
+the player's own prediction and every replay of it (player_queues_new.c)
+run the same values; then these two messages carry it in a few bytes,
+exactly:
+- the aim: yaw and pitch in 16 bits each (0.0055 and 0.0027 degrees);
+- the buttons in 16 bits, only when any is held;
+- the movement in 8 bits a direction and the trigger in 8 bits, only when
+  not zero;
+- the weapon, grenade and zoom wanted in a byte, only when any is.
+A value outside its range (it never is) goes as it is. */
+
+#include <math.h>
+#include "game/players.h"
+
+enum
+{
+	_compact_input_buttons_bit = 0,
+	_compact_input_buttons_long_bit,
+	_compact_input_throttle_bit,
+	_compact_input_trigger_bit,
+	_compact_input_choices_bit,
+	_compact_input_choices_long_bit,
+	_compact_input_aim_float_bit,
+};
+
+#define COMPACT_INPUT_PI 3.14159265358979f
+#define COMPACT_INPUT_MAXIMUM_SIZE (1 + 4 + 8 + 2 + 1 + 6)
+
+static boolean compact_input_aim_fits(
+	real pitch)
+{
+	return pitch >= -COMPACT_INPUT_PI / 2.0f && pitch <= COMPACT_INPUT_PI / 2.0f;
+}
+
+/* (0 to 2 pi, as player_control.c keeps it) */
+static word compact_input_yaw_bits(
+	real yaw)
+{
+	real turns = yaw / (2.0f * COMPACT_INPUT_PI);
+
+	turns -= (real)floor(turns);
+	return (word)((long)floor(turns * 65536.0f + 0.5f) & 0xFFFF);
+}
+
+static real compact_input_yaw(
+	word bits)
+{
+	return (real)bits / 65536.0f * (2.0f * COMPACT_INPUT_PI);
+}
+
+static word compact_input_pitch_bits(
+	real pitch)
+{
+	return (word)floor((pitch + COMPACT_INPUT_PI / 2.0f) / COMPACT_INPUT_PI * 65535.0f + 0.5f);
+}
+
+static real compact_input_pitch(
+	word bits)
+{
+	return (real)bits / 65535.0f * COMPACT_INPUT_PI - COMPACT_INPUT_PI / 2.0f;
+}
+
+static char compact_input_throttle_bits(
+	real value)
+{
+	real scaled = value * 127.0f;
+
+	if (scaled > 127.0f)
+		scaled = 127.0f;
+	if (scaled < -127.0f)
+		scaled = -127.0f;
+	return (char)floor(scaled + 0.5f);
+}
+
+static real compact_input_throttle(
+	char bits)
+{
+	return (real)bits / 127.0f;
+}
+
+static byte compact_input_trigger_bits(
+	real value)
+{
+	real scaled = value * 255.0f;
+
+	if (scaled > 255.0f)
+		scaled = 255.0f;
+	if (scaled < 0.0f)
+		scaled = 0.0f;
+	return (byte)floor(scaled + 0.5f);
+}
+
+static real compact_input_trigger(
+	byte bits)
+{
+	return (real)bits / 255.0f;
+}
+
+/* (update_client_queue) an input as every machine will have it */
+void web_quantize_player_action(
+	struct player_action *action)
+{
+	action->desired_facing.yaw = compact_input_yaw(compact_input_yaw_bits(action->desired_facing.yaw));
+	if (compact_input_aim_fits(action->desired_facing.pitch))
+		action->desired_facing.pitch = compact_input_pitch(compact_input_pitch_bits(action->desired_facing.pitch));
+	action->throttle.i = compact_input_throttle(compact_input_throttle_bits(action->throttle.i));
+	action->throttle.j = compact_input_throttle(compact_input_throttle_bits(action->throttle.j));
+	action->primary_trigger = compact_input_trigger(compact_input_trigger_bits(action->primary_trigger));
+}
+
+static boolean compact_input_choice_fits(
+	short value)
+{
+	return value >= -1 && value <= 6;
+}
+
+/* a quantized input in the compact form: its size */
+static short compact_input_write(
+	byte *out,
+	struct player_action const *action)
+{
+	short size = 1;
+	byte fields = 0;
+	word bits;
+
+	if (compact_input_aim_fits(action->desired_facing.pitch))
+	{
+		bits = compact_input_yaw_bits(action->desired_facing.yaw);
+		csmemcpy(out + size, &bits, 2);
+		bits = compact_input_pitch_bits(action->desired_facing.pitch);
+		csmemcpy(out + size + 2, &bits, 2);
+		size += 4;
+	}
+	else
+	{
+		SET_FLAG(fields, _compact_input_aim_float_bit, TRUE);
+		csmemcpy(out + size, &action->desired_facing, 8);
+		size += 8;
+	}
+	if (action->control_flags > 0xFFFF)
+	{
+		SET_FLAG(fields, _compact_input_buttons_long_bit, TRUE);
+		csmemcpy(out + size, &action->control_flags, 4);
+		size += 4;
+	}
+	else if (action->control_flags)
+	{
+		bits = (word)action->control_flags;
+		SET_FLAG(fields, _compact_input_buttons_bit, TRUE);
+		csmemcpy(out + size, &bits, 2);
+		size += 2;
+	}
+	if (action->throttle.i != 0.0f || action->throttle.j != 0.0f)
+	{
+		SET_FLAG(fields, _compact_input_throttle_bit, TRUE);
+		out[size++] = (byte)compact_input_throttle_bits(action->throttle.i);
+		out[size++] = (byte)compact_input_throttle_bits(action->throttle.j);
+	}
+	if (action->primary_trigger != 0.0f)
+	{
+		SET_FLAG(fields, _compact_input_trigger_bit, TRUE);
+		out[size++] = compact_input_trigger_bits(action->primary_trigger);
+	}
+	if (action->desired_weapon_index != NONE || action->desired_grenade_index != NONE ||
+		action->desired_zoom_level != NONE)
+	{
+		if (compact_input_choice_fits(action->desired_weapon_index) &&
+			compact_input_choice_fits(action->desired_grenade_index) && action->desired_grenade_index <= 2 &&
+			compact_input_choice_fits(action->desired_zoom_level))
+		{
+			SET_FLAG(fields, _compact_input_choices_bit, TRUE);
+			out[size++] = (byte)((action->desired_weapon_index + 1) |
+				((action->desired_grenade_index + 1) << 3) | ((action->desired_zoom_level + 1) << 5));
+		}
+		else
+		{
+			SET_FLAG(fields, _compact_input_choices_long_bit, TRUE);
+			csmemcpy(out + size, &action->desired_weapon_index, 6);
+			size += 6;
+		}
+	}
+	out[0] = fields;
+	return size;
+}
+
+/* an input from its compact form: the bytes read, or 0 if malformed */
+static short compact_input_read(
+	byte const *in,
+	long available,
+	struct player_action *action)
+{
+	short size = 1;
+	byte fields;
+	word bits;
+
+#define COMPACT_INPUT_NEED(bytes) if (size + (bytes) > available) return 0
+	COMPACT_INPUT_NEED(0);
+	fields = in[0];
+	csmemset(action, 0, sizeof(*action));
+	action->desired_weapon_index = NONE;
+	action->desired_grenade_index = NONE;
+	action->desired_zoom_level = NONE;
+	if (TEST_FLAG(fields, _compact_input_aim_float_bit))
+	{
+		COMPACT_INPUT_NEED(8);
+		csmemcpy(&action->desired_facing, in + size, 8);
+		size += 8;
+	}
+	else
+	{
+		COMPACT_INPUT_NEED(4);
+		csmemcpy(&bits, in + size, 2);
+		action->desired_facing.yaw = compact_input_yaw(bits);
+		csmemcpy(&bits, in + size + 2, 2);
+		action->desired_facing.pitch = compact_input_pitch(bits);
+		size += 4;
+	}
+	if (TEST_FLAG(fields, _compact_input_buttons_long_bit))
+	{
+		COMPACT_INPUT_NEED(4);
+		csmemcpy(&action->control_flags, in + size, 4);
+		size += 4;
+	}
+	else if (TEST_FLAG(fields, _compact_input_buttons_bit))
+	{
+		COMPACT_INPUT_NEED(2);
+		csmemcpy(&bits, in + size, 2);
+		action->control_flags = bits;
+		size += 2;
+	}
+	if (TEST_FLAG(fields, _compact_input_throttle_bit))
+	{
+		COMPACT_INPUT_NEED(2);
+		action->throttle.i = compact_input_throttle((char)in[size]);
+		action->throttle.j = compact_input_throttle((char)in[size + 1]);
+		size += 2;
+	}
+	if (TEST_FLAG(fields, _compact_input_trigger_bit))
+	{
+		COMPACT_INPUT_NEED(1);
+		action->primary_trigger = compact_input_trigger(in[size]);
+		size += 1;
+	}
+	if (TEST_FLAG(fields, _compact_input_choices_bit))
+	{
+		COMPACT_INPUT_NEED(1);
+		action->desired_weapon_index = (short)((in[size] & 7) - 1);
+		action->desired_grenade_index = (short)(((in[size] >> 3) & 3) - 1);
+		action->desired_zoom_level = (short)(((in[size] >> 5) & 7) - 1);
+		size += 1;
+	}
+	else if (TEST_FLAG(fields, _compact_input_choices_long_bit))
+	{
+		COMPACT_INPUT_NEED(6);
+		csmemcpy(&action->desired_weapon_index, in + size, 6);
+		size += 6;
+	}
+#undef COMPACT_INPUT_NEED
+	return size;
+}
+
+/* the game's per-tick update (the host's: its header, then every player's
+input) or a client's (its header, then its players'), compactly after the
+version byte; the size, or 0 if it does not fit */
+enum
+{
+	COMPACT_SERVER_UPDATE_HEADER = 0x10,
+	COMPACT_CLIENT_UPDATE_HEADER = 0x08,
+	COMPACT_SERVER_UPDATE_PLAYERS = HALO_PORT_MAXIMUM_NETWORK_PLAYERS,
+	COMPACT_CLIENT_UPDATE_PLAYERS = 4,
+};
+
+static short compact_game_update_write(
+	boolean server,
+	void const *message,
+	byte *out,
+	short room)
+{
+	byte const *bytes = (byte const *)message;
+	short header = server ? COMPACT_SERVER_UPDATE_HEADER : COMPACT_CLIENT_UPDATE_HEADER;
+	short maximum = server ? COMPACT_SERVER_UPDATE_PLAYERS : COMPACT_CLIENT_UPDATE_PLAYERS;
+	short count;
+	short size = 1 + header;
+	short index;
+
+	csmemcpy(&count, bytes + header - 2, 2);
+	if (count < 0 || count > maximum || size > room)
+		return 0;
+	out[0] = 1;
+	csmemcpy(out + 1, bytes, header);
+	for (index = 0; index < count; index++)
+	{
+		if (size + COMPACT_INPUT_MAXIMUM_SIZE > room)
+			return 0;
+		size += compact_input_write(out + size, (struct player_action const *)(bytes + header) + index);
+	}
+	return size;
+}
+
+static boolean compact_game_update_read(
+	boolean server,
+	void *message,
+	long message_size,
+	byte const *in,
+	long size)
+{
+	byte *bytes = (byte *)message;
+	short header = server ? COMPACT_SERVER_UPDATE_HEADER : COMPACT_CLIENT_UPDATE_HEADER;
+	short maximum = server ? COMPACT_SERVER_UPDATE_PLAYERS : COMPACT_CLIENT_UPDATE_PLAYERS;
+	long read = 1 + header;
+	short count;
+	short index;
+
+	if (size < read || message_size < header + maximum * (long)sizeof(struct player_action))
+		return FALSE;
+	csmemset(message, 0, header + maximum * sizeof(struct player_action));
+	csmemcpy(bytes, in + 1, header);
+	csmemcpy(&count, bytes + header - 2, 2);
+	if (count < 0 || count > maximum)
+		return FALSE;
+	for (index = 0; index < count; index++)
+	{
+		short consumed = compact_input_read(in + read, size - read, (struct player_action *)(bytes + header) + index);
+
+		if (!consumed)
+			return FALSE;
+		read += consumed;
+	}
+	return read == size;
+}
+#endif
+
 /* ---------- public code */
 
 void initialize_network_game_packets(
@@ -663,6 +1002,21 @@ static boolean encode_network_game_message(
 #line 353 "c:\\halo\\SOURCE\\networking\\network_messages.c"
 	match_assert(__FILE__, __LINE__, message_struct && encoded_message && encoded_message_size && (*encoded_message_size>0));
 
+#ifdef HALO_WEB
+	/* (the browser builds) the per-tick updates in their compact form, in the
+	game's envelope: a version byte first, the packet's type last */
+	if (message_type == _message_server_game_update || message_type == _message_client_game_update)
+	{
+		short size = compact_game_update_write(message_type == _message_server_game_update, message_struct,
+			(byte *)encoded_message, (short)(*encoded_message_size - 1));
+
+		if (size <= 0)
+			return FALSE;
+		*encoded_message_size = size;
+		return data_packet_group_append_packet_header(&data_0030aa68.group, encoded_message, encoded_message_size,
+			(short)message_type);
+	}
+#endif
 	return data_packet_group_encode_packet(&data_0030aa68.group, message_struct, encoded_message, encoded_message_size, message_type, message_version);
 }
 
@@ -871,6 +1225,31 @@ boolean decode_network_game_message(
 #line 313 "c:\\halo\\SOURCE\\networking\\network_messages.c"
 	match_assert(__FILE__, __LINE__, message_struct && encoded_message && encoded_message_size && (*encoded_message_size>0) && packet_type && (*packet_type>=0) && packet_version && (*packet_version>0));
 
+#ifdef HALO_WEB
+	{
+		byte type = ((byte const *)encoded_message)[*encoded_message_size - 1];
+
+		if (type == _message_server_game_update || type == _message_client_game_update)
+		{
+			boolean server = type == _message_server_game_update;
+
+			result = data_0030aa68.group.packets[type].packet_class == expected_packet_class &&
+				compact_game_update_read(server, message_struct,
+					server ? sizeof(message_server_game_update) : sizeof(message_client_game_update),
+					(byte const *)encoded_message, *encoded_message_size - 1);
+			if (result)
+			{
+				--*encoded_message_size;
+				*packet_type = type;
+			}
+			else
+			{
+				network_event("decode_network_game_message() failed");
+			}
+			return result;
+		}
+	}
+#endif
 	result = data_packet_group_decode_packet(&data_0030aa68.group, message_struct, encoded_message, encoded_message_size, packet_type, packet_version, expected_packet_class);
 
 	if (!result)

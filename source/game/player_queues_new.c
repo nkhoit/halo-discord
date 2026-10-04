@@ -728,9 +728,22 @@ static real update_client_pending_primary_triggers[MAXIMUM_LOCAL_PLAYERS];
 static long update_client_pending_game_time = NONE;
 
 #endif
+#ifdef HALO_WEB
+/* network_messages.c's: an input as every machine will have it */
+void web_quantize_player_action(struct player_action *action);
+#endif
+
 void update_client_queue(
 	struct player_action const *action)
 {
+#ifdef HALO_WEB
+	/* (the browser builds) quantized where it is made, before this machine
+	uses or sends it: the host and every client run it as this one does */
+	struct player_action quantized = *action;
+
+	web_quantize_player_action(&quantized);
+	action = &quantized;
+#endif
 	update_client_globals.saved_action_collection.actions[
 		update_client_globals.current_local_player] = *action;
 #ifdef HALO_LINUX
