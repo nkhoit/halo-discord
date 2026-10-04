@@ -20,6 +20,7 @@ import {
   IDENTIFIER_PATTERN,
   instanceLocation,
   MAXIMUM_BATCH_BYTES,
+  RELAY_PROTOCOLS,
   ROOM_ID_PATTERN,
   parseSocketQuery,
 } from "./protocol.ts";
@@ -394,7 +395,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
   });
 
   /* Browsers cannot set headers on a WebSocket, so the token arrives in the
-     first message: {type: "auth", token, id, build, spectator?}. */
+     first message: {type: "auth", token, id, build, spectator?, protocol?}. */
   function authenticate(socket: WebSocket, roomId: string, query: NonNullable<ReturnType<typeof parseSocketQuery>>,
       context: SocketContext) {
     const deadline = setTimeout(() => socket.close(CloseCode.Unauthorized, "authentication timed out"),
@@ -402,7 +403,8 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     socket.once("close", () => clearTimeout(deadline));
     socket.once("message", (data, isBinary) => {
       clearTimeout(deadline);
-      let message: { type?: unknown; token?: unknown; id?: unknown; build?: unknown; spectator?: unknown } | null = null;
+      let message: { type?: unknown; token?: unknown; id?: unknown; build?: unknown; spectator?: unknown;
+        protocol?: unknown } | null = null;
       if (!isBinary) {
         try {
           message = JSON.parse(data.toString());
@@ -412,7 +414,8 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       }
       const session = message?.type === "auth" ? verifyToken(config.tokenSecret, message.token) : null;
       if (!session || typeof message?.id !== "string" || !IDENTIFIER_PATTERN.test(message.id) ||
-          typeof message.build !== "string" || !BUILD_PATTERN.test(message.build)) {
+          typeof message.build !== "string" || !BUILD_PATTERN.test(message.build) ||
+          (message.protocol !== undefined && !RELAY_PROTOCOLS.includes(message.protocol as number))) {
         log({ event: "unauthorized", room: roomId.slice(0, 8), user: session?.sub ?? null });
         socket.close(CloseCode.Unauthorized, "unauthorized");
         return;
@@ -422,6 +425,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
         user: session.sub, name: session.name, id: message.id, role: query.role, kind: query.kind,
         /* (a guest that joins to watch) */
         spectator: query.role === "guest" && message.spectator === true,
+        protocol: (message.protocol as number | undefined) ?? 1,
       }, message.build, accessOf(session, roomId));
     });
   }

@@ -3,64 +3,22 @@
    dropped (reliable ones still go), a receiver past
    RELAY_CLOSE_BUFFERED_BYTES is closed, and every other member is served as
    before. */
-import { EventEmitter } from "node:events";
-
-import type { WebSocket } from "ws";
 import { describe, expect, it } from "vitest";
 
-import { BATCH_MARKER, Channel, CloseCode, joinBatch, splitBatch } from "../src/protocol.ts";
+import { Channel, CloseCode, joinBatch } from "../src/protocol.ts";
 import { RELAY_CLOSE_BUFFERED_BYTES, RELAY_DROP_BUFFERED_BYTES, Relay } from "../src/relay.ts";
+import { FakeSocket, joinFake } from "./fake-socket.ts";
 import { frame, sender } from "./harness.ts";
 
 const HOST = "020000000001";
 const GUEST_A = "020000000002";
 const GUEST_B = "020000000003";
 
-class FakeSocket extends EventEmitter {
-  readonly OPEN = 1;
-  readyState = 1;
-  bufferedAmount = 0;
-  readonly sent: Uint8Array[] = [];
-  readonly texts: string[] = [];
-  closedWith: number | null = null;
-  terminated = false;
-
-  send(data: string | Uint8Array): void {
-    if (typeof data === "string") this.texts.push(data);
-    else this.sent.push(data);
-  }
-
-  close(code: number): void {
-    if (this.readyState !== 1) return;
-    this.readyState = 2;
-    this.closedWith = code;
-  }
-
-  terminate(): void {
-    this.terminated = true;
-    this.readyState = 3;
-    this.emit("close", this.closedWith ?? 1006, Buffer.from(""));
-  }
-
-  /* what the relay forwarded, frame by frame */
-  frames(): Uint8Array[] {
-    return this.sent.flatMap((message) => message[0] === BATCH_MARKER ? splitBatch(message)! : [message]);
-  }
-
-  message(bytes: Uint8Array): void {
-    this.emit("message", Buffer.from(bytes), true);
-  }
-}
-
 function room() {
   const logs: Record<string, unknown>[] = [];
   const relay = new Relay(10, (entry) => logs.push(entry));
-  const join = (id: string, role: "host" | "guest", user: string) => {
-    const socket = new FakeSocket();
-    relay.join(socket as unknown as WebSocket, "room-backpressure",
-      { user, name: user, id, role, kind: "both", spectator: false }, "web-1");
-    return socket;
-  };
+  const join = (id: string, role: "host" | "guest", user: string) =>
+    joinFake(relay, "room-backpressure", { user, name: user, id, role, kind: "both", spectator: false });
   const host = join(HOST, "host", "user-h");
   const guestA = join(GUEST_A, "guest", "user-a");
   const guestB = join(GUEST_B, "guest", "user-b");
