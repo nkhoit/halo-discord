@@ -49,6 +49,13 @@ machine (their datum identifiers need not be).
 #include "network_distributed.h"
 #ifdef HALO_WEB
 #include "items/weapons.h"
+#include "scenario/scenario.h"
+#include "structures/structure_bsp_definitions.h"
+#endif
+
+#ifdef HALO_WEB
+/* platform.c's */
+void platform_log(char const *format, ...);
 #endif
 
 /* network_game_globals.c's and network_server_message_handler.c's */
@@ -175,6 +182,523 @@ struct distributed_statistics_message
 	struct distributed_player_statistics players[MAXIMUM_STATISTICS_PER_MESSAGE];
 };
 
+#ifdef HALO_WEB
+/* ---------- compact messages (the browser builds)
+
+Over the internet relay the host's per-tick messages are most of a match's
+bandwidth, one copy per guest. The browser builds send three kinds in a
+compact form; the native builds keep the plain ones.
+
+A unit state: the player, the flags and which optional fields follow; then
+(a living unit) its index, the vehicle and seat it rides, its position as
+three 16-bit fractions of the map's world bounds (with a margin; a float
+position outside them), its velocity in 16 bits per axis (none when still,
+floats past the range), its facing (and its up, when not the world's) as
+two 16-bit octahedral coordinates, its shields and body as half floats,
+its damage and powerups only when it has any; (a dead one) the respawn
+timer and the killer. */
+
+enum
+{
+	_compact_unit_alive_bit = 0,
+	_compact_unit_vehicle_bit,
+	_compact_unit_position_bit,
+	_compact_unit_position_float_bit,
+	_compact_unit_velocity_bit,
+	_compact_unit_velocity_float_bit,
+	_compact_unit_up_bit,
+	_compact_unit_damage_bit,
+	_compact_unit_powerups_bit,
+};
+
+/* world units past the map's world bounds still quantized */
+#define COMPACT_BOUNDS_MARGIN 64.0f
+/* world units a tick, each axis, a quantized velocity spans either way */
+#define COMPACT_VELOCITY_RANGE 4.0f
+#define COMPACT_UNIT_STATE_MAXIMUM_SIZE (4 + 4 + 6 + 12 + 12 + 4 + 4 + 4 + 8 + 3 + 2 * NUMBER_OF_PLAYER_POWERUPS)
+
+word distributed_half_from_real(
+	real value)
+{
+	union { real f; unsigned int u; } bits;
+	unsigned int sign, exponent, mantissa;
+
+	bits.f = value;
+	sign = (bits.u >> 16) & 0x8000;
+	exponent = (bits.u >> 23) & 0xFF;
+	mantissa = bits.u & 0x7FFFFF;
+	if (exponent == 0xFF)
+		return (word)(sign | 0x7C00 | (mantissa ? 0x200 : 0));
+	if (exponent > 142)
+		return (word)(sign | 0x7C00);
+	if (exponent < 113)
+	{
+		unsigned int shift;
+
+		/* (a subnormal half, or zero) */
+		if (exponent < 102)
+			return (word)sign;
+		mantissa |= 0x800000;
+		shift = 126 - exponent;
+		return (word)(sign | ((mantissa + (1u << (shift - 1))) >> shift));
+	}
+	/* (rounded to the nearest; a carry moves the exponent, as it should) */
+	return (word)((sign | ((exponent - 112) << 10) | (mantissa >> 13)) + ((mantissa >> 12) & 1));
+}
+
+real distributed_real_from_half(
+	word half)
+{
+	union { real f; unsigned int u; } bits;
+	unsigned int sign = ((unsigned int)half & 0x8000) << 16;
+	unsigned int exponent = (half >> 10) & 0x1F;
+	unsigned int mantissa = half & 0x3FF;
+
+	if (exponent == 0)
+	{
+		real value = (real)mantissa / 16777216.0f;
+
+		return sign ? -value : value;
+	}
+	if (exponent == 31)
+		bits.u = sign | 0x7F800000 | (mantissa << 13);
+	else
+		bits.u = sign | ((exponent + 112) << 23) | (mantissa << 13);
+	return bits.f;
+}
+
+static word distributed_quantize(
+	real value,
+	real minimum,
+	real maximum)
+{
+	real fraction = (value - minimum) / (maximum - minimum);
+
+	if (fraction < 0.0f)
+		fraction = 0.0f;
+	if (fraction > 1.0f)
+		fraction = 1.0f;
+	return (word)floor(fraction * 65535.0f + 0.5f);
+}
+
+static real distributed_dequantize(
+	word value,
+	real minimum,
+	real maximum)
+{
+	return minimum + (maximum - minimum) * ((real)value / 65535.0f);
+}
+
+static short distributed_signed_fraction(
+	real value)
+{
+	real scaled = value * 32767.0f;
+
+	if (scaled > 32767.0f)
+		scaled = 32767.0f;
+	if (scaled < -32767.0f)
+		scaled = -32767.0f;
+	return (short)floor(scaled + 0.5f);
+}
+
+/* a unit vector in two 16-bit octahedral coordinates */
+static void distributed_octahedral_write(
+	byte *out,
+	real_vector3d const *vector)
+{
+	real length = (real)(fabs(vector->i) + fabs(vector->j) + fabs(vector->k));
+	real x = length > 0.0f ? vector->i / length : 0.0f;
+	real y = length > 0.0f ? vector->j / length : 0.0f;
+	short coordinates[2];
+
+	if (length > 0.0f && vector->k < 0.0f)
+	{
+		real folded_x = (1.0f - (real)fabs(y)) * (x >= 0.0f ? 1.0f : -1.0f);
+		real folded_y = (1.0f - (real)fabs(x)) * (y >= 0.0f ? 1.0f : -1.0f);
+
+		x = folded_x;
+		y = folded_y;
+	}
+	coordinates[0] = distributed_signed_fraction(x);
+	coordinates[1] = distributed_signed_fraction(y);
+	csmemcpy(out, coordinates, sizeof(coordinates));
+}
+
+static void distributed_octahedral_read(
+	byte const *in,
+	real_vector3d *vector)
+{
+	short coordinates[2];
+	real x, y, z, length;
+
+	csmemcpy(coordinates, in, sizeof(coordinates));
+	x = coordinates[0] / 32767.0f;
+	y = coordinates[1] / 32767.0f;
+	z = 1.0f - (real)fabs(x) - (real)fabs(y);
+	if (z < 0.0f)
+	{
+		real unfolded_x = (1.0f - (real)fabs(y)) * (x >= 0.0f ? 1.0f : -1.0f);
+		real unfolded_y = (1.0f - (real)fabs(x)) * (y >= 0.0f ? 1.0f : -1.0f);
+
+		x = unfolded_x;
+		y = unfolded_y;
+	}
+	length = (real)sqrt(x * x + y * y + z * z);
+	vector->i = x / length;
+	vector->j = y / length;
+	vector->k = z / length;
+}
+
+static boolean distributed_compact_inside(
+	real_point3d const *point,
+	real_rectangle3d const *bounds)
+{
+	return point->x >= bounds->x0 && point->x <= bounds->x1 && point->y >= bounds->y0 && point->y <= bounds->y1 &&
+		point->z >= bounds->z0 && point->z <= bounds->z1;
+}
+
+/* the state in the compact form at out (room bytes free): its size, or 0
+if it does not fit */
+static short distributed_compact_unit_state_write(
+	byte *out,
+	short room,
+	struct distributed_unit_state const *state,
+	real_rectangle3d const *bounds)
+{
+	byte buffer[COMPACT_UNIT_STATE_MAXIMUM_SIZE];
+	short size = 4;
+	word fields = 0;
+	word half;
+	int value;
+	short index;
+
+	buffer[0] = state->player_index;
+	buffer[1] = state->flags;
+	if (state->unit_index == NONE)
+	{
+		csmemcpy(buffer + size, &state->respawn_timer, 2);
+		size += 2;
+		buffer[size++] = state->killing_player_index;
+	}
+	else
+	{
+		boolean powerups = state->unit_flags != 0 || state->active_camouflage != 0.0f;
+
+		SET_FLAG(fields, _compact_unit_alive_bit, TRUE);
+		value = (int)state->unit_index;
+		csmemcpy(buffer + size, &value, 4);
+		size += 4;
+		if (state->vehicle_index != NONE)
+		{
+			SET_FLAG(fields, _compact_unit_vehicle_bit, TRUE);
+			value = (int)state->vehicle_index;
+			csmemcpy(buffer + size, &value, 4);
+			csmemcpy(buffer + size + 4, &state->seat_index, 2);
+			size += 6;
+		}
+		/* (where a rider is, its vehicle says) */
+		if (TEST_FLAG(state->flags, _distributed_unit_placed_bit))
+		{
+			real const *velocity = &state->velocity.i;
+
+			if (distributed_compact_inside(&state->position, bounds))
+			{
+				word position[3];
+
+				SET_FLAG(fields, _compact_unit_position_bit, TRUE);
+				position[0] = distributed_quantize(state->position.x, bounds->x0, bounds->x1);
+				position[1] = distributed_quantize(state->position.y, bounds->y0, bounds->y1);
+				position[2] = distributed_quantize(state->position.z, bounds->z0, bounds->z1);
+				csmemcpy(buffer + size, position, sizeof(position));
+				size += sizeof(position);
+			}
+			else
+			{
+				SET_FLAG(fields, _compact_unit_position_float_bit, TRUE);
+				csmemcpy(buffer + size, &state->position, 12);
+				size += 12;
+			}
+			if (velocity[0] != 0.0f || velocity[1] != 0.0f || velocity[2] != 0.0f)
+			{
+				if (fabs(velocity[0]) <= COMPACT_VELOCITY_RANGE && fabs(velocity[1]) <= COMPACT_VELOCITY_RANGE &&
+					fabs(velocity[2]) <= COMPACT_VELOCITY_RANGE)
+				{
+					short quantized[3];
+
+					SET_FLAG(fields, _compact_unit_velocity_bit, TRUE);
+					for (index = 0; index < 3; index++)
+						quantized[index] = distributed_signed_fraction(velocity[index] / COMPACT_VELOCITY_RANGE);
+					csmemcpy(buffer + size, quantized, sizeof(quantized));
+					size += sizeof(quantized);
+				}
+				else
+				{
+					SET_FLAG(fields, _compact_unit_velocity_float_bit, TRUE);
+					csmemcpy(buffer + size, &state->velocity, 12);
+					size += 12;
+				}
+			}
+		}
+		distributed_octahedral_write(buffer + size, &state->forward);
+		size += 4;
+		if (fabs(state->up.i) > 0.0001f || fabs(state->up.j) > 0.0001f || state->up.k < 0.9999f)
+		{
+			SET_FLAG(fields, _compact_unit_up_bit, TRUE);
+			distributed_octahedral_write(buffer + size, &state->up);
+			size += 4;
+		}
+		half = distributed_half_from_real(state->body_vitality);
+		csmemcpy(buffer + size, &half, 2);
+		half = distributed_half_from_real(state->shield_vitality);
+		csmemcpy(buffer + size + 2, &half, 2);
+		size += 4;
+		if (state->current_body_damage != 0.0f || state->recent_body_damage != 0.0f ||
+			state->current_shield_damage != 0.0f || state->recent_shield_damage != 0.0f)
+		{
+			real const damage[4] = { state->current_body_damage, state->recent_body_damage,
+				state->current_shield_damage, state->recent_shield_damage };
+
+			SET_FLAG(fields, _compact_unit_damage_bit, TRUE);
+			for (index = 0; index < 4; index++)
+			{
+				half = distributed_half_from_real(damage[index]);
+				csmemcpy(buffer + size, &half, 2);
+				size += 2;
+			}
+		}
+		for (index = 0; index < NUMBER_OF_PLAYER_POWERUPS; index++)
+			powerups |= state->powerup_durations[index] != 0;
+		if (powerups)
+		{
+			SET_FLAG(fields, _compact_unit_powerups_bit, TRUE);
+			buffer[size++] = state->unit_flags;
+			half = distributed_half_from_real(state->active_camouflage);
+			csmemcpy(buffer + size, &half, 2);
+			size += 2;
+			csmemcpy(buffer + size, state->powerup_durations, 2 * NUMBER_OF_PLAYER_POWERUPS);
+			size += 2 * NUMBER_OF_PLAYER_POWERUPS;
+		}
+	}
+	csmemcpy(buffer + 2, &fields, 2);
+	if (size > room)
+		return 0;
+	csmemcpy(out, buffer, size);
+	return size;
+}
+
+/* a state from its compact form: the bytes read, or 0 if malformed */
+static short distributed_compact_unit_state_read(
+	byte const *in,
+	long available,
+	struct distributed_unit_state *state,
+	real_rectangle3d const *bounds)
+{
+	short size = 4;
+	word fields;
+	word half;
+	int value;
+	short index;
+
+#define COMPACT_NEED(bytes) if (size + (bytes) > available) return 0
+	COMPACT_NEED(0);
+	csmemset(state, 0, sizeof(*state));
+	state->player_index = in[0];
+	state->flags = in[1];
+	csmemcpy(&fields, in + 2, 2);
+	state->unit_index = NONE;
+	state->vehicle_index = NONE;
+	state->seat_index = NONE;
+	state->killing_player_index = NO_PLAYER;
+	if (!TEST_FLAG(fields, _compact_unit_alive_bit))
+	{
+		COMPACT_NEED(3);
+		csmemcpy(&state->respawn_timer, in + size, 2);
+		state->killing_player_index = in[size + 2];
+		return size + 3;
+	}
+	COMPACT_NEED(4);
+	csmemcpy(&value, in + size, 4);
+	state->unit_index = value;
+	size += 4;
+	if (TEST_FLAG(fields, _compact_unit_vehicle_bit))
+	{
+		COMPACT_NEED(6);
+		csmemcpy(&value, in + size, 4);
+		state->vehicle_index = value;
+		csmemcpy(&state->seat_index, in + size + 4, 2);
+		size += 6;
+	}
+	if (TEST_FLAG(fields, _compact_unit_position_bit))
+	{
+		word position[3];
+
+		COMPACT_NEED(6);
+		csmemcpy(position, in + size, sizeof(position));
+		state->position.x = distributed_dequantize(position[0], bounds->x0, bounds->x1);
+		state->position.y = distributed_dequantize(position[1], bounds->y0, bounds->y1);
+		state->position.z = distributed_dequantize(position[2], bounds->z0, bounds->z1);
+		size += 6;
+	}
+	else if (TEST_FLAG(fields, _compact_unit_position_float_bit))
+	{
+		COMPACT_NEED(12);
+		csmemcpy(&state->position, in + size, 12);
+		size += 12;
+	}
+	if (TEST_FLAG(fields, _compact_unit_velocity_bit))
+	{
+		short quantized[3];
+
+		COMPACT_NEED(6);
+		csmemcpy(quantized, in + size, sizeof(quantized));
+		state->velocity.i = quantized[0] / 32767.0f * COMPACT_VELOCITY_RANGE;
+		state->velocity.j = quantized[1] / 32767.0f * COMPACT_VELOCITY_RANGE;
+		state->velocity.k = quantized[2] / 32767.0f * COMPACT_VELOCITY_RANGE;
+		size += 6;
+	}
+	else if (TEST_FLAG(fields, _compact_unit_velocity_float_bit))
+	{
+		COMPACT_NEED(12);
+		csmemcpy(&state->velocity, in + size, 12);
+		size += 12;
+	}
+	COMPACT_NEED(4);
+	distributed_octahedral_read(in + size, &state->forward);
+	size += 4;
+	if (TEST_FLAG(fields, _compact_unit_up_bit))
+	{
+		COMPACT_NEED(4);
+		distributed_octahedral_read(in + size, &state->up);
+		size += 4;
+	}
+	else
+	{
+		state->up.k = 1.0f;
+	}
+	COMPACT_NEED(4);
+	csmemcpy(&half, in + size, 2);
+	state->body_vitality = distributed_real_from_half(half);
+	csmemcpy(&half, in + size + 2, 2);
+	state->shield_vitality = distributed_real_from_half(half);
+	size += 4;
+	if (TEST_FLAG(fields, _compact_unit_damage_bit))
+	{
+		real *damage[4];
+
+		damage[0] = &state->current_body_damage;
+		damage[1] = &state->recent_body_damage;
+		damage[2] = &state->current_shield_damage;
+		damage[3] = &state->recent_shield_damage;
+		COMPACT_NEED(8);
+		for (index = 0; index < 4; index++)
+		{
+			csmemcpy(&half, in + size, 2);
+			*damage[index] = distributed_real_from_half(half);
+			size += 2;
+		}
+	}
+	if (TEST_FLAG(fields, _compact_unit_powerups_bit))
+	{
+		COMPACT_NEED(3 + 2 * NUMBER_OF_PLAYER_POWERUPS);
+		state->unit_flags = in[size++];
+		csmemcpy(&half, in + size, 2);
+		state->active_camouflage = distributed_real_from_half(half);
+		size += 2;
+		csmemcpy(state->powerup_durations, in + size, 2 * NUMBER_OF_PLAYER_POWERUPS);
+		size += 2 * NUMBER_OF_PLAYER_POWERUPS;
+	}
+#undef COMPACT_NEED
+	return size;
+}
+
+/* bytes with their zero runs packed: the size, then tokens, 0x80 | n for
+n + 1 zeros and n for n + 1 bytes as they are; the packed size, or 0 if it
+does not fit */
+static long distributed_pack_zero_runs(
+	byte *out,
+	long room,
+	byte const *in,
+	long size)
+{
+	long written = 2;
+	long index = 0;
+	word length = (word)size;
+
+	if (room < 2 || size > 0xFFFF)
+		return 0;
+	csmemcpy(out, &length, 2);
+	while (index < size)
+	{
+		long run = 0;
+
+		while (index + run < size && in[index + run] == 0 && run < 128)
+			run++;
+		if (run >= 2)
+		{
+			if (written + 1 > room)
+				return 0;
+			out[written++] = (byte)(0x80 | (run - 1));
+			index += run;
+			continue;
+		}
+		/* bytes as they are, up to the next run of zeros */
+		run = 0;
+		while (index + run < size && run < 128 &&
+			!(in[index + run] == 0 && index + run + 1 < size && in[index + run + 1] == 0))
+		{
+			run++;
+		}
+		if (written + 1 + run > room)
+			return 0;
+		out[written++] = (byte)(run - 1);
+		csmemcpy(out + written, in + index, run);
+		written += run;
+		index += run;
+	}
+	return written;
+}
+
+/* the bytes back: their size, or NONE if malformed or larger than room */
+static long distributed_unpack_zero_runs(
+	byte *out,
+	long room,
+	byte const *in,
+	long size)
+{
+	long read = 2;
+	long written = 0;
+	word length;
+
+	if (size < 2)
+		return NONE;
+	csmemcpy(&length, in, 2);
+	if (length > room)
+		return NONE;
+	while (read < size && written < length)
+	{
+		byte token = in[read++];
+		long run = (token & 0x7F) + 1;
+
+		if (written + run > length)
+			return NONE;
+		if (token & 0x80)
+		{
+			csmemset(out + written, 0, run);
+		}
+		else
+		{
+			if (read + run > size)
+				return NONE;
+			csmemcpy(out + written, in + read, run);
+			read += run;
+		}
+		written += run;
+	}
+	return written == length && read == size ? written : NONE;
+}
+
+#endif
+
 /* ---------- globals */
 
 static long distributed_last_sent_time = NONE;
@@ -198,6 +722,19 @@ static short distributed_pickup_count;
 /* a client: the ticks each of its own players has ridden other than as
 the host has it */
 static short distributed_seat_disagreements[MAXIMUM_TRACKED_PLAYERS];
+#ifdef HALO_WEB
+/* the host (the browser builds): the game type's state as last sent, sent
+again when it changes, at least once a second, and whenever a machine has
+loaded */
+enum { GAME_STATE_REFRESH_TICKS = 30 };
+static byte distributed_game_state_sent[MAXIMUM_GAME_STATE_SIZE];
+static long distributed_game_state_sent_size;
+static long distributed_game_state_sent_time;
+static boolean distributed_game_state_due;
+/* the map's world bounds, with a margin, that unit positions are
+quantized to */
+static boolean distributed_compact_bounds_logged;
+#endif
 
 /* for the automated tests' reports (network_test.c) */
 static struct
@@ -728,6 +1265,70 @@ static void distributed_apply_state(
 	network_objects_correct(unit_index, &state->position, &state->forward, &state->up, &state->velocity, NULL);
 }
 
+#ifdef HALO_WEB
+static void distributed_compact_bounds(
+	real_rectangle3d *bounds)
+{
+	*bounds = global_structure_bsp_get()->world_bounds;
+	bounds->x0 -= COMPACT_BOUNDS_MARGIN;
+	bounds->x1 += COMPACT_BOUNDS_MARGIN;
+	bounds->y0 -= COMPACT_BOUNDS_MARGIN;
+	bounds->y1 += COMPACT_BOUNDS_MARGIN;
+	bounds->z0 -= COMPACT_BOUNDS_MARGIN;
+	bounds->z1 += COMPACT_BOUNDS_MARGIN;
+	if (!distributed_compact_bounds_logged)
+	{
+		distributed_compact_bounds_logged = TRUE;
+		platform_log("network: unit positions to %.4f %.4f %.4f world units",
+			(bounds->x1 - bounds->x0) / 65535.0f, (bounds->y1 - bounds->y0) / 65535.0f,
+			(bounds->z1 - bounds->z0) / 65535.0f);
+	}
+}
+
+/* (the host, the browser builds) every player's unit, compactly */
+static void distributed_send_compact_unit_states(
+	void)
+{
+	struct
+	{
+		struct distributed_message_header header;
+		byte data[DATAGRAM_MAXIMUM_SIZE];
+	} message;
+	short room = (short)(DATAGRAM_MAXIMUM_SIZE - sizeof(message.header));
+	struct data_iterator iterator;
+	struct player_datum *player;
+	real_rectangle3d bounds;
+	short count = 0;
+	short size = 0;
+
+	distributed_compact_bounds(&bounds);
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		struct distributed_unit_state state;
+		short written;
+
+		distributed_state_from_player((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index), &state);
+		written = distributed_compact_unit_state_write(message.data + size, (short)(room - size), &state, &bounds);
+		if (!written || count == MAXIMUM_UNIT_STATES_PER_MESSAGE)
+		{
+			distributed_send(&message, _distributed_message_compact_unit_states, count,
+				(word)(sizeof(message.header) + size), _distributed_to_clients);
+			count = 0;
+			size = 0;
+			written = distributed_compact_unit_state_write(message.data, room, &state, &bounds);
+		}
+		size += written;
+		count++;
+	}
+	if (count)
+	{
+		distributed_send(&message, _distributed_message_compact_unit_states, count,
+			(word)(sizeof(message.header) + size), _distributed_to_clients);
+	}
+}
+#endif
+
 static void distributed_send_unit_states(
 	boolean host)
 {
@@ -738,6 +1339,13 @@ static void distributed_send_unit_states(
 	byte type = host ? _distributed_message_unit_states : _distributed_message_player_prediction;
 	short destination = host ? _distributed_to_clients : _distributed_to_host;
 
+#ifdef HALO_WEB
+	if (host)
+	{
+		distributed_send_compact_unit_states();
+		return;
+	}
+#endif
 	data_iterator_new(&iterator, player_data);
 	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
 	{
@@ -1148,6 +1756,34 @@ static void distributed_send_game_state(
 	} message;
 	long size = game_engine_write_network_state(message.data, sizeof(message.data));
 
+#ifdef HALO_WEB
+	/* (the browser builds) when it changes, at least once a second, and for
+	a machine that has loaded; its zero runs packed (the scores of 128
+	players, most of them none) */
+	if (size > 0 && (distributed_game_state_due || size != distributed_game_state_sent_size ||
+		csmemcmp(message.data, distributed_game_state_sent, size) != 0 ||
+		distributed_game_state_sent_time == NONE ||
+		game_time_get() - distributed_game_state_sent_time >= GAME_STATE_REFRESH_TICKS))
+	{
+		struct
+		{
+			struct distributed_message_header header;
+			byte data[MAXIMUM_GAME_STATE_SIZE + MAXIMUM_GAME_STATE_SIZE / 64 + 4];
+		} packed;
+		long packed_size = distributed_pack_zero_runs(packed.data, sizeof(packed.data), message.data, size);
+
+		if (packed_size > 0)
+		{
+			distributed_send(&packed, _distributed_message_compact_game_state, 0,
+				(word)(sizeof(packed.header) + packed_size), _distributed_to_clients_reliably);
+			csmemcpy(distributed_game_state_sent, message.data, size);
+			distributed_game_state_sent_size = size;
+			distributed_game_state_sent_time = game_time_get();
+			distributed_game_state_due = FALSE;
+		}
+	}
+	return;
+#endif
 	/* (larger than a datagram) */
 	if (size > 0)
 	{
@@ -1168,6 +1804,12 @@ void network_distributed_new_game(
 	csmemset(distributed_seat_disagreements, 0, sizeof(distributed_seat_disagreements));
 	distributed_statistics_due = FALSE;
 	distributed_pickup_count = 0;
+#ifdef HALO_WEB
+	distributed_game_state_sent_size = 0;
+	distributed_game_state_sent_time = NONE;
+	distributed_game_state_due = TRUE;
+	distributed_compact_bounds_logged = FALSE;
+#endif
 	network_objects_new_game();
 	network_damage_new_game();
 }
@@ -1235,6 +1877,12 @@ void network_distributed_handle_message(
 	case _distributed_message_client_ready: entry_size = 0; break;
 	case _distributed_message_damage_events:
 	case _distributed_message_hit_reports: entry_size = network_damage_entry_size(header.type); break;
+#ifdef HALO_WEB
+	/* (their entries vary in size: read as they come) */
+	case _distributed_message_compact_unit_states:
+	case _distributed_message_compact_inventories:
+	case _distributed_message_compact_game_state: entry_size = 0; break;
+#endif
 	default: entry_size = network_objects_entry_size(header.type); break;
 	}
 	if (header.type == 0 || header.type >= NUMBER_OF_DISTRIBUTED_MESSAGES ||
@@ -1294,11 +1942,54 @@ void network_distributed_handle_message(
 	case _distributed_message_game_state:
 		game_engine_read_network_state((byte const *)entries, size - sizeof(header));
 		break;
+#ifdef HALO_WEB
+	case _distributed_message_compact_unit_states:
+	{
+		struct distributed_unit_state states[MAXIMUM_UNIT_STATES_PER_MESSAGE];
+		byte const *data = (byte const *)entries;
+		long available = size - (long)sizeof(header);
+		real_rectangle3d bounds;
+		short count = 0;
+
+		distributed_compact_bounds(&bounds);
+		while (count < header.count && count < MAXIMUM_UNIT_STATES_PER_MESSAGE)
+		{
+			short read = distributed_compact_unit_state_read(data, available, &states[count], &bounds);
+
+			if (!read)
+				break;
+			data += read;
+			available -= read;
+			count++;
+		}
+		distributed_handle_unit_states(states, count);
+		break;
+	}
+	case _distributed_message_compact_inventories:
+		network_objects_handle_compact_inventories(entries, size - (long)sizeof(header), header.count);
+		break;
+	case _distributed_message_compact_game_state:
+	{
+		byte state[MAXIMUM_GAME_STATE_SIZE];
+		long state_size = distributed_unpack_zero_runs(state, sizeof(state), (byte const *)entries,
+			size - (long)sizeof(header));
+
+		if (state_size > 0)
+			game_engine_read_network_state(state, state_size);
+		break;
+	}
+#endif
 	case _distributed_message_objects_synchronized:
 		network_objects_handle_synchronized();
 		break;
 	case _distributed_message_client_ready:
 		network_objects_client_ready(machine_index);
+#ifdef HALO_WEB
+		/* (a machine that has loaded: the whole game type's state and every
+		inventory at their next sends, not only what changes) */
+		distributed_game_state_due = TRUE;
+		network_objects_inventories_due();
+#endif
 		break;
 	case _distributed_message_damage_events:
 		network_damage_handle_events(entries, header.count);

@@ -46,6 +46,12 @@ enum
 	_distributed_message_vehicle_prediction,
 	/* what players picked up, for their clients to show (reliable) */
 	_distributed_message_pickups,
+	/* (the browser builds only: compact forms of unit_states, inventories and
+	game_state, whose entries vary in size; the native builds never send
+	them) */
+	_distributed_message_compact_unit_states,
+	_distributed_message_compact_inventories,
+	_distributed_message_compact_game_state,
 
 	NUMBER_OF_DISTRIBUTED_MESSAGES
 };
@@ -138,6 +144,15 @@ void network_damage_handle_reports(long machine_index, void const *entries, shor
 word network_damage_entry_size(byte type);
 
 #ifdef HALO_WEB
+/* compact message fields (network_distributed.c): an IEEE half float */
+word distributed_half_from_real(real value);
+real distributed_real_from_half(word half);
+/* (network_objects.c) the compact inventories */
+void network_objects_handle_compact_inventories(void const *data, long size, short count);
+/* (network_objects.c, the host) every unit's inventory again at its next
+send: a machine has joined */
+void network_objects_inventories_due(void);
+
 /* the browser's feel scorecard (network_distributed.c) */
 void network_web_hit_reported(long object_index);
 void network_web_hit_confirmed(long object_index);

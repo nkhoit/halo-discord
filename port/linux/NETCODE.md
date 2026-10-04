@@ -107,6 +107,29 @@ Every machine in a game must use the same netcode.
      body falls as the shot had it and the kill is announced with the
      host's killer.
 
+## Bandwidth (the browser builds)
+
+Over the internet relay the host sends each guest its own copy of every
+per-tick message, so their size is most of a match's traffic. The browser
+builds send three of them in compact forms (`tests/compact_messages_test`);
+the native builds keep the plain ones:
+
+- **Unit states** (every tick): positions as 16-bit fractions of the map's
+  world bounds plus a margin (steps of 0.002 to 0.005 world units on the
+  stock maps; a float outside them), velocities in 16 bits per axis, facing
+  and up as 16-bit octahedral pairs (within 0.004 degrees), shields and body
+  as half floats, damage, powerups and the vehicle only when present: about
+  28 bytes a player instead of 96. Still every tick.
+- **Inventories**: a unit's only when it changes, plus at least once a
+  second, and every one when a machine has loaded; held weapons only.
+- **The game type's state**: when it changes, plus once a second and when a
+  machine has loaded, with its runs of zeros packed (the per-player records
+  are sized for 128 players).
+
+Together they are about 2.6 times smaller (of the host's payload to each
+guest with four players); the engine's per-tick update, which carries every
+player's input, is now the largest part.
+
 ## Joining a match in progress
 
 With `network.join_in_progress` on (the hosted pages turn it on for their
