@@ -280,15 +280,132 @@ extern void network_web_relayed_update(void);
 extern void network_web_client_tick(void);
 #endif
 
-/* the distributed netcode (port/linux/NETCODE.md): the latest action the
-host relayed for each player, and the buttons of every relayed update since
-this client's last tick */
+/* the distributed netcode (port/linux/NETCODE.md): the action a client's
+tick runs for each of the other players (the host's relayed update it is
+replaying), and the buttons of the updates merged into it */
 static struct
 {
 	boolean valid;
 	struct player_action action;
 	unsigned long pending_control_flags;
 } update_client_relayed_actions[MAXIMUM_NUMBER_OF_PLAYERS];
+
+/* The host relays its players' actions once a tick, and they reach a client
+unevenly: none for a tick or more, then several at once. Running only the
+newest each tick lost a press whose release came with it and held a trigger
+down until the next arrived (a remote plasma pistol charged and overheated
+from taps). A client replays them in order, a tick each, once it has a
+spare: an update late by a tick takes the spare. When it falls further
+behind it catches up two a tick, the second merged into the first: both
+updates' buttons pressed, the trigger as far down as either had it. */
+enum
+{
+	/* (a second of the host's ticks) */
+	RELAYED_UPDATE_QUEUE_SIZE = 32,
+	/* updates in hand before replay starts (again, after running dry) */
+	RELAYED_UPDATE_CUSHION = 2,
+	/* updates left after a tick's beyond which it takes two */
+	RELAYED_UPDATE_MAXIMUM_SPARE = 2,
+};
+
+static struct
+{
+	long last_update_number;
+	short first;
+	short count;
+	boolean buffering;
+	/* updates merged on arrival (the queue full): the next tick's joins them */
+	boolean carry;
+	struct server_update updates[RELAYED_UPDATE_QUEUE_SIZE];
+} update_client_relayed_queue = { NONE, 0, 0, TRUE, FALSE };
+
+static void update_client_relayed_reset(
+	void)
+{
+	csmemset(update_client_relayed_actions, 0, sizeof(update_client_relayed_actions));
+	csmemset(&update_client_relayed_queue, 0, sizeof(update_client_relayed_queue));
+	update_client_relayed_queue.last_update_number = NONE;
+	update_client_relayed_queue.buffering = TRUE;
+}
+
+/* an update's actions become the tick's, or (merge) join the tick's */
+static void update_client_relayed_apply(
+	struct server_update const *update,
+	boolean merge)
+{
+	short action_index;
+
+	for (action_index = 0;
+		action_index < update->action_count && action_index < MAXIMUM_NUMBER_OF_PLAYERS;
+		action_index++)
+	{
+		struct player_action const *action = &update->actions[action_index];
+		real primary_trigger = action->primary_trigger;
+
+		if (merge && update_client_relayed_actions[action_index].valid)
+			primary_trigger = MAX(primary_trigger, update_client_relayed_actions[action_index].action.primary_trigger);
+		update_client_relayed_actions[action_index].valid = TRUE;
+		update_client_relayed_actions[action_index].action = *action;
+		update_client_relayed_actions[action_index].action.primary_trigger = primary_trigger;
+		update_client_relayed_actions[action_index].pending_control_flags |= action->control_flags;
+	}
+}
+
+static struct server_update const *update_client_relayed_take(
+	void)
+{
+	struct server_update const *update =
+		&update_client_relayed_queue.updates[update_client_relayed_queue.first];
+
+	update_client_relayed_queue.first =
+		(short)((update_client_relayed_queue.first + 1) % RELAYED_UPDATE_QUEUE_SIZE);
+	update_client_relayed_queue.count--;
+	return update;
+}
+
+/* (an update arrived) in order; an old or repeated one is dropped */
+static void update_client_relayed_push(
+	struct server_update const *update,
+	long update_number)
+{
+	if (update_client_relayed_queue.last_update_number != NONE &&
+		update_number <= update_client_relayed_queue.last_update_number)
+	{
+		return;
+	}
+	update_client_relayed_queue.last_update_number = update_number;
+	/* (a stall longer than the queue) the oldest joins the tick's */
+	if (update_client_relayed_queue.count == RELAYED_UPDATE_QUEUE_SIZE)
+	{
+		update_client_relayed_apply(update_client_relayed_take(), TRUE);
+		update_client_relayed_queue.carry = TRUE;
+	}
+	update_client_relayed_queue.updates[
+		(update_client_relayed_queue.first + update_client_relayed_queue.count) % RELAYED_UPDATE_QUEUE_SIZE] = *update;
+	update_client_relayed_queue.count++;
+}
+
+/* (a tick) the next update, unless replay waits for its cushion; behind,
+the one after it too */
+static void update_client_relayed_tick(
+	void)
+{
+	if (update_client_relayed_queue.buffering)
+	{
+		if (update_client_relayed_queue.count < RELAYED_UPDATE_CUSHION)
+			return;
+		update_client_relayed_queue.buffering = FALSE;
+	}
+	if (update_client_relayed_queue.count == 0)
+	{
+		update_client_relayed_queue.buffering = TRUE;
+		return;
+	}
+	update_client_relayed_apply(update_client_relayed_take(), update_client_relayed_queue.carry);
+	update_client_relayed_queue.carry = FALSE;
+	if (update_client_relayed_queue.count > RELAYED_UPDATE_MAXIMUM_SPARE)
+		update_client_relayed_apply(update_client_relayed_take(), TRUE);
+}
 
 #endif
 
@@ -646,6 +763,7 @@ static boolean update_client_dequeue_distributed(
 	struct update_client_queue_datum *queue = (struct update_client_queue_datum *)update_client_globals.queues->data;
 	short queue_index;
 
+	update_client_relayed_tick();
 	for (queue_index = 0; queue_index < update_client_globals.queues->count; ++queue_index, ++queue)
 	{
 		struct player_action action;
@@ -880,19 +998,10 @@ void update_client_handle_server_update(
 #ifdef HALO_LINUX
 	if (game_connection() == _game_connection_network_client && network_game_distributed())
 	{
-		short action_index;
-
 #ifdef HALO_WEB
 		network_web_relayed_update();
 #endif
-		for (action_index = 0;
-			action_index < update->action_count && action_index < MAXIMUM_NUMBER_OF_PLAYERS;
-			action_index++)
-		{
-			update_client_relayed_actions[action_index].valid = TRUE;
-			update_client_relayed_actions[action_index].action = update->actions[action_index];
-			update_client_relayed_actions[action_index].pending_control_flags |= update->actions[action_index].control_flags;
-		}
+		update_client_relayed_push(update, update_number);
 	}
 #endif
 	if (client_update)
@@ -936,7 +1045,7 @@ void update_queues_reset_and_fill_with_lies(
 {
 #ifdef HALO_LINUX
 	csmemset(update_server_pending_control_flags, 0, sizeof(update_server_pending_control_flags));
-	csmemset(update_client_relayed_actions, 0, sizeof(update_client_relayed_actions));
+	update_client_relayed_reset();
 #endif
 	if (update_server_globals.initialized)
 	{
