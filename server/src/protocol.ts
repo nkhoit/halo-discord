@@ -40,6 +40,9 @@ export const CloseCode = {
   MessageTooBig: 1009,
   /* The same identity reconnected; this socket is stale. */
   Replaced: 4000,
+  /* The receiver fell too far behind (RELAY_CLOSE_BUFFERED_BYTES); its client
+     reconnects and resumes. */
+  Backlogged: 4008,
   Unauthorized: 4401,
   Refused: 4409,
 } as const;
