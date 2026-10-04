@@ -47,7 +47,8 @@ function webOnlyLines(source) {
   return source.split('\n').map(line => {
     const directive = line.trim();
     if (/^#\s*if/.test(directive)) {
-      stack.push({kind: /^#\s*ifdef\s+HALO_WEB\b/.test(directive) ? 'web' :
+      stack.push({kind: /^#\s*ifdef\s+HALO_WEB\b/.test(directive) ||
+        /^#\s*if\s+defined\s*\(\s*HALO_WEB\s*\)\s*&&/.test(directive) ? 'web' :
         /^#\s*ifndef\s+HALO_WEB\b/.test(directive) ? 'not-web' : 'other', inElse: false});
     } else if (/^#\s*else/.test(directive) && stack.length) {
       stack[stack.length - 1].inElse = true;
@@ -74,6 +75,9 @@ try {
       }
     }
   }
+  /* (a machine's own players' unit states less often: off unless a build sets it) */
+  assert(/#ifndef OWN_UNIT_STATE_INTERVAL_TICKS\n#define OWN_UNIT_STATE_INTERVAL_TICKS 1\n#endif/.test(distributed),
+    'network_distributed.c: own-unit states every tick by default');
   /* and the native builds still send the plain ones */
   for (const [file, source, kinds] of [
     ['network_distributed.c', distributed, ['_distributed_message_unit_states', '_distributed_message_game_state']],

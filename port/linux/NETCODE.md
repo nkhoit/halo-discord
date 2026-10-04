@@ -119,13 +119,16 @@ the native builds keep the plain ones:
   stock maps; a float outside them), velocities in 16 bits per axis, facing
   and up as 16-bit octahedral pairs (within 0.004 degrees), shields and body
   as half floats, damage, powerups and the vehicle only when present: about
-  28 bytes a player instead of 96. Every tick, except a machine's own
-  players': those every third tick while they only move as they were moving
-  (their machine moves them itself, and is corrected only past 3 world
-  units); a new life, a seat, any change to shields, health, damage or
-  powerups, or 0.5 world units off the last state's course, at once. So the
-  host sends each machine its own unit-state message (a relay that fanned
-  one message out to every guest could not).
+  28 bytes a player instead of 96. Every tick. (A build can send a
+  machine's own players' every third tick while they only move as they were
+  moving, `OWN_UNIT_STATE_INTERVAL_TICKS` in `network_distributed.c`: their
+  machine moves them itself and is corrected only past 3 world units; a new
+  life, a seat, any change to shields, health, damage or powerups, or 0.5
+  world units off the last state's course goes at once. It is off: the host
+  would then encode a unit-state message for each machine, which a relay
+  fanning one message out to every guest could not carry, and in a firefight
+  shields and health change nearly every tick, so it saved only about 3
+  kbit/s a guest.)
 - **Inventories**: a unit's only when it changes, plus at least once a
   second, and every one when a machine has loaded; held weapons only.
 - **The game type's state**: when it changes, plus once a second and when a

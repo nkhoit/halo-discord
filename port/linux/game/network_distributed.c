@@ -726,15 +726,22 @@ static short distributed_pickup_count;
 the host has it */
 static short distributed_seat_disagreements[MAXIMUM_TRACKED_PLAYERS];
 #ifdef HALO_WEB
-/* (a client) when it last had the host's word on each player's seat: its
-disagreements are counted in ticks, its own players' states coming less often
-(OWN_UNIT_STATE_INTERVAL_TICKS) */
-static long distributed_seat_times[MAXIMUM_TRACKED_PLAYERS];
-
 /* (the host) ticks between a machine's own players' states, while they move
 as they were moving and nothing else of them changes: their machine moves them
-itself, and the host's word corrects it only past LOCAL_CORRECTION_TOLERANCE */
-#define OWN_UNIT_STATE_INTERVAL_TICKS 3
+itself, and the host's word corrects it only past LOCAL_CORRECTION_TOLERANCE.
+Off (1, every tick) by default: above 1 the host sends each machine its own
+unit-state message, encoded for it, which a relay fanning one message out to
+every guest could not carry; in a firefight shields and health change nearly
+every tick, so it saves little (NETCODE.md) */
+#ifndef OWN_UNIT_STATE_INTERVAL_TICKS
+#define OWN_UNIT_STATE_INTERVAL_TICKS 1
+#endif
+#endif
+#if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
+/* (a client) when it last had the host's word on each player's seat: its
+disagreements are counted in ticks, its own players' states coming less often */
+static long distributed_seat_times[MAXIMUM_TRACKED_PLAYERS];
+
 /* world units: further than this from where the last one said it would be
 (a teleporter, a push), it goes at once */
 #define OWN_UNIT_STATE_JUMP 0.5f
@@ -1146,7 +1153,7 @@ void distributed_send_to_machine_reliably(
 	network_distributed_server_send_to_machine_reliably(machine_index, message, size);
 }
 
-#ifdef HALO_WEB
+#if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
 /* unreliably to one machine in the game (the host) */
 static void distributed_send_to_machine(
 	long machine_index,
@@ -1375,6 +1382,7 @@ static void distributed_send_compact_predictions(
 	}
 }
 
+#if OWN_UNIT_STATE_INTERVAL_TICKS > 1
 /* (the host) whether a player's own machine can do without its unit's
 state this tick: it had one less than OWN_UNIT_STATE_INTERVAL_TICKS ago, and
 since then the unit has only moved, about as it was moving */
@@ -1503,6 +1511,50 @@ static void distributed_send_compact_unit_states(
 		}
 	}
 }
+#else
+/* (the host, the browser builds) every player's unit, compactly */
+static void distributed_send_compact_unit_states(
+	void)
+{
+	struct
+	{
+		struct distributed_message_header header;
+		byte data[DATAGRAM_MAXIMUM_SIZE];
+	} message;
+	short room = (short)(DATAGRAM_MAXIMUM_SIZE - sizeof(message.header));
+	struct data_iterator iterator;
+	struct player_datum *player;
+	real_rectangle3d bounds;
+	short count = 0;
+	short size = 0;
+
+	distributed_compact_bounds(&bounds);
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		struct distributed_unit_state state;
+		short written;
+
+		distributed_state_from_player((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index), &state);
+		written = distributed_compact_unit_state_write(message.data + size, (short)(room - size), &state, &bounds);
+		if (!written || count == MAXIMUM_UNIT_STATES_PER_MESSAGE)
+		{
+			distributed_send(&message, _distributed_message_compact_unit_states, count,
+				(word)(sizeof(message.header) + size), _distributed_to_clients);
+			count = 0;
+			size = 0;
+			written = distributed_compact_unit_state_write(message.data, room, &state, &bounds);
+		}
+		size += written;
+		count++;
+	}
+	if (count)
+	{
+		distributed_send(&message, _distributed_message_compact_unit_states, count,
+			(word)(sizeof(message.header) + size), _distributed_to_clients);
+	}
+}
+#endif
 #endif
 
 static void distributed_send_unit_states(
@@ -1668,7 +1720,7 @@ static void distributed_handle_unit_states(
 				(vehicle_index == NONE || unit->unit.parent_seat_index == state->seat_index);
 			short *disagreement = &distributed_seat_disagreements[state->player_index];
 
-#ifdef HALO_WEB
+#if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
 			long elapsed = game_time_get() - distributed_seat_times[state->player_index];
 
 			distributed_seat_times[state->player_index] = game_time_get();
@@ -1986,7 +2038,7 @@ void network_distributed_new_game(
 	distributed_last_sent_time = NONE;
 	csmemset(distributed_deaths, 0, sizeof(distributed_deaths));
 	csmemset(distributed_seat_disagreements, 0, sizeof(distributed_seat_disagreements));
-#ifdef HALO_WEB
+#if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
 	csmemset(distributed_seat_times, 0, sizeof(distributed_seat_times));
 	csmemset(distributed_own_sent, 0, sizeof(distributed_own_sent));
 #endif
