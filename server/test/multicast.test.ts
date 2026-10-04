@@ -9,9 +9,13 @@ import {
   Channel,
   CloseCode,
   joinBatch,
+  MAXIMUM_BATCH_BYTES,
   MAXIMUM_HALO_FRAME_BYTES,
   MAXIMUM_MULTICAST_FRAME_BYTES,
+  MAXIMUM_ROOM_MACHINES,
+  MAXIMUM_ROOM_PLAYERS,
   MAXIMUM_SLOTS,
+  parseMulticast,
   SEQUENCE_BYTES,
 } from "../src/protocol.ts";
 import { type Member, Relay } from "../src/relay.ts";
@@ -236,6 +240,28 @@ describe("relay protocol 2 multicast", () => {
     v1.join(ids(1), "guest");
     v1.host.message(multicast(false, [[1, 1]]));
     expect(v1.host.closedWith).toBe(CloseCode.PolicyViolation);
+  });
+
+  it("reaches every other machine of a full room: 31 playing and 8 watching", () => {
+    expect(MAXIMUM_SLOTS, "a slot for every machine").toBe(MAXIMUM_ROOM_MACHINES);
+    expect(MAXIMUM_SLOTS, "named in a u8 count").toBeLessThanOrEqual(255);
+    expect(MAXIMUM_MULTICAST_FRAME_BYTES + 3, "the largest in a message of its own, batched")
+      .toBeLessThanOrEqual(MAXIMUM_BATCH_BYTES);
+    const { join, host, slotOf } = setup();
+    const guests = Array.from({ length: MAXIMUM_ROOM_MACHINES - 1 }, (_, index) =>
+      [ids(index + 1), join(ids(index + 1), "guest", { spectator: index >= MAXIMUM_ROOM_PLAYERS - 1 })] as const);
+    expect(guests.every(([, guest]) => guest.closedWith === null), "all admitted").toBe(true);
+    const entries = guests.map(([id], index) => [...slotOf(id), 1000 + index, 0, index] as Entry);
+    const largest = multicast(true, entries, MAXIMUM_HALO_FRAME_BYTES);
+    expect(largest.byteLength).toBeLessThanOrEqual(MAXIMUM_MULTICAST_FRAME_BYTES);
+    expect(parseMulticast(largest)?.recipients).toHaveLength(39);
+    host.message(multicast(true, entries, 40));
+    guests.forEach(([, guest], index) => {
+      const frames = guest.frames();
+      expect(frames).toHaveLength(1);
+      expect(new DataView(frames[0]!.buffer, frames[0]!.byteOffset).getUint32(7)).toBe(1000 + index);
+    });
+    expect(host.closedWith).toBeNull();
   });
 
   it("never mixes protocols in a room", () => {

@@ -33,11 +33,20 @@ export const ACK_BYTES = 4;
 export const MAXIMUM_PROBE_BYTES = 64;
 export const BATCH_MARKER = 0x80;
 export const MAXIMUM_BATCH_BYTES = 64 * 1024;
-/* One host and fifteen guests, each with a reliable and an unreliable socket. */
-export const MAXIMUM_ROOM_SOCKETS = 32;
+/* A room: machines with players (the host's included), up to the match's
+   player limit (the engine's, port/linux/include/halo_port_limits.h
+   HALO_WEB_MAXIMUM_PLAYERS; a machine of split screen players counts once
+   here), and machines watching without a player, each with one socket or a
+   reliable and an unreliable one. */
+export const MAXIMUM_ROOM_PLAYERS = 32;
+export const MAXIMUM_ROOM_SPECTATORS = 8;
+export const SOCKETS_PER_MACHINE = 2;
+export const MAXIMUM_ROOM_MACHINES = MAXIMUM_ROOM_PLAYERS + MAXIMUM_ROOM_SPECTATORS;
+export const MAXIMUM_ROOM_SOCKETS = MAXIMUM_ROOM_MACHINES * SOCKETS_PER_MACHINE;
 export const RELAY_PROTOCOLS: readonly number[] = [1, 2];
-/* (protocol 2) one per identity, so never more than sockets */
-export const MAXIMUM_SLOTS = MAXIMUM_ROOM_SOCKETS;
+/* (protocol 2) one per identity, so one per machine; a multicast names each
+   in a u8 count */
+export const MAXIMUM_SLOTS = MAXIMUM_ROOM_MACHINES;
 export const MULTICAST_HEADER_BYTES = 3;
 export const MULTICAST_RELIABLE_ENTRY_BYTES = 14;
 export const MULTICAST_UNRELIABLE_ENTRY_BYTES = 2;

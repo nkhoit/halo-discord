@@ -1104,7 +1104,8 @@ addToLibrary({
        once for many guests */
     RELAY_PROTOCOL: 2,
     RELAY_MULTICAST: 8,
-    RELAY_MAXIMUM_SLOTS: 32,
+    /* (server/src/protocol.ts MAXIMUM_SLOTS: one per machine in a room) */
+    RELAY_MAXIMUM_SLOTS: 40,
     RELAY_MULTICAST_RELIABLE_ENTRY_BYTES: 14,
     RELAY_MULTICAST_UNRELIABLE_ENTRY_BYTES: 2,
     /* (a reliable frame's loopback frame) the per-connection word, which the

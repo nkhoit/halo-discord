@@ -194,6 +194,10 @@ static const struct config_setting config_settings[] =
 	{ "debug.test_input", _config_string, "\"\"", "HALO_TEST_INPUT", _environment_value, _platform_all,
 		"\"bot:<seed>\" plays controller 1 with a scripted pattern (automated\n"
 		"network tests); empty for none." },
+	{ "debug.test_players", _config_integer, "1", "HALO_TEST_PLAYERS", _environment_value, _platform_all,
+		"With test_input, controllers 2 to this many (up to 4) are scripted players too,\n"
+		"and a browser build's online game adds a split screen player for each (lab\n"
+		"matches of more players than machines)." },
 	{ "debug.update_answer", _config_string, "\"\"", "HALO_UPDATE_ANSWER", _environment_value, _platform_desktop,
 		"The answer to the new version question, for automated tests: \"yes\",\n"
 		"\"no\" or \"never\" (do not ask again, confirmed); empty asks." },
@@ -201,6 +205,9 @@ static const struct config_setting config_settings[] =
 		"Quit this many seconds after the window opens; 0 never." },
 	{ "debug.hidden_window", _config_boolean, "false", "HALO_HIDDEN_WINDOW", _environment_set_is_true, _platform_desktop,
 		"Keep the window hidden (and never fullscreen)." },
+	{ "debug.no_drawing", _config_boolean, "false", "HALO_NO_DRAWING", _environment_set_is_true, _platform_all,
+		"Draw nothing in a game (the debug_no_drawing console global): a lab\n"
+		"machine that only plays, where debug.null_renderer cannot run." },
 	{ "debug.null_renderer", _config_boolean, "false", "HALO_NULL_RENDERER", _environment_set_is_true, _platform_all,
 		"Run without a window, drawing nothing." },
 	{ "debug.gl_debug", _config_boolean, "false", "HALO_GL_DEBUG", _environment_set_is_true, _platform_all,

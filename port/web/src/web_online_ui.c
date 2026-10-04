@@ -56,6 +56,7 @@ unsigned char network_game_server_watchable_in_game(struct network_game_server *
 unsigned char network_game_server_match_starting(struct network_game_server *server);
 unsigned char network_game_server_countdown_active(struct network_game_server *server);
 int config_boolean(const char *name);
+long config_integer(const char *name);
 int config_write_boolean(const char *name, int value);
 /* network_game_globals.c's: a machine that watches a match without a player */
 void network_game_set_spectating(unsigned char spectating);
@@ -558,6 +559,33 @@ static void add_primary_player_when_ready(
 	}
 }
 
+/* debug.test_players (with debug.test_input, port/linux/src/xinput_sdl.c):
+the lab's split screen players, one for each scripted controller after the
+first, once the first's player is in */
+static void add_test_players_when_ready(
+	struct network_game_client *client,
+	float seconds)
+{
+	static float retry_seconds = WEB_ONLINE_PLAYER_RETRY_SECONDS;
+	long players = config_integer("debug.test_players");
+	short controller;
+
+	if (players <= 1 || !client || !network_game_client_has_local_player(client, 0))
+		return;
+	retry_seconds += seconds;
+	if (retry_seconds < WEB_ONLINE_PLAYER_RETRY_SECONDS)
+		return;
+	retry_seconds = 0.0f;
+	for (controller = 1; controller < players && controller < 4; controller++)
+	{
+		if (!network_game_client_has_local_player(client, controller) &&
+			network_game_client_add_player(client, controller))
+		{
+			platform_log("web online: requesting test player %d", (int)controller);
+		}
+	}
+}
+
 static void update_host(float seconds)
 {
 	struct network_game_client *client = global_network_game_client_get();
@@ -572,7 +600,10 @@ static void update_host(float seconds)
 	}
 	web_online.seconds += seconds;
 	if (web_online.seconds >= 0.5f)
+	{
 		add_primary_player_when_ready(client, seconds);
+		add_test_players_when_ready(client, seconds);
+	}
 	publish_state(_web_online_state_hosting);
 }
 
@@ -652,6 +683,7 @@ static void update_join(float seconds)
 			publish_state(_web_online_state_join_connecting);
 			return;
 		}
+		add_test_players_when_ready(client, seconds);
 		web_online.join_completed = WEB_TRUE;
 		if (!web_online.pregame_screen_loaded && client_state == _network_client_pregame)
 		{

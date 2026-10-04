@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { activityRoomId } from "../src/auth.ts";
-import { MAXIMUM_ROOM_SOCKETS } from "../src/protocol.ts";
+import { MAXIMUM_ROOM_PLAYERS } from "../src/protocol.ts";
 import { issueToken } from "../src/tokens.ts";
 import { type Client, open, type Running, SECRET, start, until } from "./harness.ts";
 
@@ -65,7 +65,7 @@ describe("the server-wide lobby", () => {
     await until(() => server.app.relay.rooms.get(alice.roomId)?.map === 3);
     expect((await list(bob.token)).rooms).toEqual([{
       roomId: alice.roomId, host: "alice", channel: "Alpha squad", map: 3, mode: 1, state: "lobby",
-      players: 1, spectators: 0, capacity: 16, joinable: true, reason: null, watchable: false,
+      players: 1, spectators: 0, capacity: MAXIMUM_ROOM_PLAYERS, joinable: true, reason: null, watchable: false,
     }]);
     expect((await list(alice.token)).rooms, "not your own room").toEqual([]);
 
@@ -141,13 +141,14 @@ describe("the server-wide lobby", () => {
     expect((await list(bob.token, "b2")).rooms[0]).toMatchObject({ joinable: false, reason: "version" });
     expect(await (await connect(alice.roomId, "guest", bob.token, "020000000002", { build: "b2" })).closed)
       .toEqual({ code: 4409, reason: "build mismatch" });
-    for (let index = 1; index < MAXIMUM_ROOM_SOCKETS / 2; index++) {
+    for (let index = 1; index < MAXIMUM_ROOM_PLAYERS; index++) {
       const id = (0x030000000000 + index).toString(16).padStart(12, "0");
       const token = issueToken(SECRET, `user-${index}`, `u${index}`, 600, undefined, undefined, { guilds: ["100"], inst: A }).token;
       await connect(alice.roomId, "guest", token, id, { ch: "r" });
       await connect(alice.roomId, "guest", token, id, { ch: "u" });
     }
-    expect((await list(bob.token)).rooms[0]).toMatchObject({ players: 16, capacity: 16, joinable: false, reason: "full" });
+    expect((await list(bob.token)).rooms[0]).toMatchObject({ players: MAXIMUM_ROOM_PLAYERS, capacity: MAXIMUM_ROOM_PLAYERS,
+      joinable: false, reason: "full" });
     expect(await (await connect(alice.roomId, "guest", bob.token, "020000000002")).closed)
       .toEqual({ code: 4409, reason: "room full" });
   });

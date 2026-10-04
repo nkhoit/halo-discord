@@ -625,11 +625,10 @@ void test_input_hold_action(int hold)
 	test_input_holding_action = hold;
 }
 
-static int test_input_gamepad(XINPUT_GAMEPAD *pad)
+static int test_input_seed(void)
 {
 	static int checked;
 	static int seed = -1;
-	double t;
 
 	if (!checked)
 	{
@@ -641,9 +640,30 @@ static int test_input_gamepad(XINPUT_GAMEPAD *pad)
 		else if (!strcmp(setting, "bot"))
 			seed = 0;
 	}
-	if (seed < 0)
+	return seed;
+}
+
+/* debug.test_players: the scripted controllers, the first's included */
+static int test_input_ports(void)
+{
+	long players;
+
+	if (test_input_seed() < 0)
+		return 0;
+	players = config_integer("debug.test_players");
+	return players < 1 ? 1 : players > PORT_COUNT ? PORT_COUNT : (int)players;
+}
+
+static int test_input_gamepad(XINPUT_GAMEPAD *pad, int port)
+{
+	int seed = test_input_seed();
+	double t;
+
+	if (seed < 0 || port >= test_input_ports())
 		return FALSE;
-	if (test_input_holding_action)
+	/* (another player on another controller) */
+	seed += port * 101;
+	if (test_input_holding_action && port == 0)
 	{
 		/* (standing still, the button held from a second on) */
 		if (SDL_GetTicks() - test_input_holding_action_since >= 1000)
@@ -817,6 +837,8 @@ static DWORD connected_gamepads(void)
 	/* the first pad shares port 0 with the keyboard */
 	for (port = 1; port < count; port++)
 		mask |= 1UL << port;
+	for (port = 1; port < test_input_ports(); port++)
+		mask |= 1UL << port;
 	return mask;
 }
 
@@ -946,7 +968,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 			(input.mouse_dx != 0.0f || input.mouse_dy != 0.0f));
 		pthread_mutex_unlock(&mouse_lock);
 		/* Do not let synthetic network-test input change the physical device. */
-		if (!test_input_gamepad(&state->Gamepad) && !input.ui_pointer)
+		if (!test_input_gamepad(&state->Gamepad, 0) && !input.ui_pointer)
 		{
 			/* The existing per-axis merge favors keyboard on equal magnitude.
 			 * Opposing keys, console input, and overridden axes contribute zero. */
@@ -967,6 +989,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		pthread_mutex_lock(&mouse_lock);
 		aim_look_update_gamepad_locked(port, look_gamepad, &state->Gamepad);
 		pthread_mutex_unlock(&mouse_lock);
+		test_input_gamepad(&state->Gamepad, port);
 	}
 
 	pthread_mutex_lock(&mouse_lock);

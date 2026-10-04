@@ -48,7 +48,7 @@ static int console_is_active(void) {return 0;}
 static void wheel_update(void) {}
 static void keyboard_gamepad(const struct platform_input_state *input,XINPUT_GAMEPAD *pad) {(void)input;pad->sThumbLX=32767;}
 static void sdl_gamepad_state(SDL_Gamepad *p,XINPUT_GAMEPAD *out) {out->sThumbRX=p->pad.sThumbRX;out->sThumbRY=p->pad.sThumbRY;}
-static int test_input_gamepad(XINPUT_GAMEPAD *p) {if(synthetic_look)p->sThumbRX=32767;return 0;}
+static int test_input_gamepad(XINPUT_GAMEPAD *p, int port) {if(synthetic_look&&port==0)p->sThumbRX=32767;return 0;}
 #include "xinput_aim.inc"
 static void poll(int port) {XINPUT_STATE s;assert(XInputGetState(&controllers[port],&s)==0);ticks+=16;}
 int main(void)
