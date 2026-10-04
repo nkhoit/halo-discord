@@ -61,11 +61,15 @@ function webOnlyLines(source) {
 try {
   const distributed = read('port/linux/game/network_distributed.c');
   const objects = read('port/linux/game/network_objects.c');
+  const server = read('source/networking/network_server_message_handler.c');
 
-  /* only the browser builds name the compact forms */
-  for (const [file, source] of [['network_distributed.c', distributed], ['network_objects.c', objects]]) {
+  /* only the browser builds name the compact forms, or send a machine's own
+  players' states less often */
+  for (const [file, source] of [['network_distributed.c', distributed], ['network_objects.c', objects],
+    ['network_server_message_handler.c', server]]) {
     for (const {line, web} of webOnlyLines(source)) {
-      if (/compact|inventories_due|game_state_due|zero_runs/i.test(line) && !/^\s*(\/\*|\*)/.test(line)) {
+      if (/compact|inventories_due|game_state_due|zero_runs|own_sent|own_state|seat_times|send_to_machine\(/i.test(line) &&
+        !/^\s*(\/\*|\*)/.test(line)) {
         assert(web, `${file}: a compact form outside HALO_WEB: ${line.trim()}`);
       }
     }

@@ -1095,7 +1095,7 @@ addToLibrary({
     RELAY_HEADER_BYTES: 7,
     RELAY_SEQUENCE_BYTES: 8,
     RELAY_DATAGRAM_DROP_BYTES: 4096,
-    RELAY_PROBE_MILLISECONDS: 100,
+    RELAY_PROBE_MILLISECONDS: 250,
     RELAY_RESEND_LIMIT: 4 * 1024 * 1024,
     RELAY_ACK_EVERY: 8,
     RELAY_ACK_MILLISECONDS: 50,
@@ -1104,6 +1104,14 @@ addToLibrary({
     RELAY_BATCH_MARKER: 0x80,
     RELAY_BATCH_LIMIT: 60 * 1024,
     RELAY_FLUSH_MILLISECONDS: 4,
+    /* frames that can wait for the next game frame's message (acknowledgements,
+       probes): the longest they wait when the game is not ticking */
+    RELAY_LAZY_FLUSH_MILLISECONDS: 40,
+    /* (web_loopback_net.c) a frame of datagrams for the same ports */
+    LOOPBACK_DATAGRAM: 1,
+    LOOPBACK_DATAGRAM_BUNDLE: 5,
+    LOOPBACK_HEADER_BYTES: 12,
+    LOOPBACK_BUNDLE_LIMIT: 16 * 1024,
     relayPeers: new Map(),
     relay: null,
 
@@ -1280,8 +1288,9 @@ addToLibrary({
 
     /* Queues a frame for the socket; relayFlush sends each socket's queue as
        one message at the end of the game frame (web_net_end_frame), or after
-       RELAY_FLUSH_MILLISECONDS if the game is not ticking. */
-    relayQueue: function(socket, frame) {
+       RELAY_FLUSH_MILLISECONDS if the game is not ticking (a lazy frame, after
+       RELAY_LAZY_FLUSH_MILLISECONDS: it rides with the next game frame's). */
+    relayQueue: function(socket, frame, lazy) {
       var runtime = HaloWebTransportRuntime;
       var relay = runtime.relay;
       if (!relay || socket.readyState !== 1) return;
@@ -1301,13 +1310,23 @@ addToLibrary({
       }
       box.frames.push(frame);
       box.bytes += 2 + frame.byteLength;
-      if (!relay.flushTimer) relay.flushTimer = setTimeout(runtime.relayFlush, runtime.RELAY_FLUSH_MILLISECONDS);
+      runtime.relayArmFlush(relay, lazy);
+    },
+
+    relayArmFlush: function(relay, lazy) {
+      var runtime = HaloWebTransportRuntime;
+      if (relay.flushTimer && (lazy || !relay.flushLazy)) return;
+      clearTimeout(relay.flushTimer);
+      relay.flushLazy = !!lazy;
+      relay.flushTimer = setTimeout(runtime.relayFlush,
+        lazy ? runtime.RELAY_LAZY_FLUSH_MILLISECONDS : runtime.RELAY_FLUSH_MILLISECONDS);
     },
 
     relayFlush: function() {
       var runtime = HaloWebTransportRuntime;
       var relay = runtime.relay;
       if (!relay) return;
+      runtime.relayFlushDatagrams(relay);
       clearTimeout(relay.flushTimer);
       relay.flushTimer = 0;
       relay.outbox.forEach(function(box, socket) {
@@ -1316,8 +1335,79 @@ addToLibrary({
       relay.outbox.clear();
     },
 
+    /* A game frame's datagrams for a peer, as few relay frames as they make:
+       datagrams for the same ports in one bundle (web_loopback_net.c), each
+       with its length. A single one goes as it is. */
+    relayFlushDatagrams: function(relay) {
+      var runtime = HaloWebTransportRuntime;
+      runtime.relayPeers.forEach(function(record) {
+        var pending = record.pendingDatagrams;
+        if (!pending || !pending.length) return;
+        record.pendingDatagrams = [];
+        var socket = runtime.relayLinked(record) && relay.unreliable;
+        if (!socket) {
+          record.staleDatagrams += pending.length;
+          return;
+        }
+        var group = [];
+        var groupBytes = 0;
+        var sendGroup = function() {
+          if (!group.length) return;
+          var halo = group[0];
+          if (group.length > 1) {
+            halo = new Uint8Array(runtime.LOOPBACK_HEADER_BYTES + groupBytes);
+            halo.set(group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES));
+            halo[2] = runtime.LOOPBACK_DATAGRAM_BUNDLE;
+            var offset = runtime.LOOPBACK_HEADER_BYTES;
+            group.forEach(function(datagram) {
+              var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
+              halo[offset] = length >> 8;
+              halo[offset + 1] = length & 255;
+              halo.set(datagram.subarray(runtime.LOOPBACK_HEADER_BYTES), offset + 2);
+              offset += 2 + length;
+            });
+          }
+          runtime.relayTransmit(record, socket, runtime.relayDatagramFrame(record, halo));
+          group = [];
+          groupBytes = 0;
+        };
+        pending.forEach(function(datagram) {
+          var bundled = datagram.byteLength > runtime.LOOPBACK_HEADER_BYTES &&
+            datagram[2] === runtime.LOOPBACK_DATAGRAM;
+          var length = datagram.byteLength - runtime.LOOPBACK_HEADER_BYTES;
+          var sameHeader = group.length && bundled && group[0][2] === runtime.LOOPBACK_DATAGRAM &&
+            group[0].subarray(0, runtime.LOOPBACK_HEADER_BYTES).every(function(value, index) {
+              return value === datagram[index];
+            });
+          if (!sameHeader || groupBytes + 2 + length > runtime.LOOPBACK_BUNDLE_LIMIT) sendGroup();
+          group.push(datagram);
+          groupBytes += 2 + length;
+          if (!bundled) sendGroup();
+        });
+        sendGroup();
+      });
+    },
+
+    relayDatagramFrame: function(record, halo) {
+      var runtime = HaloWebTransportRuntime;
+      var frame = new Uint8Array(runtime.RELAY_HEADER_BYTES + halo.byteLength);
+      frame[0] = runtime.RELAY_CHANNEL.UNRELIABLE;
+      frame.set(record.identifierBytes, 1);
+      frame.set(halo, runtime.RELAY_HEADER_BYTES);
+      return frame;
+    },
+
     relaySendMessage: function(relay, socket, frames) {
       if (socket.readyState !== 1) return;
+      /* (a probe that waited for this message: timed from now) */
+      var channels = HaloWebTransportRuntime.RELAY_CHANNEL;
+      frames.forEach(function(frame) {
+        if ((frame[0] === channels.PING_RELIABLE || frame[0] === channels.PING_UNRELIABLE ||
+             frame[0] === channels.ECHO) && frame.byteLength >= HaloWebTransportRuntime.RELAY_HEADER_BYTES + 8) {
+          new DataView(frame.buffer, frame.byteOffset).setFloat64(HaloWebTransportRuntime.RELAY_HEADER_BYTES,
+            performance.now(), true);
+        }
+      });
       var message = frames[0];
       if (frames.length > 1) {
         var size = 1;
@@ -1526,7 +1616,7 @@ addToLibrary({
       frame[0] = runtime.RELAY_CHANNEL.ACK;
       frame.set(record.identifierBytes, 1);
       new DataView(frame.buffer).setUint32(runtime.RELAY_HEADER_BYTES, record.rxSequence);
-      runtime.relayQueue(runtime.relay.reliable, frame);
+      runtime.relayQueue(runtime.relay.reliable, frame, true);
       record.ackOwed = 0;
     },
 
@@ -1566,12 +1656,12 @@ addToLibrary({
       if (!relay || relay.failed || !relay.ready) return;
       runtime.relayPeers.forEach(function(record) {
         if (!runtime.relayLinked(record)) return;
-        runtime.relayQueue(relay.reliable, runtime.relayProbeFrame(channels.PING_RELIABLE, record.identifierBytes));
-        runtime.relayQueue(relay.unreliable, runtime.relayProbeFrame(channels.PING_UNRELIABLE, record.identifierBytes));
+        runtime.relayQueue(relay.reliable, runtime.relayProbeFrame(channels.PING_RELIABLE, record.identifierBytes), true);
+        runtime.relayQueue(relay.unreliable, runtime.relayProbeFrame(channels.PING_UNRELIABLE, record.identifierBytes), true);
       });
       [relay.reliable, relay.unreliable].forEach(function(socket, index) {
         if (socket.readyState === 1 && (index === 0 || socket !== relay.reliable)) {
-          runtime.relayQueue(socket, runtime.relayProbeFrame(channels.ECHO, null));
+          runtime.relayQueue(socket, runtime.relayProbeFrame(channels.ECHO, null), true);
         }
       });
     },
@@ -1585,6 +1675,12 @@ addToLibrary({
         var datagramSocket = linked && relay.unreliable;
         if (!datagramSocket || datagramSocket.bufferedAmount > runtime.RELAY_DATAGRAM_DROP_BYTES) {
           record.staleDatagrams++;
+          return 1;
+        }
+        /* (batching: with the frame's other datagrams for this peer, at its end) */
+        if (relay.batching) {
+          (record.pendingDatagrams || (record.pendingDatagrams = [])).push(HEAPU8.slice(pointer, pointer + length));
+          runtime.relayArmFlush(relay, false);
           return 1;
         }
         var datagram = new Uint8Array(header + length);

@@ -248,6 +248,51 @@ const states = [];
   await settle();
   assert.deepEqual(calls.received.slice(before).map(entry => entry[1][4]), [21, 22], 'a batch is split on arrival');
 
+  // A frame's datagrams for the same ports go as one bundle (web_loopback_net.c).
+  const datagramAt = (offset, port, payload) => {
+    HEAPU8.set([0x48, 1, 1, 0, 0, 0, 0, 0, 0, port, 0, 9, ...payload], offset);
+    return 12 + payload.length;
+  };
+  const relayFrames = message => {
+    if (message[0] !== 0x80) return [message];
+    const frames = [];
+    for (let offset = 1; offset < message.length;) {
+      const length = (message[offset] << 8) | message[offset + 1];
+      frames.push(message.slice(offset + 2, offset + 2 + length));
+      offset += 2 + length;
+    }
+    return frames;
+  };
+  room.sent.length = 0;
+  library.web_transport_send(GUEST_ADDRESS, 0, 1024, datagramAt(1024, 7, [1, 2, 3]));
+  library.web_transport_send(GUEST_ADDRESS, 0, 1024, datagramAt(1024, 7, [4]));
+  library.web_transport_send(GUEST_ADDRESS, 0, 1024, datagramAt(1024, 8, [5, 6]));
+  library.web_transport_flush();
+  let frames = relayFrames(room.sent[0]);
+  assert.equal(frames.length, 2, 'one bundle, and the datagram for other ports on its own');
+  assert.deepEqual(Array.from(frames[0].subarray(7)),
+    [0x48, 1, 5, 0, 0, 0, 0, 0, 0, 7, 0, 9, 0, 3, 1, 2, 3, 0, 1, 4]);
+  assert.deepEqual(Array.from(frames[1].subarray(7)), [0x48, 1, 1, 0, 0, 0, 0, 0, 0, 8, 0, 9, 5, 6]);
+  room.sent.length = 0;
+  library.web_transport_send(GUEST_ADDRESS, 0, 1024, datagramAt(1024, 7, [1]));
+  library.web_transport_flush();
+  assert.equal(relayFrames(room.sent[0])[0][9], 1, 'a single datagram is not bundled');
+
+  // Acknowledgements and probes ride with the next frame's message.
+  room.sent.length = 0;
+  runtime.relayProbe();
+  await new Promise(resolve => setTimeout(resolve, runtime.RELAY_FLUSH_MILLISECONDS * 3));
+  assert.equal(room.sent.length, 0, 'a probe waits');
+  library.web_transport_send(GUEST_ADDRESS, 1, 512, 12);
+  library.web_transport_flush();
+  assert.equal(room.sent.length, 1);
+  assert.deepEqual(relayFrames(room.sent[0]).map(frame => frame[0]).sort(),
+    [0, 2, 4, 6].sort(), 'with the game frame');
+  room.sent.length = 0;
+  runtime.relayProbe();
+  await new Promise(resolve => setTimeout(resolve, runtime.RELAY_LAZY_FLUSH_MILLISECONDS + 30));
+  assert.equal(room.sent.length, 1, 'or on its own when the game is not ticking');
+
   HaloWebTransport.disconnectAll();
   assert.equal(batching, 0);
 

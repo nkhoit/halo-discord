@@ -701,6 +701,48 @@ boolean network_distributed_server_send_to_all(
 	return result;
 }
 
+#ifdef HALO_WEB
+/* unreliably to one machine in the game, as network_distributed_server_send_to_all
+sends to each (machine_index is the game's machine) */
+boolean network_distributed_server_send_to_machine(
+	long machine_index,
+	void *message,
+	word size)
+{
+	struct network_game_server *server = global_network_game_server_get();
+	byte buffer[NETWORK_MESSAGE_BUFFER_SIZE];
+	long client_index;
+
+	if (!server || size > sizeof(buffer))
+		return FALSE;
+	for (client_index = 0; client_index < MAXIMUM_NETWORK_MACHINE_COUNT; client_index++)
+	{
+		struct network_game_server_client_machine *machine =
+			network_game_server_get_client_machine_at_index(server, client_index);
+		struct network_connection *connection;
+		struct transport_address address;
+		long game_machine_index;
+
+		if (!network_game_server_client_machine_is_joined_to_game(server, machine) ||
+			network_game_server_client_machine_is_loading_in_game(server, machine))
+		{
+			continue;
+		}
+		network_game_server_get_client_machine(server, machine, &game_machine_index);
+		if (game_machine_index != machine_index)
+			continue;
+		connection = network_game_server_get_client_connection(machine);
+		if (!connection || !network_connection_active(connection))
+			return FALSE;
+		network_connection_get_address(connection, &address, NULL);
+		address.port = NETWORK_GAME_CLIENT_PORT;
+		csmemcpy(buffer, message, size);
+		return network_game_server_write(network_game_server_get_connection(server), buffer, size, &address, 0);
+	}
+	return FALSE;
+}
+#endif
+
 /* reliably to one machine in the game (the host's objects, to a client
 that has loaded) */
 boolean network_distributed_server_send_to_machine_reliably(

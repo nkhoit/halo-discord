@@ -119,16 +119,34 @@ the native builds keep the plain ones:
   stock maps; a float outside them), velocities in 16 bits per axis, facing
   and up as 16-bit octahedral pairs (within 0.004 degrees), shields and body
   as half floats, damage, powerups and the vehicle only when present: about
-  28 bytes a player instead of 96. Still every tick.
+  28 bytes a player instead of 96. Every tick, except a machine's own
+  players': those every third tick while they only move as they were moving
+  (their machine moves them itself, and is corrected only past 3 world
+  units); a new life, a seat, any change to shields, health, damage or
+  powerups, or 0.5 world units off the last state's course, at once. So the
+  host sends each machine its own unit-state message (a relay that fanned
+  one message out to every guest could not).
 - **Inventories**: a unit's only when it changes, plus at least once a
   second, and every one when a machine has loaded; held weapons only.
 - **The game type's state**: when it changes, plus once a second and when a
   machine has loaded, with its runs of zeros packed (the per-player records
   are sized for 128 players).
+- **Inputs** (the engine's per-tick update, `tests/compact_input_test`):
+  aim in 16 bits per angle (steps of 0.0055 degrees; a mouse count is at
+  least twice that), buttons in 16 bits, movement and trigger in 8 bits,
+  weapon, grenade and zoom in a byte, each only when not idle: 5 to 11
+  bytes a player instead of 30. A machine quantizes its input where it
+  makes it, before using or sending it, so the host, the player's own
+  prediction and every replay run the same values; the camera keeps the
+  unquantized aim.
+- **A client's own unit** (every tick, to the host): as the unit states.
 
-Together they are about 2.6 times smaller (of the host's payload to each
-guest with four players); the engine's per-tick update, which carries every
-player's input, is now the largest part.
+The first three together are about 2.6 times smaller (of the host's payload
+to each guest with four players), the inputs about 2.5 times. The relay
+transport then sends a game frame's
+messages to each machine in one WebSocket message, its datagrams for the
+same ports in one frame, and acknowledgements and probes with them rather
+than on their own.
 
 ## Joining a match in progress
 

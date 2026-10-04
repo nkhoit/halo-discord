@@ -66,6 +66,9 @@ enum web_net_frame_type
 	_web_net_frame_stream_open,
 	_web_net_frame_stream_data,
 	_web_net_frame_stream_close,
+	/* (the relay transport, library_web_transport.js) datagrams for the same
+	ports, sent together: each a 2-byte length (big-endian), then its bytes */
+	_web_net_frame_datagram_bundle,
 };
 
 enum
@@ -1835,6 +1838,40 @@ EMSCRIPTEN_KEEPALIVE int web_net_remote_receive(unsigned long address, int lengt
 		result = source_port == 0 && destination_port == 0 && payload_length == 0 ?
 			receive_remote_stream_close_locked(peer_index, connection) : -1;
 		break;
+	case _web_net_frame_datagram_bundle:
+	{
+		int offset = 0;
+
+		result = connection == 0 && source_port && destination_port ? 1 : -1;
+		/* (all of them checked first: a malformed bundle delivers nothing) */
+		while (result > 0 && offset < payload_length)
+		{
+			int datagram_length;
+
+			if (offset + 2 > payload_length)
+			{
+				result = -1;
+				break;
+			}
+			datagram_length = (payload[offset] << 8) | payload[offset + 1];
+			if (!datagram_length || datagram_length > WEB_NET_MAXIMUM_DATAGRAM_SIZE ||
+				offset + 2 + datagram_length > payload_length)
+			{
+				result = -1;
+				break;
+			}
+			offset += 2 + datagram_length;
+		}
+		for (offset = 0; result > 0 && offset < payload_length;)
+		{
+			int datagram_length = (payload[offset] << 8) | payload[offset + 1];
+
+			receive_remote_datagram_locked(peer_index, source_port, destination_port,
+				payload + offset + 2, datagram_length);
+			offset += 2 + datagram_length;
+		}
+		break;
+	}
 	default:
 		result = -1;
 		break;

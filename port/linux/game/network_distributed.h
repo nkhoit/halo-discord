@@ -52,6 +52,8 @@ enum
 	_distributed_message_compact_unit_states,
 	_distributed_message_compact_inventories,
 	_distributed_message_compact_game_state,
+	/* (the browser builds) a client's own players' units, compactly */
+	_distributed_message_compact_player_prediction,
 
 	NUMBER_OF_DISTRIBUTED_MESSAGES
 };
