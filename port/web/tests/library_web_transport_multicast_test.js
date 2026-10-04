@@ -215,10 +215,21 @@ const SLOTS = { [GUESTS[0]]: [1, 1], [GUESTS[1]]: [2, 7], [GUESTS[2]]: [3, 1] };
   assert.equal(frames[0][0], 8);
   assert.deepEqual([frames[0][3], frames[0][3 + 14]], [1, 3], 'the others still get it, once');
 
-  // A guest only ever has the host: nothing to merge.
+  // A guest only ever has the host: frames that a host would merge stay as they are.
+  const mergeable = [GUESTS[0], GUESTS[1]].map((guest, index) => {
+    const frame = new Uint8Array(7 + 8 + 16);
+    frame[0] = 0;
+    frame.set(id(guest), 1);
+    new DataView(frame.buffer).setUint32(7, 1);
+    frame.set([0x48, 1, 3, 0, 0, 0, 0, index + 1, 0, 0, 0, 0, 5, 6, 7, 8], 15);
+    return frame;
+  });
   HaloWebTransport.disconnectAll();
-  socket = await host('guest', { slots: SLOTS });
-  assert.equal(runtime.relayMulticast(runtime.relay, [new Uint8Array(30), new Uint8Array(30)]).length, 2);
+  await host('host', { slots: SLOTS });
+  assert.deepEqual(runtime.relayMulticast(runtime.relay, mergeable).map(frame => frame[0]), [8], 'mergeable on a host');
+  HaloWebTransport.disconnectAll();
+  await host('guest', { slots: SLOTS });
+  assert.deepEqual(runtime.relayMulticast(runtime.relay, mergeable).map(frame => frame[0]), [0, 0], 'never on a guest');
 
   HaloWebTransport.disconnectAll();
   console.log('library_web_transport multicast tests passed');
