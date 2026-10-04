@@ -11,10 +11,13 @@
    other) adds a frame the host sends once for many guests (Channel.Multicast):
    [8][inner channel: 0 reliable or 1 unreliable][n: u8][n entries][payload],
    an entry [slot: u8][generation: u8], and for a reliable frame the
-   recipient's own [u32 sequence] after it. Each recipient gets an ordinary
-   frame from the host, [inner channel][host's identifier] and for a reliable
-   frame [u32 sequence][u32 acknowledgement: 0], then the payload, so a guest
-   reads one sequence from the host whichever way a frame was sent. The relay
+   recipient's own [u32 sequence][u32 acknowledgement][u32 word] after it.
+   Each recipient gets the frame the host would have sent it alone,
+   [inner channel][host's identifier], for a reliable frame its sequence and
+   acknowledgement, then the payload, with a reliable payload's bytes 4-7 its
+   word (the clients' per-connection identifier, library_web_transport.js),
+   so a guest reads one sequence from the host whichever way a frame was
+   sent. The relay
    gives every member's identity a slot, and the slot a new generation each
    time it changes hands (in "ready" and "peer-up"), so a frame named for
    someone who left reaches nobody, not whoever took the slot. */
@@ -36,7 +39,12 @@ export const RELAY_PROTOCOLS: readonly number[] = [1, 2];
 /* (protocol 2) one per identity, so never more than sockets */
 export const MAXIMUM_SLOTS = MAXIMUM_ROOM_SOCKETS;
 export const MULTICAST_HEADER_BYTES = 3;
-export const MAXIMUM_MULTICAST_FRAME_BYTES = MULTICAST_HEADER_BYTES + MAXIMUM_SLOTS * 6 + MAXIMUM_HALO_FRAME_BYTES;
+export const MULTICAST_RELIABLE_ENTRY_BYTES = 14;
+export const MULTICAST_UNRELIABLE_ENTRY_BYTES = 2;
+export const MAXIMUM_MULTICAST_FRAME_BYTES = MULTICAST_HEADER_BYTES +
+  MAXIMUM_SLOTS * MULTICAST_RELIABLE_ENTRY_BYTES + MAXIMUM_HALO_FRAME_BYTES;
+/* (a reliable multicast) where in the payload each recipient's word goes */
+export const MULTICAST_WORD_OFFSET = 4;
 
 export const Channel = {
   Reliable: 0,
@@ -126,8 +134,10 @@ export function frameValid(frame: Uint8Array): boolean {
 export interface MulticastRecipient {
   slot: number;
   generation: number;
-  /* (reliable) the recipient's own sequence number */
+  /* (reliable) the recipient's own sequence number, acknowledgement and word */
   sequence: number;
+  acknowledgement: number;
+  word: number;
 }
 
 export interface Multicast {
@@ -147,7 +157,7 @@ export function parseMulticast(frame: Uint8Array): Multicast | null {
   if (inner !== Channel.Reliable && inner !== Channel.Unreliable) return null;
   const reliable = inner === Channel.Reliable;
   const count = frame[2]!;
-  const entryBytes = reliable ? 6 : 2;
+  const entryBytes = reliable ? MULTICAST_RELIABLE_ENTRY_BYTES : MULTICAST_UNRELIABLE_ENTRY_BYTES;
   if (count < 1 || count > MAXIMUM_SLOTS) return null;
   const payloadOffset = MULTICAST_HEADER_BYTES + count * entryBytes;
   if (payloadOffset > frame.byteLength) return null;
@@ -159,7 +169,10 @@ export function parseMulticast(frame: Uint8Array): Multicast | null {
     const slot = frame[offset]!;
     if (slot >= MAXIMUM_SLOTS || seen.has(slot)) return null;
     seen.add(slot);
-    recipients.push({ slot, generation: frame[offset + 1]!, sequence: reliable ? view.getUint32(offset + 2) : 0 });
+    recipients.push({ slot, generation: frame[offset + 1]!,
+      sequence: reliable ? view.getUint32(offset + 2) : 0,
+      acknowledgement: reliable ? view.getUint32(offset + 6) : 0,
+      word: reliable ? view.getUint32(offset + 10) : 0 });
   }
   const payload = frame.subarray(payloadOffset);
   if (payload.byteLength < MINIMUM_HALO_FRAME_BYTES || payload.byteLength > MAXIMUM_HALO_FRAME_BYTES) return null;
@@ -172,8 +185,13 @@ export function multicastCopy(multicast: Multicast, recipient: MulticastRecipien
   const copy = new Uint8Array(prefix + multicast.payload.byteLength);
   copy[0] = multicast.reliable ? Channel.Reliable : Channel.Unreliable;
   writeIdentifier(copy, host);
-  if (multicast.reliable) new DataView(copy.buffer).setUint32(HEADER_BYTES, recipient.sequence);
   copy.set(multicast.payload, prefix);
+  if (multicast.reliable) {
+    const view = new DataView(copy.buffer);
+    view.setUint32(HEADER_BYTES, recipient.sequence);
+    view.setUint32(HEADER_BYTES + 4, recipient.acknowledgement);
+    view.setUint32(prefix + MULTICAST_WORD_OFFSET, recipient.word);
+  }
   return copy;
 }
 

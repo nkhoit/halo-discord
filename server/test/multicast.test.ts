@@ -21,20 +21,24 @@ import { sender } from "./harness.ts";
 const HOST = "020000000001";
 const ids = (index: number) => `0200000001${index.toString(16).padStart(2, "0")}`;
 
-type Entry = [slot: number, generation: number, sequence?: number];
+type Entry = [slot: number, generation: number, sequence?: number, acknowledgement?: number, word?: number];
 
 function multicast(reliable: boolean, entries: Entry[], payloadBytes = 12, marker = 0x48): Uint8Array {
-  const entryBytes = reliable ? 6 : 2;
+  const entryBytes = reliable ? 14 : 2;
   const bytes = new Uint8Array(3 + entries.length * entryBytes + payloadBytes);
   const view = new DataView(bytes.buffer);
   bytes[0] = Channel.Multicast;
   bytes[1] = reliable ? Channel.Reliable : Channel.Unreliable;
   bytes[2] = entries.length;
-  entries.forEach(([slot, generation, sequence], index) => {
+  entries.forEach(([slot, generation, sequence, acknowledgement, word], index) => {
     const offset = 3 + index * entryBytes;
     bytes[offset] = slot;
     bytes[offset + 1] = generation;
-    if (reliable) view.setUint32(offset + 2, sequence ?? 0);
+    if (reliable) {
+      view.setUint32(offset + 2, sequence ?? 0);
+      view.setUint32(offset + 6, acknowledgement ?? 0);
+      view.setUint32(offset + 10, word ?? 0);
+    }
   });
   bytes[3 + entries.length * entryBytes] = marker;
   return bytes;
@@ -95,19 +99,24 @@ describe("relay protocol 2 multicast", () => {
     expect(host.frames()).toHaveLength(0);
   });
 
-  it("gives each recipient of a reliable multicast its own sequence, and no acknowledgement", () => {
+  it("gives each recipient of a reliable multicast the frame the host would have sent it alone", () => {
     const { join, host, slotOf } = setup();
     const a = join(ids(1), "guest");
     const b = join(ids(2), "guest");
-    host.message(multicast(true, [[...slotOf(ids(1)), 5], [...slotOf(ids(2)), 0x01020304]], 20));
-    const [fromA, fromB] = [a.frames()[0]!, b.frames()[0]!];
-    for (const [frame, sequence] of [[fromA, 5], [fromB, 0x01020304]] as const) {
+    const sent = multicast(true, [[...slotOf(ids(1)), 5, 2, 0x11], [...slotOf(ids(2)), 0x01020304, 0, 0x22222222]], 20);
+    host.message(sent);
+    const payload = sent.subarray(3 + 2 * 14);
+    for (const [guest, sequence, acknowledgement, word] of [[a, 5, 2, 0x11], [b, 0x01020304, 0, 0x22222222]] as const) {
+      const frame = guest.frames()[0]!;
       const view = new DataView(frame.buffer, frame.byteOffset);
       expect(frame[0]).toBe(Channel.Reliable);
       expect(sender(frame)).toBe(HOST);
       expect(view.getUint32(7)).toBe(sequence);
-      expect(view.getUint32(11)).toBe(0);
+      expect(view.getUint32(11)).toBe(acknowledgement);
       expect(frame.byteLength).toBe(7 + SEQUENCE_BYTES + 20);
+      const expected = payload.slice();
+      new DataView(expected.buffer).setUint32(4, word);
+      expect([...payloadOf(frame, true)]).toEqual([...expected]);
     }
   });
 
