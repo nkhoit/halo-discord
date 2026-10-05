@@ -190,6 +190,16 @@ unsigned char network_game_client_set_team(char team_index)
 	(void)team_index;
 	return 0;
 }
+unsigned char network_game_client_request_team_switch(char team_index)
+{
+	(void)team_index;
+	return 0;
+}
+unsigned char network_game_client_team_switch_allowed(char team_index)
+{
+	(void)team_index;
+	return 0;
+}
 
 int main(void)
 {

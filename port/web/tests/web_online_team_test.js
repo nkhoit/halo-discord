@@ -19,6 +19,12 @@ try {
   assert.match(ui, /EMSCRIPTEN_KEEPALIVE int platform_web_online_set_team\(int team_index\)/);
   assert.match(ui, /network_game_client_get_state\(client, NULL\) != _network_client_pregame/);
   assert.match(ui, /network_game_client_set_team\(\(char\)team\)/);
+  assert.match(ui, /EMSCRIPTEN_KEEPALIVE int platform_web_online_switch_team\(int team_index\)/);
+  assert.match(ui, /network_game_client_request_team_switch\(\(char\)team\)/);
+  assert.match(client, /boolean network_game_client_request_team_switch/,
+    'mid-match team switch is a separate client request');
+  assert.match(client, /unit_kill_no_statistics/,
+    'a mid-match switch kills without suicide/kill credit');
 
   const stub = path.join(temp, 'emscripten');
   fs.mkdirSync(stub, { recursive: true });

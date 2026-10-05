@@ -487,6 +487,13 @@ static boolean network_game_client_handle_message_server_remove_player_ingame(
 	word *message,
 	short message_size,
 	struct transport_address *source_address);
+#ifdef HALO_LINUX
+static boolean network_game_client_handle_message_server_player_team_switch_ingame(
+	struct network_game_client *client,
+	word *message,
+	short message_size,
+	struct transport_address *source_address);
+#endif
 static boolean network_game_client_handle_message_server_game_over(
 	struct network_game_client *client,
 	word *message,
@@ -690,6 +697,20 @@ boolean network_game_client_handle_message(
 							network_event("network_game_client_handle_message_server_remove_player_ingame() failed");
 						}
 						break;
+
+#ifdef HALO_LINUX
+					case _message_server_player_team_switch_ingame:
+						result = network_game_client_handle_message_server_player_team_switch_ingame(
+							client,
+							message,
+							message_size,
+							source_address);
+						if (!result)
+						{
+							network_event("network_game_client_handle_message_server_player_team_switch_ingame() failed");
+						}
+						break;
+#endif
 
 					case _message_server_game_over:
 						result = network_game_client_handle_message_server_game_over(
@@ -1447,6 +1468,58 @@ static boolean network_game_client_handle_message_server_remove_player_ingame(
 	return result;
 }
 
+
+#ifdef HALO_LINUX
+static boolean network_game_client_handle_message_server_player_team_switch_ingame(
+	struct network_game_client *client,
+	word *message,
+	short message_size,
+	struct transport_address *source_address)
+{
+	struct
+	{
+		char player_list_index;
+		char team_index;
+		char pad[2];
+	} switch_message;
+	short packet_type = _message_server_player_team_switch_ingame;
+	short packet_version = NETWORK_GAME_MESSAGE_VERSION;
+
+	if (!network_game_client_address_matches_server(client, source_address))
+	{
+		network_event("ignoring a message_server_player_team_switch_ingame; came from a bad machine");
+		return TRUE;
+	}
+	if (network_game_client_get_state(client, NULL) != _network_game_client_state_ingame)
+	{
+		network_event("ignoring a message_server_player_team_switch_ingame; we are not in game");
+		return TRUE;
+	}
+
+	message_size -= sizeof(word);
+	if (!decode_network_game_message(
+		&switch_message,
+		message + 1,
+		&message_size,
+		&packet_type,
+		&packet_version,
+		_network_game_packet_class_ingame))
+	{
+		network_event("failed to decode a message_server_player_team_switch_ingame packet");
+		return FALSE;
+	}
+
+	if (!network_game_apply_team_switch(
+		&client->game,
+		switch_message.player_list_index,
+		switch_message.team_index))
+	{
+		network_event("network_game_apply_team_switch() failed on a client");
+		return FALSE;
+	}
+	return TRUE;
+}
+#endif
 static boolean network_game_client_handle_message_server_game_over(
 	struct network_game_client *client,
 	word *message,

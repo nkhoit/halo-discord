@@ -1178,11 +1178,12 @@
       });
   }
 
-  function fillTeamList(list, team, players, interactive) {
+  function fillTeamList(list, team, players, interactive, allowedOther) {
     while (list.firstChild) list.removeChild(list.firstChild);
     teamColumn(players, team).forEach(function(player) {
       var self = !!player.self;
-      var control = self && interactive;
+      var other = team === 0 ? 1 : 0;
+      var control = self && interactive && (allowedOther === undefined || allowedOther);
       var name = player.name || "Player";
       var node = element(control ? "button" : "span", {
         class: "hosted-team-player" + (self ? " self" : ""),
@@ -1193,7 +1194,7 @@
         node.type = "button";
         node.setAttribute("data-team", String(team));
         node.setAttribute("aria-label", "Switch " + name + " to " + (team === 0 ? "Blue" : "Red"));
-        node.addEventListener("click", function() { setTeam(team === 0 ? 1 : 0); });
+        node.addEventListener("click", function() { setTeam(other); });
       }
       list.appendChild(element("li", {}, [node]));
     });
@@ -1214,17 +1215,22 @@
     show(teamBoard, !!place);
     if (!place) return;
     placeTeamBoard(place);
-    var interactive = !!(teams.pregame && !current.spectating && (place === "bar" || place === "panel"));
+    var midMatch = !!(teams.canSwitch && place === "overlay" && !current.spectating);
+    var interactive = !current.spectating && (
+      (teams.pregame && (place === "bar" || place === "panel")) || midMatch);
+    var allowed = teams.allowed || { 0: true, 1: true };
+    if (teams.pregame) allowed = { 0: true, 1: true };
     teamBoard.setAttribute("data-interactive", interactive ? "true" : "false");
     Array.prototype.forEach.call(teamBoard.querySelectorAll(".hosted-team-header"), function(header) {
-      header.disabled = !interactive;
+      var team = Number(header.getAttribute("data-team"));
+      header.disabled = !interactive || (midMatch && !allowed[team]);
     });
     var listed = teams.players || [];
-    var key = JSON.stringify({ place: place, interactive: interactive, players: listed });
+    var key = JSON.stringify({ place: place, interactive: interactive, allowed: allowed, players: listed });
     if (teamBoard.dataset.key === key) return;
     teamBoard.dataset.key = key;
-    fillTeamList(byId("hosted-team-red"), 0, listed, interactive);
-    fillTeamList(byId("hosted-team-blue"), 1, listed, interactive);
+    fillTeamList(byId("hosted-team-red"), 0, listed, interactive, midMatch ? allowed[1] : undefined);
+    fillTeamList(byId("hosted-team-blue"), 1, listed, interactive, midMatch ? allowed[0] : undefined);
   }
 
   /* ---------- the server-wide lobby (the Discord Activity): the matches

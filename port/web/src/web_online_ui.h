@@ -105,6 +105,12 @@ int platform_web_online_get_transport_state(void);
    Returns 0 outside pregame and for any other index. The game thread applies
    it, and drops it if the match has started by then. */
 int platform_web_online_set_team(int team_index);
+/* Mid-match (#16): queue a host-authoritative team switch. Returns 0 outside
+   an in-progress team match and for any other index. */
+int platform_web_online_switch_team(int team_index);
+/* 1 when moving this machine's local player onto team_index is allowed by
+   the balance rule (not a strictly larger team). */
+int platform_web_online_team_switch_allowed(int team_index);
 /* The client's roster, published each frame. sequence is even when the
    other getters are a consistent snapshot (odd means a write is in progress).
    teams is 1 when the variant has teams. Each player: team 0 red, 1 blue, or

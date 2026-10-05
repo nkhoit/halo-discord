@@ -51,7 +51,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
     guildRooms: [], details: [], delays: [],
     watchable: false, matchWatchable: 0, spectate: [], gameSpectating: 0, spectated: 'Alice', cycles: [],
     relaySpectating: [],
-    teamSets: [], rosterSequence: 2, engineTeams: 0, enginePlayers: [],
+    teamSets: [], teamSwitches: [], teamAllowed: { 0: true, 1: true }, rosterSequence: 2, engineTeams: 0, enginePlayers: [],
   };
   const elements = page.elements;
   const styleInputs = ['sage', 'red'].map(value => element({ checked: value === 'sage', value }));
@@ -141,6 +141,13 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
       _platform_web_online_set_team: team => {
         page.teamSets.push(team);
         return page.clientState === 2 ? 1 : 0;
+      },
+      _platform_web_online_switch_team: team => {
+        page.teamSwitches.push(team);
+        return page.clientState === 3 ? 1 : 0;
+      },
+      _platform_web_online_team_switch_allowed: team => {
+        return page.teamAllowed && page.teamAllowed[team] ? 1 : 0;
       },
       _platform_web_online_roster_sequence: () => page.rosterSequence,
       _platform_web_online_roster_count: () => page.enginePlayers.length,
@@ -271,11 +278,16 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
     ['Arbiter!', 1, true], ['Alice', 0, false], ['Cortana The Great', 0, false],
   ], 'the next snapshot is the live roster');
   page.clientState = 3;
+  page.engineTeams = 1;
   page.poll();
   assert.equal(page.status().view, 'match');
-  assert.equal(page.status().teams.pregame, false, 'a match does not take a new team');
-  assert.equal(page.context.HaloOnline.setTeam(0), false, 'the engine refuses a team change in a match');
-  assert.deepEqual(page.teamSets, [1, 0], 'the call reached the export and it refused');
+  assert.equal(page.status().teams.pregame, false, 'a match is not pregame');
+  assert.equal(page.status().teams.canSwitch, true, 'a team match can switch mid-match');
+  assert.equal(page.context.HaloOnline.setTeam(0), true, 'mid-match uses the switch export');
+  assert.deepEqual(page.teamSets, [1], 'pregame set_team is not used mid-match');
+  assert.deepEqual(page.teamSwitches, [0], 'the switch export received the mid-match choice');
+  assert.equal(page.context.HaloOnline.setTeam(3), false, 'only red or blue mid-match');
+  assert.deepEqual(page.teamSwitches, [0], 'a bad mid-match team is not sent');
   assert.deepEqual(page.phases, [], 'only the host speaks for the room');
   assert.equal(page.context.HaloOnline.configure({ mapIndex: 0, modeIndex: 0 }), false, 'only the host picks the next match');
 
