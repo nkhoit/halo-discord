@@ -43,6 +43,18 @@ boolean network_game_client_has_local_player(
 	short local_player_index);
 boolean network_game_client_set_team(
 	char team_index);
+/* One slot of the client's game roster for the lobby team picker.
+   Returns 1 when the slot holds a player, 0 when it is empty, and -1 when
+   index is out of range or there is no client. name receives 12 code units
+   (0 ends the name). *team is 0 red, 1 blue, or -1. *local is 1 for a player
+   on this machine. */
+int network_game_client_roster_slot(
+	int index,
+	int *name,
+	int *team,
+	int *local);
+int network_game_client_game_has_teams(
+	void);
 #endif
 boolean network_game_client_initiate_join_game(
 	struct network_game_client *client,

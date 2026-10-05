@@ -101,6 +101,20 @@ int platform_web_online_get_state(void);
 int platform_web_online_get_error(void);
 void platform_web_online_set_transport_state(int state);
 int platform_web_online_get_transport_state(void);
+/* Pregame only: queue this machine's players onto red (0) or blue (1).
+   Returns 0 outside pregame and for any other index. The game thread applies
+   it, and drops it if the match has started by then. */
+int platform_web_online_set_team(int team_index);
+/* The client's roster, published each frame. sequence is even when the
+   other getters are a consistent snapshot (odd means a write is in progress).
+   teams is 1 when the variant has teams. Each player: team 0 red, 1 blue, or
+   -1; local 1 for this machine; name one code unit at a time, 0 past the end. */
+int platform_web_online_roster_sequence(void);
+int platform_web_online_roster_count(void);
+int platform_web_online_roster_teams(void);
+int platform_web_online_roster_team(int index);
+int platform_web_online_roster_local(int index);
+int platform_web_online_roster_name(int index, int unit);
 
 /* Called on Halo's game thread once per frame. */
 void web_online_ui_update(int main_menu_loaded, float seconds);

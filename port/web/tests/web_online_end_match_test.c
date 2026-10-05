@@ -176,6 +176,20 @@ void platform_log(const char *format, ...) { (void)format; }
 unsigned char game_engine_running(void) { return engine_running ? 1 : 0; }
 void game_engine_end_game(void) { end_calls++; }
 short game_connection(void) { return connection; }
+/* The lobby roster publish stops at the first out-of-range slot. */
+int network_game_client_roster_slot(int index, int *name, int *team, int *local)
+{
+	(void)name;
+	(void)team;
+	(void)local;
+	return index < 0 || index >= 16 ? -1 : 0;
+}
+int network_game_client_game_has_teams(void) { return 0; }
+unsigned char network_game_client_set_team(char team_index)
+{
+	(void)team_index;
+	return 0;
+}
 
 int main(void)
 {

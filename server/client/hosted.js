@@ -25,6 +25,9 @@
     ["slayer", "Slayer"], ["team-slayer", "Team Slayer"], ["capture-the-flag", "Capture the Flag"],
     ["oddball", "Oddball"], ["king-of-the-hill", "King of the Hill"], ["race", "Race"],
   ];
+  /* Team variants (player_ui.c's team_slayer and ctf). Used only when the
+     engine has not said whether this match has teams. */
+  var TEAM_MODES = { 1: true, 2: true };
   /* platform_web_map_load_index(): web_platform.c's map_files order */
   var MAP_FILES = {
     10: "Battle Creek", 11: "Blood Gulch", 12: "Boarding Action", 13: "Derelict", 14: "Chill Out",
@@ -566,6 +569,18 @@
     element("button", { type: "button", id: "hosted-bar-share", hidden: true, text: "Copy invite link" }),
     element("button", { type: "button", id: "hosted-bar-leave", text: "Leave" }),
   ]);
+  /* Red / blue for a team game. Clicks move this machine; the engine keeps
+     the auto-balance until someone picks, and tells every lobby. */
+  var teamBoard = element("div", { id: "hosted-teams", hidden: true, role: "group", "aria-label": "Teams" }, [
+    element("div", { class: "hosted-team red" }, [
+      element("button", { type: "button", class: "hosted-team-header", "data-team": "0", text: "Red" }),
+      element("ul", { id: "hosted-team-red", class: "hosted-team-players" }),
+    ]),
+    element("div", { class: "hosted-team blue" }, [
+      element("button", { type: "button", class: "hosted-team-header", "data-team": "1", text: "Blue" }),
+      element("ul", { id: "hosted-team-blue", class: "hosted-team-players" }),
+    ]),
+  ]);
   var overlay = element("section", { id: "hosted-overlay", hidden: true, role: "dialog", "aria-modal": "false",
     "aria-labelledby": "hosted-overlay-title" }, [
     element("div", { class: "hosted-overlay-card", id: "hosted-overlay-main" }, [
@@ -632,7 +647,7 @@
     element("button", { type: "button", id: "hosted-lock-retry", text: "Retry" }),
     element("button", { type: "button", id: "hosted-lock-menu", text: "Menu" }),
   ]);
-  var root = element("div", { id: "hosted-ui" }, [panel, bar, overlay, mapLoading, spectateLabel, lockNotice]);
+  var root = element("div", { id: "hosted-ui" }, [panel, bar, teamBoard, overlay, mapLoading, spectateLabel, lockNotice]);
 
   function byId(id) { return document.getElementById(id); }
 
@@ -1020,6 +1035,12 @@
       play();
       startMatch();
     });
+    Array.prototype.forEach.call(teamBoard.querySelectorAll(".hosted-team-header"), function(header) {
+      header.addEventListener("click", function() {
+        if (header.disabled) return;
+        setTeam(Number(header.getAttribute("data-team")));
+      });
+    });
     byId("hosted-mute").addEventListener("click", function() {
       controller.setMuted(!controller.audio.muted);
       if (!controller.audio.muted && typeof global.resumeBrowserAudio === "function") global.resumeBrowserAudio();
@@ -1119,6 +1140,91 @@
 
   function players(count) {
     return count === 1 ? "1 player" : count + " players";
+  }
+
+  /* The engine's roster when it has one. Otherwise a team mode still shows
+     the columns (empty until players arrive); a free-for-all shows nothing. */
+  function teamStatus(current) {
+    if (current.teams && typeof current.teams.enabled === "boolean") {
+      return current.teams.enabled ? current.teams : null;
+    }
+    var mode = current.settings && current.settings.modeIndex;
+    if (!TEAM_MODES[mode]) return null;
+    return { enabled: true, pregame: current.view === "hosting" || current.view === "joined", players: [] };
+  }
+
+  /* bar: Halo's lobby and the results. panel: the host picking the next match.
+     overlay: the match menu. playing: the match, with the mouse in the game. */
+  function teamPlace(current, surface) {
+    if (!current.role) return null;
+    if (surface === "bar") return "bar";
+    if (current.view === "hosting" && surface === "panel") return "panel";
+    if (current.view === "match" || current.view === "spectating") {
+      return controller.overlay() !== "none" ? "overlay" : "playing";
+    }
+    return null;
+  }
+
+  function setTeam(team) {
+    if (!global.HaloOnline || typeof global.HaloOnline.setTeam !== "function") return false;
+    return !!global.HaloOnline.setTeam(team);
+  }
+
+  function teamColumn(list, team) {
+    return (list || []).filter(function(player) { return player && player.team === team; })
+      .sort(function(left, right) {
+        if (!!left.self !== !!right.self) return left.self ? -1 : 1;
+        return String(left.name || "").localeCompare(String(right.name || ""));
+      });
+  }
+
+  function fillTeamList(list, team, players, interactive) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+    teamColumn(players, team).forEach(function(player) {
+      var self = !!player.self;
+      var control = self && interactive;
+      var name = player.name || "Player";
+      var node = element(control ? "button" : "span", {
+        class: "hosted-team-player" + (self ? " self" : ""),
+        text: name,
+      });
+      if (self) node.setAttribute("data-self", "true");
+      if (control) {
+        node.type = "button";
+        node.setAttribute("data-team", String(team));
+        node.setAttribute("aria-label", "Switch " + name + " to " + (team === 0 ? "Blue" : "Red"));
+        node.addEventListener("click", function() { setTeam(team === 0 ? 1 : 0); });
+      }
+      list.appendChild(element("li", {}, [node]));
+    });
+  }
+
+  function placeTeamBoard(place) {
+    var parent = root;
+    if (place === "bar") parent = bar;
+    else if (place === "panel") parent = panel;
+    else if (place === "overlay") parent = byId("hosted-overlay-main");
+    if (parent && teamBoard.parentNode !== parent) parent.appendChild(teamBoard);
+    teamBoard.classList.toggle("playing", place === "playing");
+  }
+
+  function renderTeams(current, surface) {
+    var teams = teamStatus(current);
+    var place = teams ? teamPlace(current, surface) : null;
+    show(teamBoard, !!place);
+    if (!place) return;
+    placeTeamBoard(place);
+    var interactive = !!(teams.pregame && !current.spectating && (place === "bar" || place === "panel"));
+    teamBoard.setAttribute("data-interactive", interactive ? "true" : "false");
+    Array.prototype.forEach.call(teamBoard.querySelectorAll(".hosted-team-header"), function(header) {
+      header.disabled = !interactive;
+    });
+    var listed = teams.players || [];
+    var key = JSON.stringify({ place: place, interactive: interactive, players: listed });
+    if (teamBoard.dataset.key === key) return;
+    teamBoard.dataset.key = key;
+    fillTeamList(byId("hosted-team-red"), 0, listed, interactive);
+    fillTeamList(byId("hosted-team-blue"), 1, listed, interactive);
   }
 
   /* ---------- the server-wide lobby (the Discord Activity): the matches
@@ -1269,6 +1375,7 @@
     show(byId("hosted-next"), status.view === "postgame" && status.role === "host");
     show(byId("hosted-bar-share"), status.view === "hosting" && !!status.shareUrl);
     text("hosted-bar-leave", status.view === "hosting" ? "Close lobby" : "Leave");
+    renderTeams(status, surface);
 
     var mode = controller.overlay();
     show(overlay, mode !== "none");

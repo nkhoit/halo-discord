@@ -55,6 +55,9 @@ unsigned char network_game_server_joinable_in_game(struct network_game_server *s
 unsigned char network_game_server_watchable_in_game(struct network_game_server *server);
 unsigned char network_game_server_match_starting(struct network_game_server *server);
 unsigned char network_game_server_countdown_active(struct network_game_server *server);
+unsigned char network_game_client_set_team(char team_index);
+int network_game_client_roster_slot(int index, int *name, int *team, int *local);
+int network_game_client_game_has_teams(void);
 int config_boolean(const char *name);
 long config_integer(const char *name);
 int config_write_boolean(const char *name, int value);
@@ -130,6 +133,21 @@ add its player after watching (0): -1 none yet */
 static atomic_int web_online_requested_spectate = ATOMIC_VAR_INIT(-1);
 /* (a client) it watches a match without a player of its own */
 static atomic_int web_online_spectating = ATOMIC_VAR_INIT(0);
+/* this machine's players onto red (0) or blue (1); -1 none. Pregame only. */
+static atomic_int web_online_requested_team = ATOMIC_VAR_INIT(-1);
+/* the client's roster, copied each frame so the browser thread never reads
+the game's player array. 32 is the web match cap (HALO_WEB_MAXIMUM_PLAYERS). */
+enum
+{
+	WEB_ONLINE_ROSTER_LIMIT = 32,
+	WEB_ONLINE_ROSTER_NAME = 12,
+};
+static atomic_uint web_online_roster_sequence = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_roster_count = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_roster_teams = ATOMIC_VAR_INIT(0);
+static atomic_int web_online_roster_team[WEB_ONLINE_ROSTER_LIMIT];
+static atomic_int web_online_roster_local[WEB_ONLINE_ROSTER_LIMIT];
+static atomic_int web_online_roster_name[WEB_ONLINE_ROSTER_LIMIT][WEB_ONLINE_ROSTER_NAME];
 /* (a spectator) the name of the player watched, a character each; 0 ends it */
 #define WEB_ONLINE_SPECTATE_NAME_CHARACTERS 12
 static atomic_int web_online_spectate_name[WEB_ONLINE_SPECTATE_NAME_CHARACTERS];
@@ -402,6 +420,108 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_get_client_state(void)
 	return client ? network_game_client_get_state(client, NULL) : WEB_NONE;
 }
 
+/* The page's team choice. network_game_client_set_team itself refuses
+anything but pregame; this returns 0 in that case instead of queueing a
+choice the match would ignore. */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_set_team(int team_index)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	if (team_index != 0 && team_index != 1)
+		return 0;
+	if (!client || network_game_client_get_state(client, NULL) != _network_client_pregame)
+		return 0;
+	atomic_store_explicit(&web_online_requested_team, team_index, memory_order_release);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_sequence(void)
+{
+	return (int)atomic_load_explicit(&web_online_roster_sequence, memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_count(void)
+{
+	return atomic_load_explicit(&web_online_roster_count, memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_teams(void)
+{
+	return atomic_load_explicit(&web_online_roster_teams, memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_team(int index)
+{
+	if (index < 0 || index >= WEB_ONLINE_ROSTER_LIMIT)
+		return -1;
+	return atomic_load_explicit(&web_online_roster_team[index], memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_local(int index)
+{
+	if (index < 0 || index >= WEB_ONLINE_ROSTER_LIMIT)
+		return 0;
+	return atomic_load_explicit(&web_online_roster_local[index], memory_order_acquire);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_name(int index, int unit)
+{
+	if (index < 0 || index >= WEB_ONLINE_ROSTER_LIMIT ||
+		unit < 0 || unit >= WEB_ONLINE_ROSTER_NAME)
+		return 0;
+	return atomic_load_explicit(&web_online_roster_name[index][unit], memory_order_acquire);
+}
+
+static void publish_lobby_roster(void)
+{
+	int slot;
+	int count = 0;
+	int name[WEB_ONLINE_ROSTER_NAME];
+	int team;
+	int local;
+	int unit;
+
+	atomic_fetch_add_explicit(&web_online_roster_sequence, 1, memory_order_acq_rel);
+	for (slot = 0; count < WEB_ONLINE_ROSTER_LIMIT; slot++)
+	{
+		int present = network_game_client_roster_slot(slot, name, &team, &local);
+
+		if (present < 0)
+			break;
+		if (!present)
+			continue;
+		atomic_store_explicit(&web_online_roster_team[count], team, memory_order_relaxed);
+		atomic_store_explicit(&web_online_roster_local[count], local ? 1 : 0, memory_order_relaxed);
+		for (unit = 0; unit < WEB_ONLINE_ROSTER_NAME; unit++)
+		{
+			atomic_store_explicit(
+				&web_online_roster_name[count][unit],
+				name[unit],
+				memory_order_relaxed);
+		}
+		count++;
+	}
+	atomic_store_explicit(&web_online_roster_count, count, memory_order_relaxed);
+	atomic_store_explicit(
+		&web_online_roster_teams,
+		network_game_client_game_has_teams() ? 1 : 0,
+		memory_order_relaxed);
+	atomic_fetch_add_explicit(&web_online_roster_sequence, 1, memory_order_release);
+}
+
+static void apply_team_request(void)
+{
+	int team = atomic_exchange_explicit(&web_online_requested_team, -1, memory_order_acq_rel);
+	struct network_game_client *client;
+
+	if (team != 0 && team != 1)
+		return;
+	client = global_network_game_client_get();
+	if (!client || network_game_client_get_state(client, NULL) != _network_client_pregame)
+		return;
+	network_game_client_set_team((char)team);
+}
+
 static void apply_requested_player_customization(void)
 {
 	int i;
@@ -469,8 +589,9 @@ static void reset_owned_game(void)
 static void clear_session(void)
 {
 	memset(&web_online, 0, sizeof(web_online));
-	/* a closed room must not end the next match it hosts */
+	/* a closed room must not end the next match it hosts, or move its teams */
 	atomic_store_explicit(&web_online_requested_end, 0, memory_order_release);
+	atomic_store_explicit(&web_online_requested_team, -1, memory_order_release);
 }
 
 static void fail_session(int error)
@@ -727,6 +848,12 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 	int join_in_progress = atomic_exchange_explicit(
 		&web_online_requested_join_in_progress, -1, memory_order_acq_rel);
 	int request;
+
+	/* The lobby's red/blue choice, and the roster every machine is showing.
+	   Both run whether or not a browser session is opening: a team click only
+	   lands in pregame, and an idle client publishes an empty roster. */
+	apply_team_request();
+	publish_lobby_roster();
 
 	if (join_in_progress >= 0 && config_boolean("network.join_in_progress") != join_in_progress)
 	{
