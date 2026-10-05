@@ -51,12 +51,17 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
     guildRooms: [], details: [], delays: [],
     watchable: false, matchWatchable: 0, spectate: [], gameSpectating: 0, spectated: 'Alice', cycles: [],
     relaySpectating: [],
+    teamSets: [], rosterSequence: 2, engineTeams: 0, enginePlayers: [],
   };
   const elements = page.elements;
   const styleInputs = ['sage', 'red'].map(value => element({ checked: value === 'sage', value }));
   elements['online-style-options'] = element({ querySelectorAll: () => styleInputs });
   elements['online-map'] = element({ options: [{ value: '0', textContent: 'Battle Creek' }], value: '0' });
-  elements['online-mode'] = element({ options: [{ value: '0', textContent: 'Slayer' }], value: '0' });
+  elements['online-mode'] = element({
+    options: ['Slayer', 'Team Slayer', 'Capture the Flag', 'Oddball', 'King of the Hill', 'Race']
+      .map((label, index) => ({ value: String(index), textContent: label })),
+    value: '0',
+  });
   const byId = id => elements[id] || (elements[id] = element());
   const origin = activity ? 'https://123.discordsays.com' : 'https://halo.example';
   const location = new URL(activity ? `${origin}/?frame_id=f1&instance_id=i-1` : `${origin}/${hash}`);
@@ -133,6 +138,19 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
       _platform_web_online_spectating: () => page.gameSpectating,
       _platform_web_spectate_target_name: index => page.spectated.charCodeAt(index) || 0,
       _platform_web_spectate_cycle: direction => { page.cycles.push(direction); return 1; },
+      _platform_web_online_set_team: team => {
+        page.teamSets.push(team);
+        return page.clientState === 2 ? 1 : 0;
+      },
+      _platform_web_online_roster_sequence: () => page.rosterSequence,
+      _platform_web_online_roster_count: () => page.enginePlayers.length,
+      _platform_web_online_roster_teams: () => page.engineTeams,
+      _platform_web_online_roster_team: index => page.enginePlayers[index] ? page.enginePlayers[index].team : -1,
+      _platform_web_online_roster_local: index => page.enginePlayers[index] && page.enginePlayers[index].local ? 1 : 0,
+      _platform_web_online_roster_name: (index, unit) => {
+        const name = page.enginePlayers[index] ? page.enginePlayers[index].name : '';
+        return name.charCodeAt(unit) || 0;
+      },
     },
     navigator: {},
     URL,
@@ -185,6 +203,8 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   assert.doesNotMatch(page.elements['online-status'].textContent, /WebRTC|does not support/, 'no WebRTC requirement in the Activity');
   assert(page.fetches.some(url => url === `https://123.discordsays.com/v1/rooms/${ROOM}`), 'the lobby polls its room');
   assert.equal(page.status().view, 'pick', 'nobody hosts yet, so offer hosting');
+  assert.equal(page.context.HaloOnline.setTeam(0), false, 'no team change before a session');
+  assert.deepEqual(page.teamSets, []);
   assert.equal(page.status().shareUrl, null, 'no invite links in the Activity');
   assert.equal(page.elements['online-dialog'].open, false, 'no shell dialog: the hosted page has its own UI');
 
@@ -218,21 +238,62 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   page.gameState = 6;
   page.poll();
   assert.equal(page.status().view, 'joined');
+  page.engineTeams = 1;
+  page.enginePlayers = [
+    { name: 'Arbiter', team: 0, local: true },
+    { name: 'Alice', team: 1, local: false },
+    { name: 'Cortana The', team: 0, local: false },
+  ];
+  /* The relay reports every other machine as the opposite role, so a guest
+     still learns the other players' Discord names. */
+  guest.onRelayPeer({ peerId: 'relay-cortana', identifier: '020000000003', name: 'Cortana The Great', role: 'host' });
+  const lobbyTeams = page.status().teams;
+  const rosterOf = players => Array.from(players, player => [player.name, player.team, player.self]);
+  assert.equal(lobbyTeams.enabled, true, 'a team variant shows the picker');
+  assert.equal(lobbyTeams.pregame, true, 'the lobby can still switch');
+  assert.deepEqual(rosterOf(lobbyTeams.players), [
+    ['Arbiter!', 0, true],
+    ['Alice', 1, false],
+    ['Cortana The Great', 0, false],
+  ]);
+  assert.equal(page.context.HaloOnline.setTeam(1), true, 'the guest switches to blue');
+  assert.deepEqual(page.teamSets, [1]);
+  assert.equal(page.context.HaloOnline.setTeam(3), false, 'only red or blue');
+  assert.deepEqual(page.teamSets, [1], 'a bad team is not sent');
+  page.rosterSequence = 3;
+  assert.deepEqual(rosterOf(page.status().teams.players), [
+    ['Arbiter!', 0, true], ['Alice', 1, false], ['Cortana The Great', 0, false],
+  ], 'a publish in progress keeps the last roster');
+  page.rosterSequence = 2;
+  page.enginePlayers[0].team = 1;
+  page.enginePlayers[1].team = 0;
+  assert.deepEqual(rosterOf(page.status().teams.players), [
+    ['Arbiter!', 1, true], ['Alice', 0, false], ['Cortana The Great', 0, false],
+  ], 'the next snapshot is the live roster');
   page.clientState = 3;
   page.poll();
   assert.equal(page.status().view, 'match');
+  assert.equal(page.status().teams.pregame, false, 'a match does not take a new team');
+  assert.equal(page.context.HaloOnline.setTeam(0), false, 'the engine refuses a team change in a match');
+  assert.deepEqual(page.teamSets, [1, 0], 'the call reached the export and it refused');
   assert.deepEqual(page.phases, [], 'only the host speaks for the room');
   assert.equal(page.context.HaloOnline.configure({ mapIndex: 0, modeIndex: 0 }), false, 'only the host picks the next match');
 
-  /* The host left: back to the lobby, with the reason. */
+  /* The host left: back to the lobby, with the reason. A roster publish
+     that is still in progress must not bring the old teams back. */
   page.roomHost = null;
   page.gameState = 0;
   page.clientState = 2;
+  page.rosterSequence = 3;
   page.poll();
   await settle();
   await page.tick();
   assert.equal(page.status().view, 'pick', 'leaving returns to the lobby');
   assert.equal(page.status().notice, 'The host left or ended the game.');
+  assert.equal(page.status().teams.players.length, 0, 'leaving drops the previous roster');
+  page.rosterSequence = 2;
+  page.enginePlayers = [];
+  page.engineTeams = 0;
 
   page.timers.length = 0;
   await page.context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
@@ -257,6 +318,27 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
   assert.equal(page.status().view, 'hosting');
   assert.equal(page.context.HaloOnline.configure({ mapIndex: 0, modeIndex: 0 }), true, 'the next match, in the lobby');
   assert.deepEqual(page.configured_matches, [[0, 0]]);
+  page.engineTeams = 0;
+  page.enginePlayers = [];
+  page.rosterSequence = 2;
+  page.clientState = 2;
+  assert.equal(page.status().teams.enabled, false, 'slayer has no teams');
+  assert.equal(page.context.HaloOnline.configure({ mapIndex: 0, modeIndex: 1 }), true);
+  assert.equal(page.status().teams.enabled, true, 'team slayer shows the picker before the variant arrives');
+  assert.equal(page.context.HaloOnline.configure({ mapIndex: 0, modeIndex: 2 }), true);
+  assert.equal(page.status().teams.enabled, true, 'capture the flag shows the picker before the variant arrives');
+  page.engineTeams = 1;
+  page.enginePlayers = [
+    { name: 'Arbiter', team: 1, local: true },
+    { name: 'Bob', team: 0, local: false },
+  ];
+  assert.deepEqual(Array.from(page.status().teams.players, player => [player.name, player.team, player.self]), [
+    ['Arbiter!', 1, true],
+    ['Bob', 0, false],
+  ], 'the host sees the teams the engine has, including a red/blue flip');
+  const hostSwitches = page.teamSets.length;
+  assert.equal(page.context.HaloOnline.setTeam(0), true, 'the host switches before start');
+  assert.deepEqual(page.teamSets.slice(hostSwitches), [0]);
   assert.deepEqual(page.status().settings.mapIndex, 0);
   assert.deepEqual(page.phases, [false, true, false], 'the host tells the room when its match starts and ends');
 

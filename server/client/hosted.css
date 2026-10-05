@@ -177,6 +177,93 @@ html.halo-hosted #loading::after { display: none; }
 }
 #hosted-bar-text { margin-right: .5rem; }
 
+/* Team games: red and blue, in the lobby and (read-only) during a match. */
+#hosted-teams {
+  position: fixed;
+  z-index: 16;
+  top: .45rem;
+  left: 50%;
+  translate: -50% 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .45rem;
+  width: min(34rem, calc(100% - 1rem));
+  pointer-events: none;
+}
+#hosted-teams .hosted-team {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  min-width: 0;
+  padding: .3rem .4rem .4rem;
+  border-radius: .35rem;
+  text-align: left;
+}
+#hosted-teams .hosted-team.red {
+  background: rgba(92, 18, 22, .9);
+  border: 1px solid rgba(255, 140, 140, .55);
+}
+#hosted-teams .hosted-team.blue {
+  background: rgba(14, 42, 110, .9);
+  border: 1px solid rgba(140, 180, 255, .55);
+}
+#hosted-teams .hosted-team-players {
+  display: grid;
+  gap: .15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-height: 1.2rem;
+}
+#hosted-ui #hosted-teams .hosted-team-header,
+#hosted-ui #hosted-teams .hosted-team-player {
+  background: transparent;
+  border-color: transparent;
+  text-align: left;
+  padding: .1rem .25rem;
+}
+#hosted-ui #hosted-teams .hosted-team-header {
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+#hosted-teams .hosted-team.red .hosted-team-header { color: #ffc2c2; }
+#hosted-teams .hosted-team.blue .hosted-team-header { color: #c9dcff; }
+#hosted-ui #hosted-teams .hosted-team-player { font-size: .92rem; font-weight: 400; color: #e6f2fb; }
+#hosted-ui #hosted-teams .hosted-team-player.self { font-weight: 700; }
+#hosted-teams[data-interactive="true"] { pointer-events: auto; }
+#hosted-teams[data-interactive="true"] .hosted-team-header,
+#hosted-teams[data-interactive="true"] .hosted-team-player.self {
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: .15rem;
+}
+#hosted-ui #hosted-teams button:disabled,
+#hosted-ui #hosted-teams button:disabled:hover,
+#hosted-ui #hosted-teams button:disabled:focus-visible {
+  border-color: transparent;
+  background: transparent;
+  cursor: default;
+  opacity: 1;
+}
+#hosted-bar > #hosted-teams,
+#hosted-panel > #hosted-teams,
+#hosted-overlay-main > #hosted-teams {
+  position: static;
+  translate: none;
+  width: min(34rem, 100%);
+  margin: .35rem auto 0;
+  pointer-events: auto;
+}
+#hosted-overlay-main > #hosted-teams { pointer-events: none; }
+#hosted-teams.playing {
+  z-index: 12;
+  width: min(28rem, calc(100% - 1rem));
+}
+#hosted-teams.playing .hosted-team { padding: .15rem .3rem .25rem; }
+@media (max-width: 30rem) {
+  #hosted-teams { width: calc(100% - .75rem); }
+}
+
 /* the mouse is free: click to play, or the paused menu */
 #hosted-overlay {
   position: fixed;

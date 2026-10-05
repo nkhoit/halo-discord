@@ -384,8 +384,15 @@
   var JOIN_RETRY_MILLISECONDS = 10000;
   var NOTICE_MILLISECONDS = 15000;
   var CLIENT_STATE = Object.freeze({ PREGAME: 2, INGAME: 3, POSTGAME: 4 });
+  /* web_online_ui.h's game modes: team slayer and capture the flag have teams.
+     The engine's variant is authoritative once it has arrived; until then the
+     host's own choice is enough to show the picker. */
+  var TEAM_MODE = { 1: true, 2: true };
   var hostedLobby = { timer: 0, view: null, summary: null, roomId: null, retryAt: 0, notice: null, noticeAt: 0,
     joiningMatch: false, pendingJoin: false, spectateNext: false };
+  /* last consistent copy of the engine roster (a read that crosses a publish
+     keeps this instead of flashing an empty board) */
+  var engineRosterCache = null;
   /* (a guest) it watches the match without a player of its own (#52): the
      game's word (web_online_ui.c), which the room's relay is told too */
   var spectating = { page: false };
@@ -477,13 +484,29 @@
     hostedLobby.timer = global.setTimeout(pollHostedLobby, delay || 0);
   }
 
+  function discordUser() {
+    return activity() ? activity().user : (global.HaloHostedUser || relayAuth.user);
+  }
+
+  /* Halo stores eleven basic characters. The same cleaning the profile uses,
+     so a lobby name can be matched back to the engine's player. */
+  function haloLegalName(value) {
+    var name = String(value || "").replace(/[^A-Za-z0-9 ._'-]/g, "").replace(/\s+/g, " ").trim()
+      .slice(0, PLAYER_NAME_MAXIMUM_LENGTH).trim();
+    return /^[A-Za-z0-9]/.test(name) ? name : "";
+  }
+
   /* The Discord display name, when it fits Halo's rules (eleven basic
      characters). */
   function discordPlayerName() {
-    var user = activity() ? activity().user : (global.HaloHostedUser || relayAuth.user);
-    var name = String(user && user.name || "").replace(/[^A-Za-z0-9 ._'-]/g, "").replace(/\s+/g, " ").trim()
-      .slice(0, PLAYER_NAME_MAXIMUM_LENGTH).trim();
-    return /^[A-Za-z0-9]/.test(name) ? name : null;
+    return haloLegalName(discordUser() && discordUser().name) || null;
+  }
+
+  /* The name to show in the lobby: the Discord display name, not only the
+     eleven characters Halo keeps. */
+  function discordDisplayName() {
+    var name = String(discordUser() && discordUser().name || "").replace(/[\u0000-\u001f]/g, "").replace(/\s+/g, " ").trim();
+    return name ? name.slice(0, 32) : null;
   }
 
   async function pollHostedLobby() {
@@ -633,6 +656,89 @@
     };
   }
 
+  /* The engine's players and teams (published each frame on the game thread).
+     null when this build has no roster export. A read that crosses a publish
+     keeps the previous snapshot. */
+  function readEngineRoster() {
+    var sequenceFn = global.Module && global.Module._platform_web_online_roster_sequence;
+    if (typeof sequenceFn !== "function") return null;
+    var sequence = sequenceFn();
+    if (sequence & 1) return engineRosterCache;
+    var count = callModule("_platform_web_online_roster_count");
+    if (typeof count !== "number" || count < 0) return engineRosterCache;
+    if (count > 32) count = 32;
+    var players = [];
+    var index;
+    for (index = 0; index < count; index++) {
+      var name = "";
+      var unit;
+      for (unit = 0; unit < 12; unit++) {
+        var code = callModule("_platform_web_online_roster_name", index, unit);
+        if (!code) break;
+        name += String.fromCharCode(code);
+      }
+      players.push({
+        name: name,
+        team: callModule("_platform_web_online_roster_team", index),
+        local: callModule("_platform_web_online_roster_local", index) === 1,
+      });
+    }
+    var teams = callModule("_platform_web_online_roster_teams") === 1;
+    if (sequenceFn() !== sequence) return engineRosterCache;
+    engineRosterCache = { teams: teams, players: players };
+    return engineRosterCache;
+  }
+
+  /* Discord display name for an engine player, when the Halo name is that
+     display name trimmed to eleven characters. */
+  function teamDisplayName(player) {
+    var display = discordDisplayName();
+    var found = null;
+    if (player.local && display && haloLegalName(display) === player.name) return display;
+    session.roster.forEach(function(entry) {
+      if (found) return;
+      var profileName = entry.profile && entry.profile.name;
+      if (!profileName) return;
+      if (profileName === player.name || haloLegalName(profileName) === player.name) found = profileName;
+    });
+    return found || player.name || "Player";
+  }
+
+  /* Red/blue for the lobby. enabled for a team variant (or the host's team
+     mode, before the engine's copy of the variant arrives). pregame is the
+     only time a click is sent. Names are Discord display names. */
+  function lobbyTeams() {
+    var engine = readEngineRoster();
+    var hostMode = session.role === "host" && session.hostSettings ? session.hostSettings.modeIndex : -1;
+    var players = [];
+    if (engine && engine.players) {
+      engine.players.forEach(function(player) {
+        players.push({
+          name: teamDisplayName(player),
+          team: player.team === 0 || player.team === 1 ? player.team : -1,
+          self: !!player.local,
+        });
+      });
+    }
+    return {
+      enabled: !!(engine && engine.teams) || !!TEAM_MODE[hostMode],
+      pregame: clientGameState() === CLIENT_STATE.PREGAME,
+      players: players,
+    };
+  }
+
+  /* This machine's players onto red (0) or blue (1). The engine applies it
+     only in pregame and tells every machine, including the host. */
+  function setTeam(teamIndex) {
+    var set = global.Module && global.Module._platform_web_online_set_team;
+    if (!session.active || (teamIndex !== 0 && teamIndex !== 1) || typeof set !== "function") return false;
+    try {
+      return !!set(teamIndex);
+    } catch (error) {
+      return false;
+    }
+  }
+
   /* What the hosted page's UI shows. view: "booting", "checking" (the room
      not yet polled), "pick" (nobody hosts: choose and host), "joining",
      "joining-match" (joining the host's match as it runs), "wait-match"
@@ -674,6 +780,7 @@
       spectatorJoining: gameSpectating() && !spectating.page,
       spectated: gameSpectating() ? spectatedName() : null,
       spectators: session.active ? 0 : (summary.spectators || 0),
+      teams: lobbyTeams(),
     };
   }
 
@@ -2238,6 +2345,7 @@
     session.peerAliases.clear();
     session.peerSignalTargets.clear();
     session.roster.clear();
+    engineRosterCache = null;
     session.messageChain = Promise.resolve();
     session.hostWasReady = false;
     session.hostSettings = null;
@@ -2660,6 +2768,7 @@
     spectateCycle: spectateCycle,
     startMatch: startMatch,
     endMatch: endMatch,
+    setTeam: setTeam,
     guildRooms: guildRooms,
     joinGuildRoom: joinGuildRoom,
   });

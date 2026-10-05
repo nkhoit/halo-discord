@@ -3152,4 +3152,53 @@ boolean network_game_client_set_team(
 	return success;
 }
 
+/* The lobby reads who is on red and blue from this client's copy of the
+game (the host broadcasts a team change to every machine). */
+int network_game_client_roster_slot(
+	int index,
+	int *name,
+	int *team,
+	int *local)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	struct network_player *player;
+	int unit;
+	int ended;
+
+	if (!name || !team || !local || !client || index < 0 || index >= MAXIMUM_NUMBER_OF_PLAYERS)
+		return -1;
+	player = &client->game.players[index];
+	if (!network_player_is_valid(player))
+		return 0;
+	ended = 0;
+	for (unit = 0; unit < NETWORK_PLAYER_NAME_LENGTH; unit++)
+	{
+		unsigned int code = 0;
+
+		if (!ended)
+		{
+			code = (unsigned int)player->name[unit];
+			if (code < 0x20u || code > 0x7eu)
+				code = 0;
+			if (!code)
+				ended = 1;
+		}
+		name[unit] = (int)code;
+	}
+	*team = (player->team_index == (char)_team_red || player->team_index == (char)_team_blue) ?
+		(int)player->team_index : -1;
+	*local = player->machine_index == (char)client->machine_index;
+	return 1;
+}
+
+int network_game_client_game_has_teams(
+	void)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	if (!client)
+		return 0;
+	return client->game.variant.universal_variant.teams ? 1 : 0;
+}
+
 #endif
