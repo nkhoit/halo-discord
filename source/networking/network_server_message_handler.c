@@ -2692,7 +2692,11 @@ static boolean network_game_server_handle_message_client_team_switch_request_ing
 	if (!game || !game->variant.universal_variant.teams)
 		return TRUE;
 
-	machine_index = (char)client_machine->machine_index;
+	{
+		long game_machine_index = NONE;
+		network_game_server_get_client_machine(server, client_machine, &game_machine_index);
+		machine_index = (char)game_machine_index;
+	}
 	for (index = 0; index < MAXIMUM_NUMBER_OF_PLAYERS; index++)
 	{
 		struct network_player *player = &game->players[index];
@@ -2722,10 +2726,10 @@ static boolean network_game_server_handle_message_client_team_switch_request_ing
 
 		/* Keep the host's client roster in sync even if loopback is delayed. */
 		client = global_network_game_client_get();
-		if (client && &client->game != game)
+		if (client && network_game_client_get_game(client) != game)
 		{
 			network_game_apply_team_switch(
-				&client->game,
+				network_game_client_get_game(client),
 				player->player_list_index,
 				request.desired_team_index);
 		}

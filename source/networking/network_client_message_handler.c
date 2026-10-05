@@ -1510,7 +1510,7 @@ static boolean network_game_client_handle_message_server_player_team_switch_inga
 	}
 
 	if (!network_game_apply_team_switch(
-		&client->game,
+		network_game_client_get_game(client),
 		switch_message.player_list_index,
 		switch_message.team_index))
 	{
