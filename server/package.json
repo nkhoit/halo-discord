@@ -8,8 +8,9 @@
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
-    "test": "vitest run",
-    "check": "tsc --noEmit && vitest run"
+    "test": "vitest run --exclude test/lab-end-match-chrome.test.ts",
+    "check": "tsc --noEmit && vitest run --exclude test/lab-end-match-chrome.test.ts",
+    "test:lab-end-match": "vitest run test/lab-end-match-chrome.test.ts"
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "2.5.0",

@@ -7,7 +7,7 @@
  * Requires google-chrome and: cd server && npm i --no-save puppeteer-core
  * Artifacts: /tmp/halo-44-lab/ (or HALO_LAB_OUT).
  *
- * Run: npx vitest run test/lab-end-match-chrome.test.ts
+ * Not part of npm run check. Run: npm run test:lab-end-match
  */
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";

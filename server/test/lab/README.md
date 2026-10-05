@@ -5,6 +5,10 @@ relay with two Chrome profiles: results / Next match UI, room stays up, guest
 stays connected. Uses DEV_LOGIN-style session cookies and a Module/`HaloOnline`
 stub because the repo has no maps or wasm (by design).
 
+This lab is **local-only**. It is excluded from `tsc --noEmit` and from the
+default `vitest run` / `npm run check` path so CI does not need Chrome or
+`puppeteer-core`.
+
 ## Prerequisites
 
 - `google-chrome` (or `chromium`) on `PATH`
@@ -14,7 +18,8 @@ stub because the repo has no maps or wasm (by design).
 
 ```sh
 cd server
-npx vitest run test/lab-end-match-chrome.test.ts
+npm run test:lab-end-match
+# or: npx vitest run test/lab-end-match-chrome.test.ts
 ```
 
 Artifacts (screenshots + `evidence.json`) land in `/tmp/halo-44-lab/`
