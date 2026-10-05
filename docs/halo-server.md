@@ -115,7 +115,8 @@ chrome they hide; local development keeps upstream's shell as it is):
 - In Halo's lobby a bar shows the room (the host's "Start match" presses A
   for it). In a match, whenever the game does not have the mouse an overlay
   offers Play/Resume, sound on/off and volume (kept in the browser), Game
-  menu (Halo's Start, its pause menu) and Leave/End game.
+  menu (Halo's Start, its pause menu). The host can End match (the results,
+  then the lobby — everyone stays) or Close room. A guest can Leave game.
 - Escape belongs to the page: browsers release the mouse on it, which shows
   the overlay, so Halo's pause moved to the overlay's Game menu. F11 toggles
   full screen for the frame (also inside the Activity), F8 the frame cap.

@@ -66,6 +66,10 @@ short local_player_count(void);
 void spectator_request_cycle(short direction);
 int spectator_target_name_character(int index);
 void platform_log(const char *format, ...);
+/* game_engine.c's and game.c's: ending a match the way a score or time limit does */
+unsigned char game_engine_running(void);
+void game_engine_end_game(void);
+short game_connection(void);
 
 enum
 {
@@ -84,6 +88,7 @@ enum
 
 	_game_connection_local = 0,
 	_game_connection_network_client,
+	_game_connection_network_server,
 
 	WEB_ONLINE_REQUEST_COMMAND_MASK = 0xff,
 	WEB_ONLINE_REQUEST_MAP_SHIFT = 8,
@@ -115,6 +120,8 @@ static atomic_int web_online_requested_request = ATOMIC_VAR_INIT(_web_online_com
 static atomic_int web_online_requested_configuration = ATOMIC_VAR_INIT(0);
 /* the host asks for its match to start (1), as A on Halo's lobby does */
 static atomic_int web_online_requested_start = ATOMIC_VAR_INIT(0);
+/* the host asks to end the running match (1), as a score or time limit does */
+static atomic_int web_online_requested_end = ATOMIC_VAR_INIT(0);
 /* the page's choice whether a host lets players join its running match
 (network.join_in_progress): -1 none yet, else 0 or 1 */
 static atomic_int web_online_requested_join_in_progress = ATOMIC_VAR_INIT(-1);
@@ -231,6 +238,16 @@ hosts and is in its lobby. */
 EMSCRIPTEN_KEEPALIVE int platform_web_online_start_match(void)
 {
 	atomic_store_explicit(&web_online_requested_start, 1, memory_order_release);
+	return 1;
+}
+
+/* The host ends the running match the way a score or time limit does
+(game_engine_end_game): its results, then the lobby, and nobody leaves.
+The browser only sets a flag. web_online_ui_update() applies it on the
+game thread, and only while this machine hosts a match that is running. */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_end_match(void)
+{
+	atomic_store_explicit(&web_online_requested_end, 1, memory_order_release);
 	return 1;
 }
 
@@ -452,6 +469,8 @@ static void reset_owned_game(void)
 static void clear_session(void)
 {
 	memset(&web_online, 0, sizeof(web_online));
+	/* a closed room must not end the next match it hosts */
+	atomic_store_explicit(&web_online_requested_end, 0, memory_order_release);
 }
 
 static void fail_session(int error)
@@ -780,6 +799,24 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 	}
 	if (command == _web_online_command_host || command == _web_online_command_join)
 		begin_request(command, map_index, mode_index);
+
+	/* (the host) end the match, once: the same call a score or time limit
+	makes (and debug.network_test_end). A request outside a running match,
+	or from a machine that is not hosting, is dropped. */
+	if (atomic_exchange_explicit(&web_online_requested_end, 0, memory_order_acq_rel))
+	{
+		struct network_game_client *end_client = global_network_game_client_get();
+
+		if (web_online.command == _web_online_command_host && web_online.setup &&
+			global_network_game_server_get() && end_client &&
+			network_game_client_get_state(end_client, NULL) == _network_client_ingame &&
+			game_connection() == _game_connection_network_server &&
+			game_engine_running())
+		{
+			platform_log("web online: the host ends the match");
+			game_engine_end_game();
+		}
+	}
 
 	if (!web_online.command)
 		return;
