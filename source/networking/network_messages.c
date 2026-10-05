@@ -269,7 +269,15 @@ struct network_game_message_packet_definitions
 	struct data_packet_definition client_switch_to_pregame;
 	struct data_packet_field client_graceful_game_exit_postgame_fields[2];
 	struct data_packet_definition client_graceful_game_exit_postgame;
+#ifdef HALO_LINUX
+	struct data_packet_field client_team_switch_request_ingame_fields[2];
+	struct data_packet_definition client_team_switch_request_ingame;
+	struct data_packet_field server_player_team_switch_ingame_fields[2];
+	struct data_packet_definition server_player_team_switch_ingame;
+	struct data_packet_entry packets[37];
+#else
 	struct data_packet_entry packets[35];
+#endif
 	struct data_packet_group_definition group;
 };
 
@@ -327,6 +335,12 @@ DEFINE_NETWORK_GAME_MESSAGE(message_server_graceful_game_exit_postgame, 0x04);
 DEFINE_NETWORK_GAME_MESSAGE(message_client_remove_player_request_postgame, 0x20);
 DEFINE_NETWORK_GAME_MESSAGE(message_client_switch_to_pregame, 0x04);
 DEFINE_NETWORK_GAME_MESSAGE(message_client_graceful_game_exit_postgame, 0x04);
+#ifdef HALO_LINUX
+/* desired_team (char) + pad[3] */
+DEFINE_NETWORK_GAME_MESSAGE(message_client_team_switch_request_ingame, 0x04);
+/* player_list_index + team_index + pad[2] */
+DEFINE_NETWORK_GAME_MESSAGE(message_server_player_team_switch_ingame, 0x04);
+#endif
 
 #undef DEFINE_NETWORK_GAME_MESSAGE
 
@@ -563,6 +577,18 @@ struct network_game_message_packet_definitions data_0030aa68 =
 		DATA_PACKET_FIELD_END,
 	},
 	NETWORK_GAME_MESSAGE_DEFINITION(client_graceful_game_exit_postgame, "message_client_graceful_game_exit_postgame_packet", message_client_graceful_game_exit_postgame),
+#ifdef HALO_LINUX
+	{
+		DATA_PACKET_FIELD(_data_packet_field_bytes, 4),
+		DATA_PACKET_FIELD_END,
+	},
+	NETWORK_GAME_MESSAGE_DEFINITION(client_team_switch_request_ingame, "message_client_team_switch_request_ingame_packet", message_client_team_switch_request_ingame),
+	{
+		DATA_PACKET_FIELD(_data_packet_field_bytes, 4),
+		DATA_PACKET_FIELD_END,
+	},
+	NETWORK_GAME_MESSAGE_DEFINITION(server_player_team_switch_ingame, "message_server_player_team_switch_ingame_packet", message_server_player_team_switch_ingame),
+#endif
 	{
 		{ 0, 0, &data_0030aa68.client_broadcast_game_search },
 		{ 0, 0, &data_0030aa68.client_ping },
@@ -599,10 +625,19 @@ struct network_game_message_packet_definitions data_0030aa68 =
 		{ 7, 0, &data_0030aa68.client_remove_player_request_postgame },
 		{ 7, 0, &data_0030aa68.client_switch_to_pregame },
 		{ 7, 0, &data_0030aa68.client_graceful_game_exit_postgame },
+#ifdef HALO_LINUX
+		/* 5 = client_ingame, 4 = server_ingame */
+		{ 5, 0, &data_0030aa68.client_team_switch_request_ingame },
+		{ 4, 0, &data_0030aa68.server_player_team_switch_ingame },
+#endif
 	},
 	{
 		"network_game_messages_group",
+#ifdef HALO_LINUX
+		37,
+#else
 		35,
+#endif
 		8,
 #ifdef HALO_LINUX
 		/* the per-tick update of 128 players decodes to 0x1010 bytes */
@@ -1178,6 +1213,14 @@ void *create_network_game_message(
 #line 211 "c:\\halo\\SOURCE\\networking\\network_messages.c"
 		match_assert(__FILE__, __LINE__, message_struct_size==sizeof(message_client_graceful_game_exit_postgame));
 		break;
+#ifdef HALO_LINUX
+	case _message_client_team_switch_request_ingame:
+		match_assert(__FILE__, __LINE__, message_struct_size==sizeof(message_client_team_switch_request_ingame));
+		break;
+	case _message_server_player_team_switch_ingame:
+		match_assert(__FILE__, __LINE__, message_struct_size==sizeof(message_server_player_team_switch_ingame));
+		break;
+#endif
 	default:
 #line 213 "c:\\halo\\SOURCE\\networking\\network_messages.c"
 		match_vassert(__FILE__, __LINE__, FALSE, "unknown network game message structure type");

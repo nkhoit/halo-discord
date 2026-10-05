@@ -53,6 +53,11 @@ enum network_game_message_type
 	_message_client_remove_player_request_postgame,
 	_message_client_switch_to_pregame,
 	_message_client_graceful_game_exit_postgame,
+#ifdef HALO_LINUX
+	/* mid-match team switch (#16): client asks, host applies and broadcasts */
+	_message_client_team_switch_request_ingame,
+	_message_server_player_team_switch_ingame,
+#endif
 	NUMBER_OF_NETWORK_GAME_MESSAGE_TYPES,
 };
 

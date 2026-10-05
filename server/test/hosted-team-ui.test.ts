@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 /// <reference lib="dom" />
 /* Team games (client/hosted.js in a DOM): Red and Blue, Discord names, a
-   click on your own name or a team header switches, and the columns stay
-   up but locked once the match starts. Free-for-all modes show neither. */
+   click on your own name or a team header switches in the lobby; mid-match
+   Esc overlay switches when balance allows. Spectating/postgame stay locked.
+   Free-for-all modes show neither. */
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
 
@@ -18,7 +19,7 @@ type Status = {
   settings?: { mapIndex: number; modeIndex: number };
   playerCount?: number;
   spectating?: boolean;
-  teams?: { enabled: boolean; pregame: boolean; players: Player[] };
+  teams?: { enabled: boolean; pregame: boolean; canSwitch?: boolean; allowed?: { 0: boolean; 1: boolean }; players: Player[] };
 };
 
 const lobbyPlayers: Player[] = [
@@ -197,7 +198,7 @@ describe("the lobby team picker", () => {
     expect(teamCalls.length).toBe(before);
   });
 
-  it("keeps the teams up during a match and ignores clicks", async () => {
+  it("lets a player switch from the Esc overlay mid-match when balance allows", async () => {
     const before = teamCalls.length;
     status = {
       view: "match",
@@ -207,6 +208,8 @@ describe("the lobby team picker", () => {
       teams: {
         enabled: true,
         pregame: false,
+        canSwitch: true,
+        allowed: { 0: true, 1: true },
         players: [
           { name: "Arbiter!", team: 0, self: true },
           { name: "Alice", team: 1, self: false },
@@ -217,12 +220,43 @@ describe("the lobby team picker", () => {
     expect(visible("hosted-overlay")).toBe(true);
     expect(visible("hosted-teams")).toBe(true);
     expect(byId("hosted-teams").parentElement?.id).toBe("hosted-overlay-main");
-    expect(byId("hosted-teams").getAttribute("data-interactive")).toBe("false");
-    expect(header(0).disabled).toBe(true);
-    expect(header(1).disabled).toBe(true);
-    expect(column("hosted-team-red")).toEqual([{ name: "Arbiter!", self: true, tag: "SPAN" }]);
+    expect(byId("hosted-teams").getAttribute("data-interactive")).toBe("true");
+    expect(header(0).disabled).toBe(false);
+    expect(header(1).disabled).toBe(false);
+    expect(column("hosted-team-red")).toEqual([{ name: "Arbiter!", self: true, tag: "BUTTON" }]);
     expect(column("hosted-team-blue")).toEqual([{ name: "Alice", self: false, tag: "SPAN" }]);
+    (byId("hosted-team-red").querySelector("[data-self='true']") as HTMLButtonElement).click();
+    expect(teamCalls.at(-1)).toBe(1);
     header(1).click();
+    expect(teamCalls.at(-1)).toBe(1);
+    expect(teamCalls.length).toBe(before + 2);
+  });
+
+  it("disables switching into a larger team mid-match", async () => {
+    const before = teamCalls.length;
+    status = {
+      view: "match",
+      role: "guest",
+      host: "Alice",
+      settings: { mapIndex: 0, modeIndex: 1 },
+      teams: {
+        enabled: true,
+        pregame: false,
+        canSwitch: true,
+        allowed: { 0: false, 1: true },
+        players: [
+          { name: "Alice", team: 0, self: false },
+          { name: "Bob", team: 0, self: false },
+          { name: "Arbiter!", team: 1, self: true },
+        ],
+      },
+    };
+    await tick();
+    expect(byId("hosted-teams").getAttribute("data-interactive")).toBe("true");
+    expect(header(0).disabled).toBe(true);
+    expect(header(1).disabled).toBe(false);
+    expect(column("hosted-team-blue")[0]?.tag).toBe("SPAN");
+    header(0).click();
     expect(teamCalls.length).toBe(before);
   });
 

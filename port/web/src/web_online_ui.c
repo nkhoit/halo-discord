@@ -10,6 +10,7 @@
 the game's cseries headers after the host libc headers.  Keep this boundary
 to opaque pointers and the game's scalar ABI. */
 struct network_game_client;
+struct network_game;
 struct network_game_server;
 struct widget_instance;
 
@@ -56,8 +57,10 @@ unsigned char network_game_server_watchable_in_game(struct network_game_server *
 unsigned char network_game_server_match_starting(struct network_game_server *server);
 unsigned char network_game_server_countdown_active(struct network_game_server *server);
 unsigned char network_game_client_set_team(char team_index);
-int network_game_client_roster_slot(int index, int *name, int *team, int *local);
+unsigned char network_game_client_request_team_switch(char team_index);
+unsigned char network_game_client_team_switch_allowed(char team_index);
 int network_game_client_game_has_teams(void);
+int network_game_client_roster_slot(int index, int *name, int *team, int *local);
 int config_boolean(const char *name);
 long config_integer(const char *name);
 int config_write_boolean(const char *name, int value);
@@ -135,6 +138,9 @@ static atomic_int web_online_requested_spectate = ATOMIC_VAR_INIT(-1);
 static atomic_int web_online_spectating = ATOMIC_VAR_INIT(0);
 /* this machine's players onto red (0) or blue (1); -1 none. Pregame only. */
 static atomic_int web_online_requested_team = ATOMIC_VAR_INIT(-1);
+/* Mid-match switch queue (-1 none). Separate from pregame so a late pregame
+click cannot become an in-game request. */
+static atomic_int web_online_requested_team_switch = ATOMIC_VAR_INIT(-1);
 /* the client's roster, copied each frame so the browser thread never reads
 the game's player array. 32 is the web match cap (HALO_WEB_MAXIMUM_PLAYERS). */
 enum
@@ -435,6 +441,27 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_set_team(int team_index)
 	return 1;
 }
 
+EMSCRIPTEN_KEEPALIVE int platform_web_online_switch_team(int team_index)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	if (team_index != 0 && team_index != 1)
+		return 0;
+	if (!client || network_game_client_get_state(client, NULL) != _network_client_ingame)
+		return 0;
+	if (!network_game_client_game_has_teams())
+		return 0;
+	atomic_store_explicit(&web_online_requested_team_switch, team_index, memory_order_release);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_online_team_switch_allowed(int team_index)
+{
+	if (team_index != 0 && team_index != 1)
+		return 0;
+	return network_game_client_team_switch_allowed((char)team_index) ? 1 : 0;
+}
+
 EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_sequence(void)
 {
 	return (int)atomic_load_explicit(&web_online_roster_sequence, memory_order_acquire);
@@ -514,12 +541,20 @@ static void apply_team_request(void)
 	int team = atomic_exchange_explicit(&web_online_requested_team, -1, memory_order_acq_rel);
 	struct network_game_client *client;
 
+	if (team == 0 || team == 1)
+	{
+		client = global_network_game_client_get();
+		if (client && network_game_client_get_state(client, NULL) == _network_client_pregame)
+			network_game_client_set_team((char)team);
+	}
+
+	team = atomic_exchange_explicit(&web_online_requested_team_switch, -1, memory_order_acq_rel);
 	if (team != 0 && team != 1)
 		return;
 	client = global_network_game_client_get();
-	if (!client || network_game_client_get_state(client, NULL) != _network_client_pregame)
+	if (!client || network_game_client_get_state(client, NULL) != _network_client_ingame)
 		return;
-	network_game_client_set_team((char)team);
+	network_game_client_request_team_switch((char)team);
 }
 
 static void apply_requested_player_customization(void)
@@ -592,6 +627,7 @@ static void clear_session(void)
 	/* a closed room must not end the next match it hosts, or move its teams */
 	atomic_store_explicit(&web_online_requested_end, 0, memory_order_release);
 	atomic_store_explicit(&web_online_requested_team, -1, memory_order_release);
+	atomic_store_explicit(&web_online_requested_team_switch, -1, memory_order_release);
 }
 
 static void fail_session(int error)

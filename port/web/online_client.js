@@ -704,13 +704,18 @@
     return found || player.name || "Player";
   }
 
-  /* Red/blue for the lobby. enabled for a team variant (or the host's team
-     mode, before the engine's copy of the variant arrives). pregame is the
-     only time a click is sent. Names are Discord display names. */
+  /* Red/blue for the lobby and mid-match Esc overlay (#16). Names are
+     Discord display names. canSwitch is true in a running team match when
+     this machine has a player (not spectating). allowed[team] is the
+     balance gate (refuse a strictly larger team). */
   function lobbyTeams() {
     var engine = readEngineRoster();
     var hostMode = session.role === "host" && session.hostSettings ? session.hostSettings.modeIndex : -1;
+    var state = clientGameState();
     var players = [];
+    var allowed = { 0: false, 1: false };
+    var canSwitch = false;
+    var allowFn = global.Module && global.Module._platform_web_online_team_switch_allowed;
     if (engine && engine.players) {
       engine.players.forEach(function(player) {
         players.push({
@@ -720,18 +725,30 @@
         });
       });
     }
+    if (state === CLIENT_STATE.INGAME && engine && engine.teams && typeof allowFn === "function") {
+      canSwitch = true;
+      try {
+        allowed[0] = !!allowFn(0);
+        allowed[1] = !!allowFn(1);
+      } catch (error) { canSwitch = false; }
+    }
     return {
       enabled: !!(engine && engine.teams) || !!TEAM_MODE[hostMode],
-      pregame: clientGameState() === CLIENT_STATE.PREGAME,
+      pregame: state === CLIENT_STATE.PREGAME,
+      canSwitch: canSwitch,
+      allowed: allowed,
       players: players,
     };
   }
 
-  /* This machine's players onto red (0) or blue (1). The engine applies it
-     only in pregame and tells every machine, including the host. */
+  /* Pregame uses set_team; mid-match uses switch_team (host-authoritative). */
   function setTeam(teamIndex) {
-    var set = global.Module && global.Module._platform_web_online_set_team;
-    if (!session.active || (teamIndex !== 0 && teamIndex !== 1) || typeof set !== "function") return false;
+    if (!session.active || (teamIndex !== 0 && teamIndex !== 1) || !global.Module) return false;
+    var state = clientGameState();
+    var set = state === CLIENT_STATE.INGAME ?
+      global.Module._platform_web_online_switch_team :
+      global.Module._platform_web_online_set_team;
+    if (typeof set !== "function") return false;
     try {
       return !!set(teamIndex);
     } catch (error) {

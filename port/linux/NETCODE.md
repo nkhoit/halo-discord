@@ -229,6 +229,17 @@ other machine has: the view never zooms. With nobody to watch the view
 holds; on Blood Gulch it starts on a shot of the map. Positional audio
 still follows nobody.
 
+
+## Mid-match team switch
+
+In a distributed team match, a player can ask the host to move them to the
+other team (`_message_client_team_switch_request_ingame`). The host checks
+balance (no joining a strictly larger team), updates `player->team_index` /
+`network_player_data.team_index` / the network game roster, kills the unit
+without statistics so a flag or ball drops, and broadcasts
+`_message_server_player_team_switch_ingame`. Per-tick unit state still does
+not carry team; clients apply the reliable message. Lockstep is unchanged.
+
 ## Testing
 
 `debug.network_test` (`port/linux/game/network_test.c`) hosts or joins a

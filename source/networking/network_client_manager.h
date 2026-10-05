@@ -55,6 +55,26 @@ int network_game_client_roster_slot(
 	int *local);
 int network_game_client_game_has_teams(
 	void);
+/* Mid-match (#16): ask the host to move this machine's players to red (0) or
+   blue (1). Pregame still uses network_game_client_set_team. Returns FALSE
+   outside an in-progress distributed team game. */
+boolean network_game_client_request_team_switch(
+	char team_index);
+/* 1 when this machine's local player may move onto team_index mid-match. */
+boolean network_game_client_team_switch_allowed(
+	char team_index);
+/* Whether moving from from_team onto to_team is allowed (refuses a strictly
+   larger destination; ties and emptying a team are OK). */
+boolean network_game_team_switch_balance_ok(
+	struct network_game *game,
+	char from_team,
+	char to_team);
+/* Apply an authoritative team change on this machine's network_game copy and
+   live player_datum (kill without stats so flag/ball drop). */
+boolean network_game_apply_team_switch(
+	struct network_game *game,
+	char player_list_index,
+	char team_index);
 #endif
 boolean network_game_client_initiate_join_game(
 	struct network_game_client *client,

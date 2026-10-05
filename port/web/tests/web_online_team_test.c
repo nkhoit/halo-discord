@@ -7,6 +7,8 @@
 #include <stdio.h>
 
 int platform_web_online_set_team(int team_index);
+int platform_web_online_switch_team(int team_index);
+int platform_web_online_team_switch_allowed(int team_index);
 int platform_web_online_roster_sequence(void);
 int platform_web_online_roster_count(void);
 int platform_web_online_roster_teams(void);
@@ -240,6 +242,22 @@ unsigned char network_game_client_set_team(char team_index)
 	return 1;
 }
 
+static int switch_team_calls;
+static char switch_team_value;
+
+unsigned char network_game_client_request_team_switch(char team_index)
+{
+	switch_team_calls++;
+	switch_team_value = team_index;
+	return 1;
+}
+
+unsigned char network_game_client_team_switch_allowed(char team_index)
+{
+	(void)team_index;
+	return 0;
+}
+
 int main(void)
 {
 	int calls;
@@ -303,6 +321,33 @@ int main(void)
 	client_state = 2;
 	frame();
 	expect(set_team_calls == calls, "a dropped choice does not apply when pregame returns");
+
+	/* Mid-match switch (#16): separate export, applied only while ingame. */
+	switch_team_calls = 0;
+	expect(platform_web_online_switch_team(1) == 0, "pregame refuses a mid-match switch export");
+	frame();
+	expect(switch_team_calls == 0, "pregame does not call request_team_switch");
+
+	client_state = 3;
+	expect(platform_web_online_switch_team(-1) == 0, "a bad mid-match team is refused");
+	expect(platform_web_online_switch_team(2) == 0, "only red or blue mid-match");
+	expect(platform_web_online_switch_team(1) == 1, "ingame accepts a mid-match switch");
+	expect(platform_web_online_switch_team(0) == 1, "the last mid-match click wins");
+	frame();
+	expect(switch_team_calls == 1, "one frame applies one mid-match choice");
+	expect(switch_team_value == 0, "the applied mid-match choice is red");
+	frame();
+	expect(switch_team_calls == 1, "the mid-match choice is applied once");
+
+	client_state = 4;
+	expect(platform_web_online_switch_team(1) == 0, "postgame refuses a mid-match switch");
+	frame();
+	expect(switch_team_calls == 1, "postgame does not apply a mid-match switch");
+
+	client_state = 3;
+	expect(platform_web_online_set_team(1) == 0, "pregame export still refuses during a match");
+	frame();
+	expect(set_team_calls == calls, "pregame export still does not apply during a match");
 
 	if (failures)
 	{

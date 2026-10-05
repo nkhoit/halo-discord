@@ -378,6 +378,8 @@ symbols in this file:
 #include "game/local_players.h"
 #include "game/player_queues_new.h"
 #include "game/players.h"
+#include "game/game.h"
+#include "units/units.h"
 #include "interface/player_ui.h"
 #include "saved games/player_profile.h"
 #include "interface/ui_widget.h"
@@ -3199,6 +3201,157 @@ int network_game_client_game_has_teams(
 	if (!client)
 		return 0;
 	return client->game.variant.universal_variant.teams ? 1 : 0;
+}
+
+boolean network_game_team_switch_balance_ok(
+	struct network_game *game,
+	char from_team,
+	char to_team)
+{
+	long counts[2] = { 0, 0 };
+	long index;
+
+	if (!game || (from_team != (char)_team_red && from_team != (char)_team_blue) ||
+		(to_team != (char)_team_red && to_team != (char)_team_blue) ||
+		from_team == to_team)
+	{
+		return FALSE;
+	}
+	for (index = 0; index < MAXIMUM_NUMBER_OF_PLAYERS; index++)
+	{
+		struct network_player *player = &game->players[index];
+
+		if (network_player_is_valid(player) &&
+			player->team_index >= 0 &&
+			player->team_index < 2)
+		{
+			counts[player->team_index]++;
+		}
+	}
+	/* Refuse joining a strictly larger team; ties and emptying a team are OK. */
+	return counts[(int)to_team] <= counts[(int)from_team];
+}
+
+boolean network_game_apply_team_switch(
+	struct network_game *game,
+	char player_list_index,
+	char team_index)
+{
+	long index;
+	struct network_player *network_player = NULL;
+	long player_index;
+	struct player_datum *player;
+
+	if (!game || (team_index != (char)_team_red && team_index != (char)_team_blue))
+		return FALSE;
+	for (index = 0; index < MAXIMUM_NUMBER_OF_PLAYERS; index++)
+	{
+		struct network_player *slot = &game->players[index];
+
+		if (network_player_is_valid(slot) && slot->player_list_index == player_list_index)
+		{
+			network_player = slot;
+			break;
+		}
+	}
+	if (!network_player)
+		return FALSE;
+
+	network_player->team_index = team_index;
+
+	if (!player_data)
+		return TRUE;
+
+	player_index = unstrip_player_index(player_list_index);
+	if (player_index == NONE)
+		return TRUE;
+
+	player = player_get(player_index);
+	player->network_player_data.team_index = team_index;
+	player->team_index = (signed char)team_index;
+	if (player->unit_index != NONE)
+	{
+		/* Approved #16 default: no suicide/kill credit; flag/ball still drop
+		via the deferred act-of-god death path. */
+		unit_kill_no_statistics(player->unit_index);
+	}
+	return TRUE;
+}
+
+boolean network_game_client_team_switch_allowed(
+	char team_index)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	long index;
+	char from_team = (char)NONE;
+
+	if (!client || !network_game_distributed() ||
+		network_game_client_get_state(client, NULL) != _network_game_client_state_ingame ||
+		!client->game.variant.universal_variant.teams ||
+		(team_index != (char)_team_red && team_index != (char)_team_blue))
+	{
+		return FALSE;
+	}
+	for (index = 0; index < MAXIMUM_NUMBER_OF_PLAYERS; index++)
+	{
+		struct network_player *player = &client->game.players[index];
+
+		if (network_player_is_valid(player) &&
+			player->machine_index == (char)client->machine_index &&
+			(player->team_index == (char)_team_red || player->team_index == (char)_team_blue))
+		{
+			from_team = player->team_index;
+			break;
+		}
+	}
+	if (from_team == (char)NONE || from_team == team_index)
+		return FALSE;
+	return network_game_team_switch_balance_ok(&client->game, from_team, team_index);
+}
+
+boolean network_game_client_request_team_switch(
+	char team_index)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	struct
+	{
+		char desired_team_index;
+		char pad[3];
+	} request;
+	message_header *message;
+
+	if (!client || !network_game_distributed() ||
+		network_game_client_get_state(client, NULL) != _network_game_client_state_ingame ||
+		!client->game.variant.universal_variant.teams ||
+		(team_index != (char)_team_red && team_index != (char)_team_blue))
+	{
+		return FALSE;
+	}
+
+	request.desired_team_index = team_index;
+	request.pad[0] = 0;
+	request.pad[1] = 0;
+	request.pad[2] = 0;
+	message = create_network_game_message(
+		_message_client_team_switch_request_ingame,
+		&request,
+		sizeof(request));
+	if (!message)
+	{
+		network_event("failed to create a message_client_team_switch_request_ingame message");
+		return FALSE;
+	}
+	if (!network_game_client_write(
+		client->connection,
+		message,
+		GET_MESSAGE_SIZE(*message),
+		NULL,
+		1))
+	{
+		network_event("network_game_client_write() failed for team switch request");
+		return FALSE;
+	}
+	return TRUE;
 }
 
 #endif
