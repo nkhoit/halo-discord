@@ -202,9 +202,11 @@ html.halo-hosted #loading::after { display: none; }
 #hosted-resume { min-height: 2.75rem; font-size: 1.1rem; }
 .hosted-audio { display: flex; align-items: center; gap: .6rem; }
 .hosted-audio input { flex: 1; accent-color: #6cc6ff; }
-.hosted-overlay-actions { display: flex; gap: .5rem; }
-.hosted-overlay-actions button { flex: 1; }
+.hosted-overlay-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.hosted-overlay-actions button { flex: 1 1 6.5rem; }
 .hosted-hint { margin: 0; color: #7f9db3; font-size: .78rem; text-align: center; }
+#hosted-end-confirm { display: flex; flex-direction: column; gap: .45rem; }
+#hosted-end-confirm-text { margin: 0; color: #ffcf8a; text-align: center; }
 
 /* Settings, in the overlay: the mouse and the controls */
 .hosted-settings { width: min(34rem, 92vw); max-height: 92vh; overflow-y: auto; box-sizing: border-box; }

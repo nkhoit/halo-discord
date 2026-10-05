@@ -3,7 +3,8 @@
    The game fills the frame. Over it: a loading screen, the lobby (the host
    picks a map and mode; everyone else joins the host by themselves), a bar
    in Halo's own lobby, and an overlay whenever the game does not have the
-   mouse: click to play, sound, Halo's menu, leave.
+   mouse: click to play, sound, Halo's menu, and (the host) end the match
+   or close the room.
 
    Escape belongs to the page: browsers always release the mouse on Escape,
    so it shows the overlay, and Halo's Start (its pause menu) moves to the
@@ -498,6 +499,8 @@
      key, mouse button or wheel turn */
   var settingsUi = { open: false, capturing: null, notice: DEFAULT_NOTICE, warning: false, dirty: true,
     swallowClick: false };
+  /* (the host) End match asks first: it ends the match for everyone */
+  var endConfirm = false;
 
   /* The pictures need the session cookie, which the Activity only has once
      activity.js has signed in, after this script has run: so they load when
@@ -576,8 +579,17 @@
       ]),
       element("div", { class: "hosted-overlay-actions" }, [
         element("button", { type: "button", id: "hosted-menu", text: "Game menu" }),
+        element("button", { type: "button", id: "hosted-end-match", hidden: true, text: "End match" }),
         element("button", { type: "button", id: "hosted-settings-open", text: "Settings" }),
         element("button", { type: "button", id: "hosted-leave", text: "Leave game" }),
+      ]),
+      element("div", { id: "hosted-end-confirm", hidden: true, role: "group",
+        "aria-labelledby": "hosted-end-confirm-text" }, [
+        element("p", { id: "hosted-end-confirm-text", text: "End the match for everyone?" }),
+        element("div", { class: "hosted-overlay-actions" }, [
+          element("button", { type: "button", id: "hosted-end-cancel", text: "Cancel" }),
+          element("button", { type: "button", id: "hosted-end-confirm-yes", text: "End match" }),
+        ]),
       ]),
       element("p", { id: "hosted-overlay-hint", class: "hosted-hint" }),
     ]),
@@ -641,6 +653,9 @@
         render();
       } else if (settingsUi.open && !event.repeat) {
         settingsUi.open = false;
+        render();
+      } else if (endConfirm && !event.repeat) {
+        endConfirm = false;
         render();
       } else if (controller.state.blocked && !event.repeat) {
         controller.showMenu();
@@ -964,7 +979,12 @@
     });
     byId("hosted-next").addEventListener("click", function() { press(BUTTON.A); });
     byId("hosted-resume").addEventListener("click", function() {
-      if (status.view !== "spectating") return play();
+      endConfirm = false;
+      if (status.view !== "spectating") {
+        render();
+        play();
+        return;
+      }
       controller.spectateMenu(false);
       resumeAudio();
       render();
@@ -972,8 +992,23 @@
     byId("hosted-spectate-join").addEventListener("click", spectatorJoin);
     byId("hosted-bar-join").addEventListener("click", spectatorJoin);
     byId("hosted-menu").addEventListener("click", function() {
+      endConfirm = false;
+      render();
       play();
       global.setTimeout(function() { press(BUTTON.START); }, 100);
+    });
+    byId("hosted-end-match").addEventListener("click", function() {
+      endConfirm = true;
+      render();
+    });
+    byId("hosted-end-cancel").addEventListener("click", function() {
+      endConfirm = false;
+      render();
+    });
+    byId("hosted-end-confirm-yes").addEventListener("click", function() {
+      endConfirm = false;
+      if (global.HaloOnline && typeof global.HaloOnline.endMatch === "function") global.HaloOnline.endMatch();
+      render();
     });
     byId("hosted-leave").addEventListener("click", function() {
       if (global.HaloOnline) global.HaloOnline.leave();
@@ -1028,6 +1063,7 @@
     });
     byId("hosted-lock-retry").addEventListener("click", play);
     byId("hosted-settings-open").addEventListener("click", function() {
+      endConfirm = false;
       settingsUi.open = true;
       settingsUi.dirty = true;
       render();
@@ -1255,11 +1291,15 @@
     text("hosted-overlay-hint", watching ? "Esc shows this menu · F11 full screen" :
       "Esc releases the mouse · F11 full screen · F8 frame cap");
     show(byId("hosted-menu"), status.view === "match");
+    var canEndMatch = mode !== "none" && status.role === "host" && status.view === "match";
+    if (!canEndMatch) endConfirm = false;
+    show(byId("hosted-end-match"), canEndMatch && !endConfirm);
+    show(byId("hosted-end-confirm"), canEndMatch && endConfirm);
     show(spectateLabel, presented && status.view === "spectating" && !watching);
     text("hosted-spectate-name", status.spectatorJoining ? "Joining the match…" :
       status.spectated ? "Spectating " + status.spectated : "Spectating");
     show(byId("hosted-leave"), status.role === "host" || status.role === "guest");
-    text("hosted-leave", status.role === "host" ? "End game" : "Leave game");
+    text("hosted-leave", status.role === "host" ? "Close room" : "Leave game");
     var mute = byId("hosted-mute");
     mute.setAttribute("aria-pressed", String(controller.audio.muted));
     text("hosted-mute", controller.audio.muted ? "Sound off" : "Sound on");

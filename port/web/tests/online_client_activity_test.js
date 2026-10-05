@@ -46,6 +46,7 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
     /* (the Activity's first session request finds it expired; a browser page is signed in) */
     sessionStatus: sessionStatus || (activity ? [401, 200] : [200]), signIns: 0, fetches: [], configured: [], relayOpened: 0, disconnects: 0,
     windowListeners: {}, customizations: [], phases: [], replaced: [], assigned: [], configured_matches: [],
+    requests: [], ends: [],
     joinable: false, joinablePhases: [], joinInProgress: [], matchJoinable: 0, matchStarting: 0,
     guildRooms: [], details: [], delays: [],
     watchable: false, matchWatchable: 0, spectate: [], gameSpectating: 0, spectated: 'Alice', cycles: [],
@@ -119,7 +120,8 @@ function load({ activity, hash = '', user = { id: '7', name: 'Arbiter!' }, sessi
       _platform_web_online_get_state: () => page.gameState,
       _platform_web_online_get_client_state: () => page.clientState,
       _platform_web_online_host_configured: () => 1,
-      _platform_web_online_request: () => 1,
+      _platform_web_online_request: command => { page.requests.push(command); return 1; },
+      _platform_web_online_end_match: () => { page.ends.push(1); return 1; },
       _platform_web_online_set_player_customization: (...values) => { page.customizations.push(values); return 1; },
       _platform_web_online_set_transport_state() {},
       _platform_web_online_configure: (map, mode) => { page.configured_matches.push([map, mode]); return 1; },
@@ -446,6 +448,66 @@ const settle = async () => { for (let index = 0; index < 10; index++) await new 
     'the browser page signs in with Discord once and comes back to the same room');
   assert.equal(refusedBrowser.relayOpened, 0);
   assert.equal(refusedBrowser.status().notice, null, 'no error while it leaves for the sign-in');
+
+  /* ---------- the host ends the match (#44) */
+  const ending = load({ activity: true });
+  ending.context.HaloOnline.runtimeReady();
+  await ending.tick();
+  assert.equal(ending.context.HaloOnline.endMatch(), false, 'nobody is hosting');
+  await ending.context.HaloOnline.host({ mapIndex: 0, modeIndex: 0 });
+  ending.gameState = 3;
+  ending.clientState = 2;
+  ending.poll();
+  assert.equal(ending.status().view, 'hosting');
+  assert.equal(ending.context.HaloOnline.endMatch(), true, 'the host posts the end; the game applies it only in a match');
+  assert.deepEqual(ending.ends, [1]);
+  ending.clientState = 3;
+  ending.poll();
+  assert.equal(ending.status().view, 'match');
+  const disconnects = ending.disconnects;
+  const requests = ending.requests.slice();
+  assert.equal(ending.context.HaloOnline.endMatch(), true);
+  assert.deepEqual(ending.ends, [1, 1], 'the mailbox, not a room teardown');
+  assert.equal(ending.disconnects, disconnects, 'ending a match does not disconnect anyone');
+  assert.deepEqual(ending.requests, requests, 'ending a match does not cancel the Halo session');
+  assert.equal(ending.status().role, 'host');
+  ending.clientState = 4;
+  ending.poll();
+  assert.equal(ending.status().view, 'postgame', 'the results, the same as a score or time limit');
+  assert.equal(ending.status().role, 'host', 'the room stays up');
+  assert.equal(ending.disconnects, disconnects);
+  ending.clientState = 2;
+  ending.poll();
+  assert.equal(ending.status().view, 'hosting', 'back in the lobby for the next match');
+  assert.equal(ending.context.HaloOnline.configure({ mapIndex: 0, modeIndex: 0 }), true, 'the host picks the next map and mode');
+  assert.deepEqual(ending.configured_matches.at(-1), [0, 0]);
+  delete ending.context.Module._platform_web_online_end_match;
+  assert.equal(ending.context.HaloOnline.endMatch(), false, 'without the export, nothing closes the room instead');
+  assert.equal(ending.disconnects, disconnects);
+
+  const guestEnd = load({ activity: true });
+  guestEnd.context.HaloOnline.runtimeReady();
+  await guestEnd.tick();
+  guestEnd.roomHost = 'Alice';
+  await guestEnd.tick();
+  await settle();
+  const guestRelay = guestEnd.configured.at(-1);
+  guestRelay.onRelayPeer({ peerId: 'relay-020000000002', identifier: '020000000002', name: 'Alice', role: 'host' });
+  guestRelay.onStateChange({ peerId: 'relay-020000000002', state: 'connected' });
+  guestEnd.gameState = 6;
+  guestEnd.clientState = 3;
+  guestEnd.poll();
+  assert.equal(guestEnd.status().view, 'match');
+  assert.equal(guestEnd.status().role, 'guest');
+  const guestDisconnects = guestEnd.disconnects;
+  assert.equal(guestEnd.context.HaloOnline.endMatch(), false, 'a guest has no end-match control');
+  assert.deepEqual(guestEnd.ends, []);
+  assert.equal(guestEnd.disconnects, guestDisconnects);
+  guestEnd.clientState = 4;
+  guestEnd.poll();
+  assert.equal(guestEnd.status().view, 'postgame', 'a guest stays for the results');
+  assert.equal(guestEnd.status().role, 'guest', 'a guest is not dropped when the match ends');
+  assert.equal(guestEnd.disconnects, guestDisconnects);
 
   console.log('online_client hosted lobby tests passed');
 })().catch(error => {

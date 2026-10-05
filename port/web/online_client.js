@@ -594,6 +594,14 @@
     return !!start();
   }
 
+  /* (the host, in a match) ends it the way a score or time limit does:
+     results, then the lobby. The room stays up. Guests have no control. */
+  function endMatch() {
+    var end = global.Module && global.Module._platform_web_online_end_match;
+    if (!session.active || session.role !== "host" || typeof end !== "function") return false;
+    return !!end();
+  }
+
   function clientGameState() {
     var get = global.Module && global.Module._platform_web_online_get_client_state;
     try {
@@ -2651,6 +2659,7 @@
     spectatorJoin: spectatorJoin,
     spectateCycle: spectateCycle,
     startMatch: startMatch,
+    endMatch: endMatch,
     guildRooms: guildRooms,
     joinGuildRoom: joinGuildRoom,
   });
