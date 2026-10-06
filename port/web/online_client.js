@@ -12,7 +12,10 @@
   var PROTOCOL_VERSION = 1;
   var ROOM_CAPACITY = 128;
   /* a relay room's machines with players (server/src/protocol.ts MAXIMUM_ROOM_PLAYERS) */
-  var RELAY_ROOM_CAPACITY = 32;
+  var RELAY_ROOM_CAPACITY = 64;
+  /* the engine's roster export (port/web/src/web_online_ui.c WEB_ONLINE_ROSTER_LIMIT,
+     port/linux/include/halo_port_limits.h HALO_WEB_MAXIMUM_PLAYERS) */
+  var ENGINE_ROSTER_LIMIT = 64;
   var MAX_PENDING_SIGNALING_MESSAGES = ROOM_CAPACITY * 128;
   var HEARTBEAT_MILLISECONDS = 40000;
   var GAME_POLL_MILLISECONDS = 200;
@@ -666,7 +669,7 @@
     if (sequence & 1) return engineRosterCache;
     var count = callModule("_platform_web_online_roster_count");
     if (typeof count !== "number" || count < 0) return engineRosterCache;
-    if (count > 32) count = 32;
+    if (count > ENGINE_ROSTER_LIMIT) count = ENGINE_ROSTER_LIMIT;
     var players = [];
     var index;
     for (index = 0; index < count; index++) {

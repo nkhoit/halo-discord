@@ -434,7 +434,8 @@ Existing Headers" makes the origin authoritative everywhere.
 
 - Logs are JSON lines on stdout: `accept`, `close` (code, age), `refuse`,
   `unauthorized`, each with the room prefix and the Discord user ID.
-- Limits: `MAX_ROOMS` (64), 32 sockets per room, 16 KiB frames, 64 KiB
+- Limits: `MAX_ROOMS` (64), 64 machines with players and 8 watching per room
+  (144 sockets), 16 KiB frames, 64 KiB
   batches; malformed frames close the socket (1003/1008/1009).
 - Rotating `TOKEN_SECRET` signs everyone out.
 

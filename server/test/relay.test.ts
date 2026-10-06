@@ -226,7 +226,8 @@ describe("admission", () => {
     expect(reliable.socket.readyState).toBe(reliable.socket.OPEN);
   });
 
-  it("takes 32 machines with players and 8 watching, each on two sockets, and forgets empty rooms", async () => {
+  it("takes 64 machines with players and 8 watching, each on two sockets, and forgets empty rooms", async () => {
+    expect([MAXIMUM_ROOM_PLAYERS, MAXIMUM_ROOM_SPECTATORS, MAXIMUM_ROOM_SOCKETS]).toEqual([64, 8, 144]);
     const room = newRoom();
     const id = (index: number) => (0x030000000000 + index).toString(16).padStart(12, "0");
     const host = await join(server.base, room, "host", "user-h", HOST, { ch: "r" });
@@ -235,14 +236,14 @@ describe("admission", () => {
       await join(server.base, room, "guest", `user-${index}`, id(index), { ch: "r" });
       await join(server.base, room, "guest", `user-${index}`, id(index), { ch: "u" });
     }
-    expect(server.app.relay.summary(room).players, "the 32nd player is in").toBe(MAXIMUM_ROOM_PLAYERS);
+    expect(server.app.relay.summary(room).players, "the 64th player is in").toBe(MAXIMUM_ROOM_PLAYERS);
     const refuse = async (spectator: boolean) => {
       const late = open(server.base, room, "guest");
       await new Promise((resolve) => late.socket.once("open", resolve));
       late.socket.send(JSON.stringify({ type: "auth", token: token("late"), id: "040000000000", build: "b1", spectator }));
       return late.closed;
     };
-    expect(await refuse(false), "the 33rd is not").toEqual({ code: 4409, reason: "room full" });
+    expect(await refuse(false), "the 65th is not").toEqual({ code: 4409, reason: "room full" });
     for (let index = 0; index < MAXIMUM_ROOM_SPECTATORS; index++) {
       const watcher = await join(server.base, room, "guest", `watcher-${index}`, id(100 + index), { ch: "r", spectator: true });
       expect(watcher.texts[0]).toMatchObject({ type: "ready" });

@@ -1,6 +1,8 @@
 /* Browser invite-flow mailbox and game-thread menu integration. */
 
 #include "web_online_ui.h"
+/* (HALO_WEB_MAXIMUM_PLAYERS; also built on its own by port/web/tests) */
+#include "../../linux/include/halo_port_limits.h"
 
 #include <emscripten/emscripten.h>
 #include <stdatomic.h>
@@ -142,10 +144,10 @@ static atomic_int web_online_requested_team = ATOMIC_VAR_INIT(-1);
 click cannot become an in-game request. */
 static atomic_int web_online_requested_team_switch = ATOMIC_VAR_INIT(-1);
 /* the client's roster, copied each frame so the browser thread never reads
-the game's player array. 32 is the web match cap (HALO_WEB_MAXIMUM_PLAYERS). */
+the game's player array, up to the web match cap. */
 enum
 {
-	WEB_ONLINE_ROSTER_LIMIT = 32,
+	WEB_ONLINE_ROSTER_LIMIT = HALO_WEB_MAXIMUM_PLAYERS,
 	WEB_ONLINE_ROSTER_NAME = 12,
 };
 static atomic_uint web_online_roster_sequence = ATOMIC_VAR_INIT(0);

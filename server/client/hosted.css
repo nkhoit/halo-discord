@@ -207,14 +207,21 @@ html.halo-hosted #loading::after { display: none; }
   background: rgba(14, 42, 110, .9);
   border: 1px solid rgba(140, 180, 255, .55);
 }
+/* (up to 64 players, 32 a side) names in columns as wide allows, the list
+   scrolling past a third of the height; this player's name comes first */
 #hosted-teams .hosted-team-players {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
   gap: .15rem;
   margin: 0;
   padding: 0;
   list-style: none;
   min-height: 1.2rem;
+  max-height: 33vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+#hosted-teams .hosted-team-players > li { min-width: 0; }
 #hosted-ui #hosted-teams .hosted-team-header,
 #hosted-ui #hosted-teams .hosted-team-player {
   background: transparent;
@@ -228,7 +235,16 @@ html.halo-hosted #loading::after { display: none; }
 }
 #hosted-teams .hosted-team.red .hosted-team-header { color: #ffc2c2; }
 #hosted-teams .hosted-team.blue .hosted-team-header { color: #c9dcff; }
-#hosted-ui #hosted-teams .hosted-team-player { font-size: .92rem; font-weight: 400; color: #e6f2fb; }
+#hosted-ui #hosted-teams .hosted-team-player {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .92rem;
+  font-weight: 400;
+  color: #e6f2fb;
+}
 #hosted-ui #hosted-teams .hosted-team-player.self { font-weight: 700; }
 #hosted-teams[data-interactive="true"] { pointer-events: auto; }
 #hosted-teams[data-interactive="true"] .hosted-team-header,
