@@ -268,7 +268,18 @@ void platform_web_initialize(void)
 
 	/* Origin-private storage persists configuration, cache files, profiles
 	and saves without asking the browser to hold them in linear memory. */
-	storage = wasmfs_create_opfs_backend();
+	/* OPFS sync access handles are exclusive per file across tabs, so only
+	the copy holding the storage lock (storage_lock.js) may use it; another copy
+	in the same browser profile would fail to open the cache files and halt. */
+	if (MAIN_THREAD_EM_ASM_INT({ return Module.haloStorageExclusive ? 1 : 0; }))
+	{
+		storage = wasmfs_create_opfs_backend();
+	}
+	else
+	{
+		platform_log("web: another copy of the game holds persistent storage; settings and saves in this copy are not kept");
+		storage = wasmfs_create_memory_backend();
+	}
 	if (wasmfs_create_directory("/storage", 0777, storage) != 0 && errno != EEXIST)
 		platform_log("web: cannot mount persistent storage");
 	setenv("HALO_DATA_ROOT", "/assets", 1);
