@@ -10,6 +10,7 @@ import { URL as NodeURL } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
 const SCRIPT = readFileSync(new NodeURL("../client/hosted.js", import.meta.url), "utf8");
+const STYLES = readFileSync(new NodeURL("../client/hosted.css", import.meta.url), "utf8");
 
 type Player = { name: string; team: number; self?: boolean };
 type Status = {
@@ -64,6 +65,7 @@ function header(team: number): HTMLButtonElement {
 
 beforeAll(() => {
   document.documentElement.classList.add("halo-hosted");
+  document.head.appendChild(Object.assign(document.createElement("style"), { textContent: STYLES }));
   document.body.innerHTML = '<main id="game-area" data-presented="true"><canvas id="canvas"></canvas></main>';
   localStorage.clear();
   (window as unknown as Record<string, unknown>).HaloOnline = {
@@ -221,6 +223,9 @@ describe("the lobby team picker", () => {
     expect(visible("hosted-teams")).toBe(true);
     expect(byId("hosted-teams").parentElement?.id).toBe("hosted-overlay-main");
     expect(byId("hosted-teams").getAttribute("data-interactive")).toBe("true");
+    /* a real mouse reaches the board, not only a script's click() */
+    expect(getComputedStyle(byId("hosted-teams")).pointerEvents).not.toBe("none");
+    expect(getComputedStyle(header(1)).pointerEvents).not.toBe("none");
     expect(header(0).disabled).toBe(false);
     expect(header(1).disabled).toBe(false);
     expect(column("hosted-team-red")).toEqual([{ name: "Arbiter!", self: true, tag: "BUTTON" }]);
