@@ -258,6 +258,26 @@ LAN games are unchanged).
 - The switch's death is neither scored nor announced on any machine (the
   engine scores a death without statistics as a suicide, -1 in Slayer, and
   says so); the respawn takes the stock time, its suicide penalty included.
+  Only a real change marks the death to come as the switch's, and only the
+  host's server game kills: a team message that changes nothing (a late
+  loader's reconciliation, or the host's loopback copy of its own switch)
+  neither marks nor kills.
+- Ordering: the host writes the switch to the reliable stream while it
+  handles the request, before the tick in which the unit dies, so on the
+  relay (one socket per machine by default) the switch precedes the death's
+  unit state, and within one game frame's relay message reliable frames go
+  before datagrams. A client reads its reliable messages first, and a death
+  a unit state orders only comes in its next tick, so the switch normally
+  arrives first, or in the same frame, which is just as good. The client
+  can still see the death first: its page hands the game one reliable frame
+  and up to 16 datagrams per task, so with reliable frames already queued
+  ahead of the switch, the game may read the death's datagram and run a
+  tick before the switch is handed over. With reliable and unreliable
+  traffic apart (WebRTC's two data channels, or the relay's
+  `relaySockets=2` test setting), a delayed switch has the same effect.
+  That client then announces a suicide; the host's score stands. The late
+  switch finds the unit dead and marks nothing, so no later death is
+  mistaken for the switch's.
 - A machine loading the match while someone switches misses the broadcast:
   when it has loaded, the host sends it every player's team as it is now,
   after the players who came and went meanwhile.

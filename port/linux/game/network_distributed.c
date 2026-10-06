@@ -2150,12 +2150,16 @@ boolean network_distributed_defer_team(
 	char team_index)
 {
 	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index);
+	struct player_datum *player;
 
 	if (game_connection() != _game_connection_network_server ||
 		absolute_index < 0 || absolute_index >= MAXIMUM_TRACKED_PLAYERS)
 	{
 		return FALSE;
 	}
+	player = distributed_player((short)absolute_index);
+	if (distributed_deferred_teams[absolute_index] == NONE && player && player->team_index == team_index)
+		return TRUE;
 	/* (the first call's time: the host's client copies defer it again) */
 	if (distributed_deferred_teams[absolute_index] == NONE ||
 		game_time_get() - distributed_deferred_team_times[absolute_index] >= DEFERRED_TEAM_MAXIMUM_TICKS)

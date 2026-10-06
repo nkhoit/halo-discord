@@ -3248,6 +3248,7 @@ boolean network_game_apply_team_switch(
 	long player_index;
 	struct player_datum *player;
 	boolean alive;
+	boolean changed;
 
 	if (!game || (team_index != (char)_team_red && team_index != (char)_team_blue))
 		return FALSE;
@@ -3264,6 +3265,10 @@ boolean network_game_apply_team_switch(
 	if (!network_player)
 		return FALSE;
 
+	/* (a late loader's reconciliation sends every player's team, and the
+	host's loopback copy of its own switch arrives after its roster has
+	it: neither is a switch) */
+	changed = network_player->team_index != team_index;
 	network_player->team_index = team_index;
 
 	if (!player_data)
@@ -3286,12 +3291,13 @@ boolean network_game_apply_team_switch(
 		!TEST_FLAG(object_get(player->unit_index)->object.damage_flags, _object_dead_bit);
 	/* (every machine: the death to come is the switch's, neither scored nor
 	announced, game_engine_player_killed) */
-	if (alive)
+	if (changed && alive)
 		network_distributed_note_team_switch(player_index);
-	if (kill_unit && alive)
+	if (changed && kill_unit && alive)
 		unit_kill_no_statistics(player->unit_index);
 	/* (the host has one player_datum for its server game and its client
-	copies alike: none of them sets the team while the unit lives) */
+	copies alike: none of them sets the team while the unit lives, the
+	loopback copy that changes nothing included) */
 	if (!alive || !network_distributed_defer_team(player_index, team_index))
 		player->team_index = (signed char)team_index;
 	return TRUE;
