@@ -90,6 +90,10 @@ enum
 	(or the other way round) before it is put where the host has it: its
 	own prediction reaches the host and comes back in about a round trip */
 	SEAT_DISAGREEMENT_TICKS = 15,
+	/* ticks a client may go without the unit the host says a player is
+	alive in before it asks for the host's objects again: the unit's
+	creation comes reliably, a little behind the word at most (#73) */
+	MISSING_UNIT_TICKS = 3 * TICKS_PER_SECOND,
 };
 
 /* struct distributed_unit_state flags */
@@ -725,6 +729,9 @@ static short distributed_pickup_count;
 /* a client: the ticks each of its own players has ridden other than as
 the host has it */
 static short distributed_seat_disagreements[MAXIMUM_TRACKED_PLAYERS];
+/* a client: since when each player has been alive on the host in a unit
+this machine does not have, NONE for not */
+static long distributed_missing_unit_times[MAXIMUM_TRACKED_PLAYERS];
 #ifdef HALO_WEB
 /* (the host) ticks between a machine's own players' states, while they move
 as they were moving and nothing else of them changes: their machine moves them
@@ -1672,6 +1679,24 @@ static void distributed_handle_unit_states(
 			death->killed_by_vehicle = TEST_FLAG(state->flags, _distributed_unit_killed_by_vehicle_bit);
 		}
 		unit_index = distributed_living_unit(player);
+		if (state->player_index < MAXIMUM_TRACKED_PLAYERS)
+		{
+			long *missing_time = &distributed_missing_unit_times[state->player_index];
+
+			if (!alive || state->unit_index == NONE || network_objects_client_has(state->unit_index))
+			{
+				*missing_time = NONE;
+			}
+			else if (*missing_time == NONE)
+			{
+				*missing_time = game_time_get();
+			}
+			else if (game_time_get() - *missing_time >= MISSING_UNIT_TICKS)
+			{
+				network_objects_resynchronize();
+				*missing_time = game_time_get();
+			}
+		}
 		if (!alive)
 		{
 			/* died on the host (who counts it; the damage that killed it,
@@ -2038,6 +2063,7 @@ void network_distributed_new_game(
 	distributed_last_sent_time = NONE;
 	csmemset(distributed_deaths, 0, sizeof(distributed_deaths));
 	csmemset(distributed_seat_disagreements, 0, sizeof(distributed_seat_disagreements));
+	csmemset(distributed_missing_unit_times, 0xFF, sizeof(distributed_missing_unit_times));
 #if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
 	csmemset(distributed_seat_times, 0, sizeof(distributed_seat_times));
 	csmemset(distributed_own_sent, 0, sizeof(distributed_own_sent));

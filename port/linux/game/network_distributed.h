@@ -124,6 +124,7 @@ void network_objects_client_tick(void);
 void network_objects_client_ready(long machine_index);
 void network_objects_handle_changes(void const *entries, short count);
 void network_objects_handle_synchronized(void);
+void network_objects_resynchronize(void);
 void network_objects_handle_states(void const *entries, short count);
 void network_objects_handle_inventories(void const *entries, short count);
 void network_objects_handle_vehicle_prediction(long machine_index, void const *entries, short count);
