@@ -15,7 +15,7 @@ function loadPage(held, options = {}) {
     ENVIRONMENT_IS_PTHREAD: !!options.pthread,
     Module: {},
     navigator: options.noLocks ? {} : {
-      locks: {
+      locks: options.locks || {
         request(name, opts, callback) {
           assert.equal(opts.ifAvailable, true);
           const free = !held.has(name);
@@ -54,3 +54,15 @@ assert.equal(noLocks.Module.haloStorageExclusive, true,
 
 const worker = loadPage(new Set(), { pthread: true });
 assert.equal(worker.Module.preRun, undefined, 'pthread workers must not take the lock');
+
+for (const [label, locks] of [
+  ['rejects', { request: () => Promise.reject(new Error('SecurityError')) }],
+  ['throws', { request() { throw new Error('SecurityError'); } }],
+]) {
+  const refused = loadPage(new Set(), { locks });
+  setImmediate(() => {
+    assert.equal(refused.dependencies.size, 0,
+      `a lock request that ${label} must still release startup`);
+    assert.equal(refused.Module.haloStorageExclusive, true);
+  });
+}
