@@ -799,7 +799,36 @@ static struct
 	real own_aim_correction_maximum_degrees;
 	/* the host put this machine's own player in (or out of) a seat */
 	long own_seat_corrections;
+	/* (a client) how many ticks old the host's unit states are when this
+	machine takes them, its game time less the host's when it sent them: the
+	latest, and the most since the last read */
+	long state_age_latest;
+	long state_age_maximum;
+	boolean state_age_seen;
 } distributed_web_statistics;
+
+/* (a client) the age of a message of the host's unit states it takes */
+static void distributed_web_note_state_age(
+	long sent_game_time)
+{
+	long age = game_time_get() - sent_game_time;
+
+	distributed_web_statistics.state_age_latest = age;
+	if (!distributed_web_statistics.state_age_seen || age > distributed_web_statistics.state_age_maximum)
+		distributed_web_statistics.state_age_maximum = age;
+	distributed_web_statistics.state_age_seen = TRUE;
+}
+
+/* for ?netstats=1 (web_platform.c): the latest age, and the most since the
+last call (both 0 before any) */
+void network_distributed_web_take_state_age(
+	long *latest,
+	long *maximum)
+{
+	*latest = distributed_web_statistics.state_age_seen ? distributed_web_statistics.state_age_latest : 0;
+	*maximum = distributed_web_statistics.state_age_seen ? distributed_web_statistics.state_age_maximum : 0;
+	distributed_web_statistics.state_age_maximum = distributed_web_statistics.state_age_latest;
+}
 
 #define OWN_AIM_CORRECTION_DEGREES 5.0f
 
@@ -2232,6 +2261,7 @@ void network_distributed_handle_message(
 			available -= read;
 			count++;
 		}
+		distributed_web_note_state_age(header.game_time);
 		distributed_handle_unit_states(states, count);
 		break;
 	}

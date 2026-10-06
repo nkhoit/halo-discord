@@ -1195,7 +1195,16 @@ struct network_connection *network_connection_new(
 #else
 			reliable_queue_size = 0x8000;
 #endif
+#ifdef HALO_WEB
+			/* every datagram the host sent since the last idle: an idle takes them
+			only while the largest still fits, so at 0x640 a client took one or
+			two a frame, fewer than the distributed netcode's host sends it a
+			tick, and below about 60 frames a second fell seconds behind (the
+			rest waits in the socket's queue, its newest refused when full) */
+			unreliable_queue_size = 0x20000;
+#else
 			unreliable_queue_size = 0x640;
+#endif
 		}
 	}
 

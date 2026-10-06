@@ -360,6 +360,18 @@ static int append_stream_locked(struct web_socket *socket, const void *buffer, i
 	return length;
 }
 
+/* the most datagrams any socket held unread since the last look
+(web_net_take_datagram_queue_maximum, for ?netstats=1) */
+static volatile int web_net_datagram_queue_maximum;
+
+int web_net_take_datagram_queue_maximum(void)
+{
+	int maximum = web_net_datagram_queue_maximum;
+
+	web_net_datagram_queue_maximum = 0;
+	return maximum;
+}
+
 static int enqueue_datagram_locked(struct web_socket *socket, const void *buffer,
 	int length, const struct sockaddr_in *source)
 {
@@ -396,6 +408,8 @@ static int enqueue_datagram_locked(struct web_socket *socket, const void *buffer
 	else
 		socket->datagram_first = datagram;
 	socket->datagram_last = datagram;
+	if (socket->datagram_count + 1 > web_net_datagram_queue_maximum)
+		web_net_datagram_queue_maximum = socket->datagram_count + 1;
 	socket->datagram_bytes += (size_t)length;
 	socket->datagram_count++;
 	return length;
