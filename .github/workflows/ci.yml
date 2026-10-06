@@ -42,6 +42,8 @@ jobs:
         run: node --test port/linux/tests/msvc_wide_test.js
       - name: Test that late joins leave broadcasts alone when off (native C, no game assets)
         run: node --test port/linux/tests/network_late_join_gate_test.js
+      - name: Test a mid-match team switch (native C, no game assets)
+        run: node --test port/linux/tests/team_switch_test.js
       - name: Test a spectator's view scope (native C, no game assets)
         run: node --test port/linux/tests/spectator_view_test.js
       - name: Test a spectator's effects (native C, no game assets)
