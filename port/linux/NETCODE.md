@@ -70,7 +70,9 @@ Every machine in a game must use the same netcode.
      and delete theirs to match. A client that has loaded asks for all the
      host's objects and is told when it has them; from then on it deletes
      any such object the host has not told it of, and nothing but the
-     host's word deletes the host's.
+     host's word deletes the host's. A client the host says has a player
+     alive in a unit it does not have, for 3 seconds, asks for all of
+     them again.
    - The objects placed when the map loads are placed alike everywhere:
      the host's word finds a client's already there. Past loading, a
      client's own objects (projectiles, effects: what only it sees) take

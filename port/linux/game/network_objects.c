@@ -1056,6 +1056,17 @@ void network_objects_handle_synchronized(
 	objects_client_synchronized = TRUE;
 }
 
+/* a client missing a host's object it should have (a player's unit the
+host's word names): all of them again, as when it loaded */
+void network_objects_resynchronize(
+	void)
+{
+	if (!objects_client_synchronized)
+		return;
+	objects_client_synchronized = FALSE;
+	objects_client_ready_time = NONE;
+}
+
 void network_objects_handle_states(
 	void const *entries,
 	short count)
