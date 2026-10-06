@@ -254,7 +254,6 @@ html.halo-hosted #loading::after { display: none; }
   margin: .35rem auto 0;
   pointer-events: auto;
 }
-#hosted-overlay-main > #hosted-teams { pointer-events: none; }
 @media (max-width: 30rem) {
   #hosted-teams { width: calc(100% - .75rem); }
 }
