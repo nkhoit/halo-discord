@@ -50,6 +50,8 @@ int web_net_remote_set_peer_state(unsigned long address, int connected,
 const void *web_net_remote_local_identifier(void);
 void *web_net_remote_ingress_buffer(void);
 int web_net_remote_ingress_capacity(void);
+/* the most datagrams a socket held unread since the last call (?netstats=1) */
+int web_net_take_datagram_queue_maximum(void);
 /* 1: consumed, 0: retry later, -1: malformed/fatal protocol input. */
 int web_net_remote_receive(unsigned long address, int length);
 /* Batched transports (the WebSocket relay): web_net_end_frame, called once

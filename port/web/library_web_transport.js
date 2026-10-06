@@ -407,6 +407,9 @@ addToLibrary({
         game.ownAimCorrections = HEAPF64[index + 4];
         game.ownAimCorrectionMaxDegrees = +HEAPF64[index + 5].toFixed(1);
         game.ownSeatCorrections = HEAPF64[index + 6];
+        game.hostStateAgeTicks = HEAPF64[index + 98];
+        game.hostStateAgeMaxTicks = HEAPF64[index + 99];
+        game.datagramQueueMax = HEAPF64[index + 100];
         game.hostInputs0 = HEAPF64[index + 7];
         game.hostInputs1 = HEAPF64[index + 8];
         game.hostInputs2 = HEAPF64[index + 9];
@@ -603,6 +606,13 @@ addToLibrary({
           ownAimCorrections: delta('ownAimCorrections'),
           ownAimCorrectionMaxDegrees: game.ownAimCorrectionMaxDegrees,
           ownSeatCorrections: delta('ownSeatCorrections'),
+          /* (a client) how old the host's unit states are when taken, in
+             ticks (one way's latency and the game clocks' offset when well;
+             seconds when datagrams pile up unread), and the most datagrams
+             waiting unread */
+          hostStateAgeTicks: game.hostStateAgeTicks,
+          hostStateAgeMaxTicks: game.hostStateAgeMaxTicks,
+          datagramQueueMax: game.datagramQueueMax,
           /* the host: ticks that had 0, 1, 2 or 3+ client input packets */
           hostInputsPerTick: [delta('hostInputs0'), delta('hostInputs1'), delta('hostInputs2'), delta('hostInputs3')],
           /* where long frames go: ticks, the whole frame callback, new shaders

@@ -77,6 +77,9 @@ extern const double *platform_web_profile_take_frame_times(void);
 extern void xgpu_web_frame_statistics(double values[6]);
 /* (port/linux/game/network_distributed.c) */
 extern void network_distributed_web_feel(double values[25]);
+extern void network_distributed_web_take_state_age(long *latest, long *maximum);
+/* (web_loopback_net.c) */
+extern int web_net_take_datagram_queue_maximum(void);
 /* (port/linux/game/render_interpolation.c) */
 extern void render_interpolation_web_snaps(double values[21]);
 
@@ -107,13 +110,16 @@ extern void render_interpolation_web_snaps(double values[21]);
  * [50..74] shooting and the other players since the last read
  * (network_distributed_web_feel), [75..95] snaps of the player's own view
  * (render_interpolation_web_snaps), [96] the mean interval between rendered
- * animation frames, [97] the mean change from one to the next.
+ * animation frames, [97] the mean change from one to the next, (a client)
+ * [98] the ticks the latest host unit states it took were old, [99] the
+ * most since the last read, [100] the most datagrams a socket held unread
+ * since the last read.
  * [28..38], [40] and [41] are since the last read; other counts
  * are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
 	static double first_draws_total;
-	static double values[98];
+	static double values[101];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
@@ -122,6 +128,8 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	float own_aim_correction_maximum_degrees;
 	long own_seat_corrections;
 	long histogram[4];
+	long state_age_latest;
+	long state_age_maximum;
 	long multiple_tick_frames;
 	long maximum_ticks_per_frame;
 	long maximum_tick_milliseconds;
@@ -143,6 +151,10 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	values[4] = (double)own_aim_corrections;
 	values[5] = (double)own_aim_correction_maximum_degrees;
 	values[6] = (double)own_seat_corrections;
+	network_distributed_web_take_state_age(&state_age_latest, &state_age_maximum);
+	values[98] = (double)state_age_latest;
+	values[99] = (double)state_age_maximum;
+	values[100] = (double)web_net_take_datagram_queue_maximum();
 	for (index = 0; index < 4; index++)
 		values[7 + index] = (double)histogram[index];
 	values[11] = (double)multiple_tick_frames;
