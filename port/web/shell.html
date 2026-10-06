@@ -2626,6 +2626,16 @@
         console.error(...args);
         const line = args.join(" ");
         diagnostic(line);
+        const fatalExit = line.match(/^halo-web fatal exit (-?\d+): ?(.*)$/u);
+        if (fatalExit) {
+          // system_exit's halt stops the main loop without throwing to JS, so
+          // nothing else reaches the shell and the first-frame wait would spin
+          // forever. Surface the engine's message instead.
+          const reason = fatalExit[2].trim() || `exit code ${fatalExit[1]}`;
+          sendRuntimeFailure("runtime_abort", reason);
+          setStatus(gamePresented ? `Aborted: ${reason}` : `Could not start: ${reason}`);
+          return;
+        }
         if (line.startsWith("halo-linux: OpenGL ")) {
           runtimeGpuClass = classifyRenderer(line);
           runtimeStage = "renderer";

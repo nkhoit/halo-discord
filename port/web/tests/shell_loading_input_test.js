@@ -205,4 +205,10 @@ assert.match(shell,
   /addEventListener\("unhandledrejection"[\s\S]*?isBrowserExtensionFailure\(message, source\)[\s\S]*?ignored browser extension rejection[\s\S]*?return;[\s\S]*?setStatus\(`Could not start:/,
   'extension promise rejections must be ignored before setting fatal status');
 
+const printErr = shell.match(/printErr: \(\.\.\.args\) => \{[\s\S]*?\n      \},/);
+assert(printErr, 'missing printErr');
+assert.match(printErr[0],
+  /halo-web fatal exit[\s\S]*?setStatus\(gamePresented \? `Aborted: \$\{reason\}` : `Could not start: \$\{reason\}`\)/,
+  'a fatal engine exit must replace the loading label instead of leaving it on Starting renderer');
+
 console.log('shell loading, focus, Tab, and controller routing tests passed');
