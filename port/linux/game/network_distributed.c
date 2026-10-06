@@ -859,6 +859,16 @@ newer relayed input for the other players (they go on with the last) */
 #define WEB_FEEL_PRESS_TIMEOUT 1000.0
 #define WEB_FEEL_REMOTE_SNAP 1.0f
 
+/* a window's values of one kind: every one counted and the largest kept,
+and a uniform sample of at most WEB_FEEL_SAMPLES of them for the
+percentiles (with 63 other players, about 9,000 corrections a window) */
+struct web_feel_series
+{
+	double samples[WEB_FEEL_SAMPLES];
+	long count;
+	double maximum;
+};
+
 static struct
 {
 	boolean trigger_down;
@@ -867,12 +877,9 @@ static struct
 	whether the weapon was busy (reloading, switching, between shots) */
 	double press_dequeued;
 	boolean press_busy;
-	double fire_samples[WEB_FEEL_SAMPLES];
-	short fire_count;
-	double queue_samples[WEB_FEEL_SAMPLES];
-	short queue_count;
-	double weapon_samples[WEB_FEEL_SAMPLES];
-	short weapon_count;
+	struct web_feel_series fire;
+	struct web_feel_series queue;
+	struct web_feel_series weapon;
 	long busy_presses;
 	long unanswered_presses;
 	struct
@@ -880,11 +887,9 @@ static struct
 		long object_index;
 		double time;
 	} hits[WEB_FEEL_PENDING_HITS];
-	double hit_samples[WEB_FEEL_SAMPLES];
-	short hit_count;
+	struct web_feel_series hit;
 	long unconfirmed_hits;
-	double remote_samples[WEB_FEEL_SAMPLES];
-	short remote_count;
+	struct web_feel_series remote;
 	long remote_snaps;
 	boolean relayed_since_tick;
 	short relayed_this_tick;
@@ -894,10 +899,42 @@ static struct
 	long relayed_bunched_ticks;
 } web_feel;
 
-static void web_feel_sample(double *samples, short *count, double value)
+/* (the game thread) xorshift32: which samples a full series keeps */
+static unsigned long web_feel_random_state = 0x9E3779B9UL;
+
+static unsigned long web_feel_random(
+	void)
 {
-	if (*count < WEB_FEEL_SAMPLES)
-		samples[(*count)++] = value;
+	unsigned long x = web_feel_random_state;
+
+	x ^= (x << 13) & 0xFFFFFFFFUL;
+	x ^= x >> 17;
+	x ^= (x << 5) & 0xFFFFFFFFUL;
+	web_feel_random_state = x;
+	return x;
+}
+
+/* reservoir sampling (Algorithm R): the n-th value replaces a kept one with
+probability WEB_FEEL_SAMPLES / n, so the kept ones are a uniform sample of
+the whole window, not its first WEB_FEEL_SAMPLES */
+static void web_feel_sample(
+	struct web_feel_series *series,
+	double value)
+{
+	if (!series->count || value > series->maximum)
+		series->maximum = value;
+	if (series->count < WEB_FEEL_SAMPLES)
+	{
+		series->samples[series->count] = value;
+	}
+	else
+	{
+		unsigned long slot = web_feel_random() % (unsigned long)(series->count + 1);
+
+		if (slot < WEB_FEEL_SAMPLES)
+			series->samples[slot] = value;
+	}
+	series->count++;
 }
 
 static int web_feel_compare(void const *a, void const *b)
@@ -908,18 +945,24 @@ static int web_feel_compare(void const *a, void const *b)
 	return x < y ? -1 : x > y;
 }
 
-/* [0] p50, [1] p99, [2] the maximum of the samples, then none left */
-static void web_feel_take(double *samples, short *count, double *values)
+/* [0] p50, [1] p99 (of the sample), [2] the maximum (of them all), then a
+new window */
+static void web_feel_take(
+	struct web_feel_series *series,
+	double *values)
 {
+	long kept = series->count < WEB_FEEL_SAMPLES ? series->count : WEB_FEEL_SAMPLES;
+
 	values[0] = values[1] = values[2] = 0.0;
-	if (*count)
+	if (kept)
 	{
-		qsort(samples, *count, sizeof(double), web_feel_compare);
-		values[0] = samples[*count / 2];
-		values[1] = samples[(*count * 99) / 100 < *count ? (*count * 99) / 100 : *count - 1];
-		values[2] = samples[*count - 1];
+		qsort(series->samples, kept, sizeof(double), web_feel_compare);
+		values[0] = series->samples[kept / 2];
+		values[1] = series->samples[(kept * 99) / 100];
+		values[2] = series->maximum;
 	}
-	*count = 0;
+	series->count = 0;
+	series->maximum = 0.0;
 }
 
 /* (player_control.c, every frame) this machine's player's fire button */
@@ -990,11 +1033,11 @@ void network_web_weapon_fired(
 		web_feel.busy_presses++;
 	else
 	{
-		web_feel_sample(web_feel.fire_samples, &web_feel.fire_count, now - web_feel.press_time);
+		web_feel_sample(&web_feel.fire, now - web_feel.press_time);
 		if (web_feel.press_dequeued > 0.0)
 		{
-			web_feel_sample(web_feel.queue_samples, &web_feel.queue_count, web_feel.press_dequeued - web_feel.press_time);
-			web_feel_sample(web_feel.weapon_samples, &web_feel.weapon_count, now - web_feel.press_dequeued);
+			web_feel_sample(&web_feel.queue, web_feel.press_dequeued - web_feel.press_time);
+			web_feel_sample(&web_feel.weapon, now - web_feel.press_dequeued);
 		}
 	}
 	web_feel.press_time = 0.0;
@@ -1052,7 +1095,7 @@ void network_web_hit_confirmed(
 	{
 		if (web_feel.hits[index].time > 0.0 && web_feel.hits[index].object_index == object_index)
 		{
-			web_feel_sample(web_feel.hit_samples, &web_feel.hit_count, now - web_feel.hits[index].time);
+			web_feel_sample(&web_feel.hit, now - web_feel.hits[index].time);
 			web_feel.hits[index].time = 0.0;
 		}
 	}
@@ -1098,18 +1141,18 @@ void network_distributed_web_feel(
 {
 	values[18] = (double)web_feel.busy_presses;
 	web_feel.busy_presses = 0;
-	web_feel_take(web_feel.queue_samples, &web_feel.queue_count, &values[19]);
-	web_feel_take(web_feel.weapon_samples, &web_feel.weapon_count, &values[22]);
+	web_feel_take(&web_feel.queue, &values[19]);
+	web_feel_take(&web_feel.weapon, &values[22]);
 	web_feel_expire_hits(emscripten_get_now());
 	values[17] = (double)web_feel.unconfirmed_hits;
 	web_feel.unconfirmed_hits = 0;
-	values[0] = web_feel.fire_count;
-	web_feel_take(web_feel.fire_samples, &web_feel.fire_count, &values[1]);
+	values[0] = (double)web_feel.fire.count;
+	web_feel_take(&web_feel.fire, &values[1]);
 	values[4] = (double)web_feel.unanswered_presses;
-	values[5] = web_feel.hit_count;
-	web_feel_take(web_feel.hit_samples, &web_feel.hit_count, &values[6]);
-	values[9] = web_feel.remote_count;
-	web_feel_take(web_feel.remote_samples, &web_feel.remote_count, &values[10]);
+	values[5] = (double)web_feel.hit.count;
+	web_feel_take(&web_feel.hit, &values[6]);
+	values[9] = (double)web_feel.remote.count;
+	web_feel_take(&web_feel.remote, &values[10]);
 	values[13] = (double)web_feel.remote_snaps;
 	values[14] = (double)web_feel.relayed_held_ticks;
 	values[15] = (double)web_feel.relayed_held_run_maximum;
@@ -1892,7 +1935,7 @@ static void distributed_handle_unit_states(
 				real dz = state->position.z - object->object.position.z;
 				real distance = (real)sqrt(dx * dx + dy * dy + dz * dz);
 
-				web_feel_sample(web_feel.remote_samples, &web_feel.remote_count, distance);
+				web_feel_sample(&web_feel.remote, distance);
 				if (distance > WEB_FEEL_REMOTE_SNAP)
 					web_feel.remote_snaps++;
 			}
