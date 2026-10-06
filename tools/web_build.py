@@ -112,7 +112,8 @@ def web_configure_inputs() -> List[Path]:
         PORT_CONFIG,
         WEB_DIR / "shell.html",
         WEB_SDL_PORT,
-        WEB_DIR / "assets",
+        # Gitignored and absent on a fresh clone; port/web changes when it appears.
+        WEB_DIR / "assets" if (WEB_DIR / "assets").is_dir() else WEB_DIR,
         WEB_DIR / "src",
         LINUX_DIR / "src",
         LINUX_DIR / "game",
