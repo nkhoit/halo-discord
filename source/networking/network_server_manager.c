@@ -544,7 +544,8 @@ enum
 	NUMBER_OF_NETWORK_CLIENT_MACHINE_FLAGS,
 	MAXIMUM_NETWORK_MESSAGE_SIZE = 0x800,
 #ifdef HALO_LINUX
-	NETWORK_GAME_SERVER_ROSTER_CHANGES = 64,
+	/* every player leaving and as many arriving while a machine loads */
+	NETWORK_GAME_SERVER_ROSTER_CHANGES = 128,
 	/* as long as a machine joining the match in progress has to load it (a
 	first visit downloads the map), as long as a browser gives a join */
 	NETWORK_GAME_SERVER_MAXIMUM_LATE_LOADING_TIME = 90 * MILLISECONDS_PER_SECOND,

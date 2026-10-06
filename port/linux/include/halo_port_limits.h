@@ -26,7 +26,7 @@ a finishing place in 7 bits.
 /* the browser builds' matches, which go through the relay: a room holds this
 many machines with players (server/src/protocol.ts MAXIMUM_ROOM_PLAYERS), and
 a match this many players; the records keep the session limits above */
-#define HALO_WEB_MAXIMUM_PLAYERS 32
+#define HALO_WEB_MAXIMUM_PLAYERS 64
 
 /* a host polls its listening socket and one socket per machine; the Xbox's
 Winsock headers default to 64 (the prefix headers define FD_SETSIZE from

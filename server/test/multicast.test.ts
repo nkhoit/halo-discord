@@ -242,7 +242,7 @@ describe("relay protocol 2 multicast", () => {
     expect(v1.host.closedWith).toBe(CloseCode.PolicyViolation);
   });
 
-  it("reaches every other machine of a full room: 31 playing and 8 watching", () => {
+  it("reaches every other machine of a full room: 63 playing and 8 watching", () => {
     expect(MAXIMUM_SLOTS, "a slot for every machine").toBe(MAXIMUM_ROOM_MACHINES);
     expect(MAXIMUM_SLOTS, "named in a u8 count").toBeLessThanOrEqual(255);
     expect(MAXIMUM_MULTICAST_FRAME_BYTES + 3, "the largest in a message of its own, batched")
@@ -254,7 +254,7 @@ describe("relay protocol 2 multicast", () => {
     const entries = guests.map(([id], index) => [...slotOf(id), 1000 + index, 0, index] as Entry);
     const largest = multicast(true, entries, MAXIMUM_HALO_FRAME_BYTES);
     expect(largest.byteLength).toBeLessThanOrEqual(MAXIMUM_MULTICAST_FRAME_BYTES);
-    expect(parseMulticast(largest)?.recipients).toHaveLength(39);
+    expect(parseMulticast(largest)?.recipients).toHaveLength(71);
     host.message(multicast(true, entries, 40));
     guests.forEach(([, guest], index) => {
       const frames = guest.frames();

@@ -21,8 +21,8 @@ The path is:
 hosted page <-> WebSocket <-> Node relay <-> WebSocket <-> hosted page
 ```
 
-A room has one host and its guests, up to 32 sockets in all (one per player,
-or two with separate reliable and unreliable sockets). The relay is not a game server.
+A room has one host and its guests: up to 64 machines with players and 8
+watching, each on one socket or on separate reliable and unreliable sockets. The relay is not a game server.
 It does not simulate Halo. It authenticates sockets, tracks room membership,
 stamps the sender identity onto frames, and forwards frames only between the
 host and guests.
@@ -117,15 +117,15 @@ Current caps:
 - build id: 1 to 96 characters;
 - peer id: 12 hex digits;
 - max rooms: configurable, default 64;
-- a room: 32 machines with players (a match holds 32 players; a machine of
+- a room: 64 machines with players (a match holds 64 players; a machine of
   split screen players counts once here), plus 8 machines watching without a
-  player, each machine on one socket or a reliable and an unreliable one: 80
+  player, each machine on one socket or a reliable and an unreliable one: 144
   sockets. A machine already in the room may reconnect or add its second
   socket; a new one is refused when its kind is full, and a spectator that
   says it plays stays a spectator while the players are full;
 - max Halo payload: 16,396 bytes;
-- max multicast frame (protocol 2): 3 + 40 × 14 + 16,396 bytes (a slot for
-  each of the room's 40 machines);
+- max multicast frame (protocol 2): 3 + 72 × 14 + 16,396 bytes (a slot for
+  each of the room's 72 machines);
 - max WebSocket message: 64 KiB;
 - host control messages: 256 bytes.
 

@@ -1271,7 +1271,7 @@
         element("span", { class: "hosted-guild-host",
           text: String(room.host || "Someone") + (room.channel ? " · " + room.channel : "") }),
         element("span", { class: "hosted-guild-what", text: guildRoomLabel(room) }),
-        element("span", { class: "hosted-guild-players", text: (room.players || 0) + "/" + (room.capacity || 32) +
+        element("span", { class: "hosted-guild-players", text: (room.players || 0) + "/" + (room.capacity || 64) +
           (room.spectators ? " · " + room.spectators + " watching" : "") }),
         element("span", { class: "hosted-guild-state", text: GUILD_STATES[room.state] || "" }),
         join,

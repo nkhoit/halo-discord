@@ -340,4 +340,31 @@ describe("the lobby team picker", () => {
     header(0).click();
     expect(teamCalls.slice(-2)).toEqual([0, 0]);
   });
+
+  it("lists a full 64-player match, 32 a side, this player first, in lists that scroll", async () => {
+    const many: Player[] = Array.from({ length: 64 }, (_, index) => ({
+      name: `Spartan ${String(index).padStart(2, "0")} with a long name`,
+      team: index % 2,
+      self: index === 37,
+    }));
+    status = {
+      view: "hosting",
+      role: "host",
+      host: "Arbiter",
+      settings: { mapIndex: 0, modeIndex: 1 },
+      playerCount: 64,
+      teams: { enabled: true, pregame: true, players: many },
+    };
+    await tick();
+    expect(visible("hosted-teams")).toBe(true);
+    const red = column("hosted-team-red");
+    const blue = column("hosted-team-blue");
+    expect([red.length, blue.length]).toEqual([32, 32]);
+    expect(blue[0]).toEqual({ name: "Spartan 37 with a long name", self: true, tag: "BUTTON" });
+    const list = getComputedStyle(byId("hosted-team-blue"));
+    expect(list.overflowY).toBe("auto");
+    expect(parseFloat(list.maxHeight)).toBeCloseTo(window.innerHeight * 0.33, 1);
+    const name = getComputedStyle(byId("hosted-team-red").querySelector(".hosted-team-player")!);
+    expect([name.overflow, name.textOverflow, name.whiteSpace]).toEqual(["hidden", "ellipsis", "nowrap"]);
+  });
 });

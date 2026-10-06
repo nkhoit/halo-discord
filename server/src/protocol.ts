@@ -38,7 +38,7 @@ export const MAXIMUM_BATCH_BYTES = 64 * 1024;
    HALO_WEB_MAXIMUM_PLAYERS; a machine of split screen players counts once
    here), and machines watching without a player, each with one socket or a
    reliable and an unreliable one. */
-export const MAXIMUM_ROOM_PLAYERS = 32;
+export const MAXIMUM_ROOM_PLAYERS = 64;
 export const MAXIMUM_ROOM_SPECTATORS = 8;
 export const SOCKETS_PER_MACHINE = 2;
 export const MAXIMUM_ROOM_MACHINES = MAXIMUM_ROOM_PLAYERS + MAXIMUM_ROOM_SPECTATORS;

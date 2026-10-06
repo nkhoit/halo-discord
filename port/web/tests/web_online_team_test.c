@@ -3,6 +3,7 @@
    started. The roster snapshot skips empty slots and stays consistent. */
 
 #include "web_online_ui.h"
+#include "../../linux/include/halo_port_limits.h"
 
 #include <stdio.h>
 
@@ -273,7 +274,7 @@ int main(void)
 	expect(platform_web_online_roster_local(1) == 0, "the second player is someone else");
 	expect(name_is(1, "Blue"), "the second player's name");
 	expect(platform_web_online_roster_team(-1) == -1, "a team before the roster is out of range");
-	expect(platform_web_online_roster_team(32) == -1, "a team past the roster is out of range");
+	expect(platform_web_online_roster_team(HALO_WEB_MAXIMUM_PLAYERS) == -1, "a team past the roster is out of range");
 	expect(platform_web_online_roster_local(-1) == 0, "a local flag before the roster is out of range");
 	expect(platform_web_online_roster_name(0, 12) == 0, "a name unit past the name is empty");
 
