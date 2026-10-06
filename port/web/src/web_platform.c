@@ -64,7 +64,7 @@ EMSCRIPTEN_KEEPALIVE double platform_web_map_load_progress(void)
 /* (port/linux/game/network_distributed.c, Xbox ABI float real) */
 extern void network_distributed_web_statistics(long *ticks, long *own_corrections,
 	float *own_correction_maximum_squared, long *rejected_predictions, long *own_aim_corrections,
-	float *own_aim_correction_maximum_degrees, long *own_seat_corrections);
+	float *own_aim_correction_maximum_degrees, long *own_seat_corrections, long *object_resyncs);
 /* (source/game/player_queues_new.c, source/game/game_time.c) */
 extern void update_server_input_histogram(long histogram[4]);
 extern void game_time_tick_statistics(long *multiple_tick_frames, long *maximum_ticks_per_frame,
@@ -113,13 +113,14 @@ extern void render_interpolation_web_snaps(double values[21]);
  * animation frames, [97] the mean change from one to the next, (a client)
  * [98] the ticks the latest host unit states it took were old, [99] the
  * most since the last read, [100] the most datagrams a socket held unread
- * since the last read.
+ * since the last read, [101] times a client asked for the host's objects again,
+ * a player's unit missing.
  * [28..38], [40] and [41] are since the last read; other counts
  * are totals. */
 EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 {
 	static double first_draws_total;
-	static double values[101];
+	static double values[102];
 	long ticks;
 	long own_corrections;
 	float own_correction_maximum_squared;
@@ -127,6 +128,7 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	long own_aim_corrections;
 	float own_aim_correction_maximum_degrees;
 	long own_seat_corrections;
+	long object_resyncs;
 	long histogram[4];
 	long state_age_latest;
 	long state_age_maximum;
@@ -139,7 +141,7 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 
 	network_distributed_web_statistics(&ticks, &own_corrections, &own_correction_maximum_squared,
 		&rejected_predictions, &own_aim_corrections, &own_aim_correction_maximum_degrees,
-		&own_seat_corrections);
+		&own_seat_corrections, &object_resyncs);
 	update_server_input_histogram(histogram);
 	game_time_tick_statistics(&multiple_tick_frames, &maximum_ticks_per_frame, &maximum_tick_milliseconds);
 	xgpu_web_texture_statistics(textures);
@@ -155,6 +157,7 @@ EMSCRIPTEN_KEEPALIVE const double *platform_web_netstats(void)
 	values[98] = (double)state_age_latest;
 	values[99] = (double)state_age_maximum;
 	values[100] = (double)web_net_take_datagram_queue_maximum();
+	values[101] = (double)object_resyncs;
 	for (index = 0; index < 4; index++)
 		values[7 + index] = (double)histogram[index];
 	values[11] = (double)multiple_tick_frames;

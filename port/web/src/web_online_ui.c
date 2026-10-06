@@ -151,6 +151,9 @@ enum
 static atomic_uint web_online_roster_sequence = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_roster_count = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_roster_teams = ATOMIC_VAR_INIT(0);
+/* whether this machine's player may switch onto red (0) and blue (1) now,
+with the roster (the balance rule reads the game's players) */
+static atomic_int web_online_roster_switch_allowed[2];
 static atomic_int web_online_roster_team[WEB_ONLINE_ROSTER_LIMIT];
 static atomic_int web_online_roster_local[WEB_ONLINE_ROSTER_LIMIT];
 static atomic_int web_online_roster_name[WEB_ONLINE_ROSTER_LIMIT][WEB_ONLINE_ROSTER_NAME];
@@ -459,7 +462,7 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_team_switch_allowed(int team_index)
 {
 	if (team_index != 0 && team_index != 1)
 		return 0;
-	return network_game_client_team_switch_allowed((char)team_index) ? 1 : 0;
+	return atomic_load_explicit(&web_online_roster_switch_allowed[team_index], memory_order_acquire);
 }
 
 EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_sequence(void)
@@ -533,6 +536,11 @@ static void publish_lobby_roster(void)
 		&web_online_roster_teams,
 		network_game_client_game_has_teams() ? 1 : 0,
 		memory_order_relaxed);
+	for (team = 0; team < 2; team++)
+	{
+		atomic_store_explicit(&web_online_roster_switch_allowed[team],
+			network_game_client_team_switch_allowed((char)team) ? 1 : 0, memory_order_relaxed);
+	}
 	atomic_fetch_add_explicit(&web_online_roster_sequence, 1, memory_order_release);
 }
 

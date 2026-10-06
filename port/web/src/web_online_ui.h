@@ -109,7 +109,8 @@ int platform_web_online_set_team(int team_index);
    an in-progress team match and for any other index. */
 int platform_web_online_switch_team(int team_index);
 /* 1 when moving this machine's local player onto team_index is allowed by
-   the balance rule (not a strictly larger team). */
+   the balance rule (only onto a team with strictly fewer players), as of the
+   game thread's last frame (published with the roster). */
 int platform_web_online_team_switch_allowed(int team_index);
 /* The client's roster, published each frame. sequence is even when the
    other getters are a consistent snapshot (odd means a write is in progress).

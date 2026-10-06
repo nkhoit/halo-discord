@@ -586,6 +586,7 @@ boolean network_game_join_in_progress_enabled(void);
 /* port/linux/game/network_distributed.c's */
 void network_distributed_player_killed(long *killing_player_index, long *killing_object_index,
 	long dead_player_index, boolean *friendly_fire);
+boolean network_distributed_team_switch_death(long dead_player_index);
 #endif
 
 /* ---------- constants */
@@ -4058,6 +4059,9 @@ void game_engine_player_killed(
 	boolean same_player;
 	boolean valid_players;
 	long message = NONE;
+#ifdef HALO_LINUX
+	boolean team_switch;
+#endif
 
 	match_assert(
 		"c:\\halo\\SOURCE\\game\\game_engine.c",
@@ -4068,13 +4072,22 @@ void game_engine_player_killed(
 		return;
 
 #ifdef HALO_LINUX
+	/* a mid-match team switch's death (network_client_manager.c
+	network_game_apply_team_switch): neither scored nor announced */
+	team_switch = network_distributed_team_switch_death(dead_player_index);
+#endif
+#ifdef HALO_LINUX
 	/* the distributed netcode: a client's copy of a death has the host's
 	killer (port/linux/game/network_distributed.c) */
 	network_distributed_player_killed(&killing_player_index, &killing_object_index, dead_player_index,
 		&friendly_fire);
 #endif
 	dead_player->death_time = game_time_get();
-	if (game_engine->player_killed_player)
+	if (game_engine->player_killed_player
+#ifdef HALO_LINUX
+		&& !team_switch
+#endif
+		)
 	{
 		game_engine->player_killed_player(
 			killing_player_index,
@@ -4115,6 +4128,12 @@ void game_engine_player_killed(
 	dead_player->respawn_timer = MAX(dead_player->respawn_timer, 90);
 	dead_player = player_get(dead_player_index);
 
+#ifdef HALO_LINUX
+	if (team_switch)
+	{
+	}
+	else
+#endif
 	if (!dead_player->quit_out_of_game)
 	{
 		if (killing_player_index == NONE)

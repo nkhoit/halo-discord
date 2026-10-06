@@ -2661,8 +2661,13 @@ static boolean network_game_server_handle_message_client_team_switch_request_ing
 	char machine_index;
 	void *encoded_message;
 
+	/* (every request that does not apply is ignored, never failed: failing
+	would hold up that machine's other messages) */
 	if (!network_game_distributed())
+	{
+		network_event("ignoring team switch request; not the distributed netcode");
 		return TRUE;
+	}
 	if (network_game_server_get_state(server, NULL) != _network_game_server_state_ingame)
 	{
 		network_event("ignoring team switch request; server is not in game");
@@ -2685,12 +2690,16 @@ static boolean network_game_server_handle_message_client_team_switch_request_ing
 	if (request.desired_team_index != (char)_team_red &&
 		request.desired_team_index != (char)_team_blue)
 	{
+		network_event("ignoring team switch request for team %d", (int)request.desired_team_index);
 		return TRUE;
 	}
 
 	game = network_game_server_get_game(server);
 	if (!game || !game->variant.universal_variant.teams)
+	{
+		network_event("ignoring team switch request; not a team game");
 		return TRUE;
+	}
 
 	{
 		long game_machine_index = NONE;
@@ -2715,23 +2724,27 @@ static boolean network_game_server_handle_message_client_team_switch_request_ing
 			continue;
 		}
 
+		/* the one kill of the switch, here on the host */
 		if (!network_game_apply_team_switch(
 			game,
 			player->player_list_index,
-			request.desired_team_index))
+			request.desired_team_index,
+			TRUE))
 		{
 			network_event("network_game_apply_team_switch() failed on the host");
 			continue;
 		}
 
-		/* Keep the host's client roster in sync even if loopback is delayed. */
+		/* Keep the host's client roster in sync even if loopback is delayed
+		(the teams only: the unit is dead already). */
 		client = global_network_game_client_get();
 		if (client && network_game_client_get_game(client) != game)
 		{
 			network_game_apply_team_switch(
 				network_game_client_get_game(client),
 				player->player_list_index,
-				request.desired_team_index);
+				request.desired_team_index,
+				FALSE);
 		}
 
 		broadcast.player_list_index = player->player_list_index;

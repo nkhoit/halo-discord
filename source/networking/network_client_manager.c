@@ -3228,19 +3228,26 @@ boolean network_game_team_switch_balance_ok(
 			counts[player->team_index]++;
 		}
 	}
-	/* Refuse joining a strictly larger team; ties and emptying a team are OK. */
-	return counts[(int)to_team] <= counts[(int)from_team];
+	/* The balance rule (port/linux/NETCODE.md): a player moves only onto a team
+	with strictly fewer players than their own (3v1 -> 2v2, never 2v2 -> 1v3). */
+	return counts[(int)to_team] < counts[(int)from_team];
 }
+
+/* (port/linux/game/network_distributed.c) */
+boolean network_distributed_defer_team(long player_index, char team_index);
+void network_distributed_note_team_switch(long player_index);
 
 boolean network_game_apply_team_switch(
 	struct network_game *game,
 	char player_list_index,
-	char team_index)
+	char team_index,
+	boolean kill_unit)
 {
 	long index;
 	struct network_player *network_player = NULL;
 	long player_index;
 	struct player_datum *player;
+	boolean alive;
 
 	if (!game || (team_index != (char)_team_red && team_index != (char)_team_blue))
 		return FALSE;
@@ -3268,13 +3275,25 @@ boolean network_game_apply_team_switch(
 
 	player = player_get(player_index);
 	player->network_player_data.team_index = team_index;
-	player->team_index = (signed char)team_index;
-	if (player->unit_index != NONE)
-	{
-		/* Approved #16 default: no suicide/kill credit; flag/ball still drop
-		via the deferred act-of-god death path. */
+	/* (the host, once: deaths are its word in the distributed netcode, and its
+	clients, its own client copy included, learn of this one as of any other.
+	No suicide or kill credit; a flag or ball the unit carries drops, here
+	and so on every machine.) The death comes in the next tick's object
+	update, after that tick's game engine update: until then the player keeps
+	the team the game engine knows, or a flag's carrier would stand on its
+	new team holding that team's own flag (a capture at its base). */
+	alive = player->unit_index != NONE && object_try_and_get(player->unit_index) &&
+		!TEST_FLAG(object_get(player->unit_index)->object.damage_flags, _object_dead_bit);
+	/* (every machine: the death to come is the switch's, neither scored nor
+	announced, game_engine_player_killed) */
+	if (alive)
+		network_distributed_note_team_switch(player_index);
+	if (kill_unit && alive)
 		unit_kill_no_statistics(player->unit_index);
-	}
+	/* (the host has one player_datum for its server game and its client
+	copies alike: none of them sets the team while the unit lives) */
+	if (!alive || !network_distributed_defer_team(player_index, team_index))
+		player->team_index = (signed char)team_index;
 	return TRUE;
 }
 

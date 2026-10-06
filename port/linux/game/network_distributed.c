@@ -92,8 +92,11 @@ enum
 	SEAT_DISAGREEMENT_TICKS = 15,
 	/* ticks a client may go without the unit the host says a player is
 	alive in before it asks for the host's objects again: the unit's
-	creation comes reliably, a little behind the word at most (#73) */
+	creation comes reliably, a little behind the word at most (#73); then
+	twice as long before each time it asks again for the same player, up to
+	the most, until the unit is there */
 	MISSING_UNIT_TICKS = 3 * TICKS_PER_SECOND,
+	MISSING_UNIT_MAXIMUM_TICKS = 30 * TICKS_PER_SECOND,
 };
 
 /* struct distributed_unit_state flags */
@@ -730,8 +733,20 @@ static short distributed_pickup_count;
 the host has it */
 static short distributed_seat_disagreements[MAXIMUM_TRACKED_PLAYERS];
 /* a client: since when each player has been alive on the host in a unit
-this machine does not have, NONE for not */
+this machine does not have, NONE for not, and the ticks before it asks for
+the host's objects for that player (again) */
 static long distributed_missing_unit_times[MAXIMUM_TRACKED_PLAYERS];
+static long distributed_missing_unit_waits[MAXIMUM_TRACKED_PLAYERS];
+/* (the host) a player's team waiting for its unit's death (a team switch),
+NONE for none, and since when */
+static long distributed_deferred_teams[MAXIMUM_TRACKED_PLAYERS];
+static long distributed_deferred_team_times[MAXIMUM_TRACKED_PLAYERS];
+#define DEFERRED_TEAM_MAXIMUM_TICKS TICKS_PER_SECOND
+/* (every machine) when each player's team switched while its unit lived,
+NONE for none: the switch's death comes within this many ticks (the host's
+at once, a client's a one-way trip later) */
+static long distributed_team_switch_times[MAXIMUM_TRACKED_PLAYERS];
+#define TEAM_SWITCH_DEATH_TICKS (5 * TICKS_PER_SECOND)
 #ifdef HALO_WEB
 /* (the host) ticks between a machine's own players' states, while they move
 as they were moving and nothing else of them changes: their machine moves them
@@ -805,6 +820,8 @@ static struct
 	long state_age_latest;
 	long state_age_maximum;
 	boolean state_age_seen;
+	/* asked for the host's objects again, a player's unit missing (#73) */
+	long object_resyncs;
 } distributed_web_statistics;
 
 /* (a client) the age of a message of the host's unit states it takes */
@@ -1111,8 +1128,10 @@ void network_distributed_web_statistics(
 	long *rejected_predictions,
 	long *own_aim_corrections,
 	real *own_aim_correction_maximum_degrees,
-	long *own_seat_corrections)
+	long *own_seat_corrections,
+	long *object_resyncs)
 {
+	*object_resyncs = distributed_web_statistics.object_resyncs;
 	*ticks = distributed_web_statistics.ticks;
 	*own_corrections = distributed_web_statistics.own_corrections;
 	*own_correction_maximum_squared = distributed_web_statistics.own_correction_maximum_squared;
@@ -1711,19 +1730,33 @@ static void distributed_handle_unit_states(
 		if (state->player_index < MAXIMUM_TRACKED_PLAYERS)
 		{
 			long *missing_time = &distributed_missing_unit_times[state->player_index];
+			long *wait = &distributed_missing_unit_waits[state->player_index];
 
 			if (!alive || state->unit_index == NONE || network_objects_client_has(state->unit_index))
 			{
 				*missing_time = NONE;
+				/* (present: the next time it goes missing, the first wait) */
+				if (alive && state->unit_index != NONE)
+					*wait = MISSING_UNIT_TICKS;
 			}
 			else if (*missing_time == NONE)
 			{
 				*missing_time = game_time_get();
+				if (*wait < MISSING_UNIT_TICKS)
+					*wait = MISSING_UNIT_TICKS;
 			}
-			else if (game_time_get() - *missing_time >= MISSING_UNIT_TICKS)
+			else if (game_time_get() - *missing_time >= *wait)
 			{
+				platform_log("network: player %d is alive on the host in unit %08lx, which this machine "
+					"does not have after %ld s; asking for the host's objects again",
+					(int)state->player_index, (unsigned long)state->unit_index,
+					(game_time_get() - *missing_time) / TICKS_PER_SECOND);
+#ifdef HALO_WEB
+				distributed_web_statistics.object_resyncs++;
+#endif
 				network_objects_resynchronize();
 				*missing_time = game_time_get();
+				*wait = *wait * 2 > MISSING_UNIT_MAXIMUM_TICKS ? MISSING_UNIT_MAXIMUM_TICKS : *wait * 2;
 			}
 		}
 		if (!alive)
@@ -2093,6 +2126,9 @@ void network_distributed_new_game(
 	csmemset(distributed_deaths, 0, sizeof(distributed_deaths));
 	csmemset(distributed_seat_disagreements, 0, sizeof(distributed_seat_disagreements));
 	csmemset(distributed_missing_unit_times, 0xFF, sizeof(distributed_missing_unit_times));
+	csmemset(distributed_missing_unit_waits, 0, sizeof(distributed_missing_unit_waits));
+	csmemset(distributed_deferred_teams, 0xFF, sizeof(distributed_deferred_teams));
+	csmemset(distributed_team_switch_times, 0xFF, sizeof(distributed_team_switch_times));
 #if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
 	csmemset(distributed_seat_times, 0, sizeof(distributed_seat_times));
 	csmemset(distributed_own_sent, 0, sizeof(distributed_own_sent));
@@ -2107,6 +2143,75 @@ void network_distributed_new_game(
 #endif
 	network_objects_new_game();
 	network_damage_new_game();
+}
+
+boolean network_distributed_defer_team(
+	long player_index,
+	char team_index)
+{
+	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index);
+
+	if (game_connection() != _game_connection_network_server ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_TRACKED_PLAYERS)
+	{
+		return FALSE;
+	}
+	/* (the first call's time: the host's client copies defer it again) */
+	if (distributed_deferred_teams[absolute_index] == NONE ||
+		game_time_get() - distributed_deferred_team_times[absolute_index] >= DEFERRED_TEAM_MAXIMUM_TICKS)
+	{
+		distributed_deferred_team_times[absolute_index] = game_time_get();
+	}
+	distributed_deferred_teams[absolute_index] = team_index;
+	return TRUE;
+}
+
+void network_distributed_note_team_switch(
+	long player_index)
+{
+	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index);
+
+	if (absolute_index >= 0 && absolute_index < MAXIMUM_TRACKED_PLAYERS)
+		distributed_team_switch_times[absolute_index] = game_time_get();
+}
+
+/* (once) whether this death is a team switch's */
+boolean network_distributed_team_switch_death(
+	long dead_player_index)
+{
+	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(dead_player_index);
+	long time;
+
+	if (!network_game_distributed() || absolute_index < 0 || absolute_index >= MAXIMUM_TRACKED_PLAYERS)
+		return FALSE;
+	time = distributed_team_switch_times[absolute_index];
+	distributed_team_switch_times[absolute_index] = NONE;
+	return time != NONE && game_time_get() - time <= TEAM_SWITCH_DEATH_TICKS;
+}
+
+/* (the host, after each tick) the deferred teams of players whose units have
+died (and dropped what they carried), or after a second whatever happened */
+static void distributed_apply_deferred_teams(
+	void)
+{
+	long absolute_index;
+
+	for (absolute_index = 0; absolute_index < MAXIMUM_TRACKED_PLAYERS; absolute_index++)
+	{
+		struct player_datum *player;
+
+		if (distributed_deferred_teams[absolute_index] == NONE)
+			continue;
+		player = distributed_player((short)absolute_index);
+		if (player && distributed_living_unit(player) != NONE &&
+			game_time_get() - distributed_deferred_team_times[absolute_index] < DEFERRED_TEAM_MAXIMUM_TICKS)
+		{
+			continue;
+		}
+		if (player)
+			player->team_index = (signed char)distributed_deferred_teams[absolute_index];
+		distributed_deferred_teams[absolute_index] = NONE;
+	}
 }
 
 /* after each tick (game_time.c) */
@@ -2127,6 +2232,7 @@ void network_distributed_tick(
 		dealt this tick before the units it hurt and killed, and a kill's
 		statistics before the kill, so that a client announcing it counts it
 		(a double kill, a killing spree) */
+		distributed_apply_deferred_teams();
 		network_objects_host_tick();
 		network_damage_host_tick();
 		if (distributed_statistics_due || game_time_get() % STATISTICS_INTERVAL_TICKS == 0)

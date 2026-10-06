@@ -255,11 +255,6 @@ html.halo-hosted #loading::after { display: none; }
   pointer-events: auto;
 }
 #hosted-overlay-main > #hosted-teams { pointer-events: none; }
-#hosted-teams.playing {
-  z-index: 12;
-  width: min(28rem, calc(100% - 1rem));
-}
-#hosted-teams.playing .hosted-team { padding: .15rem .3rem .25rem; }
 @media (max-width: 30rem) {
   #hosted-teams { width: calc(100% - .75rem); }
 }
