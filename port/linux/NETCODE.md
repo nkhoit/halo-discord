@@ -72,7 +72,9 @@ Every machine in a game must use the same netcode.
      any such object the host has not told it of, and nothing but the
      host's word deletes the host's. A client the host says has a player
      alive in a unit it does not have, for 3 seconds, asks for all of
-     them again.
+     them again (logged, and counted in `?netstats=1` as `objectResyncs`);
+     for the same player again only after 6, then 12, up to 30 seconds,
+     until the unit is there.
    - The objects placed when the map loads are placed alike everywhere:
      the host's word finds a client's already there. Past loading, a
      client's own objects (projectiles, effects: what only it sees) take
@@ -235,12 +237,32 @@ still follows nobody.
 ## Mid-match team switch
 
 In a distributed team match, a player can ask the host to move them to the
-other team (`_message_client_team_switch_request_ingame`). The host checks
-balance (no joining a strictly larger team), updates `player->team_index` /
-`network_player_data.team_index` / the network game roster, kills the unit
-without statistics so a flag or ball drops, and broadcasts
-`_message_server_player_team_switch_ingame`. Per-tick unit state still does
-not carry team; clients apply the reliable message. Lockstep is unchanged.
+other team (`_message_client_team_switch_request_ingame`; only the web page
+asks, and the host takes it only in the distributed netcode, so lockstep and
+LAN games are unchanged).
+
+- Balance: a player moves only onto a team with strictly fewer players than
+  their own (3 v 1 to 2 v 2 yes; 2 v 2 to 1 v 3 no). One line,
+  `network_game_team_switch_balance_ok`, decides for the host and for the
+  page's buttons alike.
+- The host updates the network game roster and
+  `network_player_data.team_index`, kills the unit once, without statistics
+  (a flag or ball it carries drops), and broadcasts
+  `_message_server_player_team_switch_ingame`. `player->team_index`, which
+  the game engine reads, changes when the unit's death has come (the next
+  tick's object update, after that tick's game engine update), so a flag's
+  carrier never stands on its new team holding that team's own flag.
+- Every client copy, the host's own included, updates the teams only. Its
+  copy of the unit dies as any death reaches it: the host's unit state.
+  Per-tick unit state does not carry the team.
+- The switch's death is neither scored nor announced on any machine (the
+  engine scores a death without statistics as a suicide, -1 in Slayer, and
+  says so); the respawn takes the stock time, its suicide penalty included.
+- A machine loading the match while someone switches misses the broadcast:
+  when it has loaded, the host sends it every player's team as it is now,
+  after the players who came and went meanwhile.
+- A switch the host cannot apply (a player who has just left) is ignored and
+  logged on either side, never failed: a failed message holds up the rest.
 
 ## Testing
 

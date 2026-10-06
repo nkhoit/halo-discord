@@ -1154,13 +1154,14 @@
   }
 
   /* bar: Halo's lobby and the results. panel: the host picking the next match.
-     overlay: the match menu. playing: the match, with the mouse in the game. */
+     overlay: the match's Esc menu. Never over the match itself, the mouse in
+     the game. */
   function teamPlace(current, surface) {
     if (!current.role) return null;
     if (surface === "bar") return "bar";
     if (current.view === "hosting" && surface === "panel") return "panel";
-    if (current.view === "match" || current.view === "spectating") {
-      return controller.overlay() !== "none" ? "overlay" : "playing";
+    if ((current.view === "match" || current.view === "spectating") && controller.overlay() !== "none") {
+      return "overlay";
     }
     return null;
   }
@@ -1206,7 +1207,6 @@
     else if (place === "panel") parent = panel;
     else if (place === "overlay") parent = byId("hosted-overlay-main");
     if (parent && teamBoard.parentNode !== parent) parent.appendChild(teamBoard);
-    teamBoard.classList.toggle("playing", place === "playing");
   }
 
   function renderTeams(current, surface) {

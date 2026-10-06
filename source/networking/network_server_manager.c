@@ -1498,6 +1498,38 @@ boolean network_game_server_late_machine_loaded(
 		if (!message || !network_game_server_send_message_to_machine(server, machine, message))
 			return FALSE;
 	}
+	/* (a team game) every player's team as the host has it now: a switch
+	broadcast while this machine loaded did not reach it, and the players
+	just replayed come with the team they joined with */
+	if (server->game.variant.universal_variant.teams)
+	{
+		long player_index;
+
+		for (player_index = 0; player_index < MAXIMUM_NETWORK_PLAYER_COUNT; player_index++)
+		{
+			struct network_player *player = &server->game.players[player_index];
+			struct
+			{
+				char player_list_index;
+				char team_index;
+				char pad[2];
+			} team;
+			void *message;
+
+			if (!network_player_is_valid(player) ||
+				(player->team_index != (char)_team_red && player->team_index != (char)_team_blue))
+			{
+				continue;
+			}
+			team.player_list_index = player->player_list_index;
+			team.team_index = player->team_index;
+			team.pad[0] = 0;
+			team.pad[1] = 0;
+			message = create_network_game_message(_message_server_player_team_switch_ingame, &team, sizeof(team));
+			if (!message || !network_game_server_send_message_to_machine(server, machine, message))
+				return FALSE;
+		}
+	}
 	network_event("machine #%d loaded the match in progress (%ld players came or went meanwhile)",
 		client_machine->machine_index, server->roster_sequence - server->late_join_roster_sequence[index]);
 	return TRUE;

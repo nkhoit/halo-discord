@@ -1505,17 +1505,21 @@ static boolean network_game_client_handle_message_server_player_team_switch_inga
 		&packet_version,
 		_network_game_packet_class_ingame))
 	{
-		network_event("failed to decode a message_server_player_team_switch_ingame packet");
-		return FALSE;
+		/* (ignored: failing would hold up the rest of the host's messages) */
+		network_event("ignoring a message_server_player_team_switch_ingame that does not decode");
+		return TRUE;
 	}
 
+	/* (a client copy, the host's own included: the teams only; the host's
+	word on the unit brings its death) */
 	if (!network_game_apply_team_switch(
 		network_game_client_get_game(client),
 		switch_message.player_list_index,
-		switch_message.team_index))
+		switch_message.team_index,
+		FALSE))
 	{
-		network_event("network_game_apply_team_switch() failed on a client");
-		return FALSE;
+		network_event("ignoring a team switch for player %d, who is not in this game",
+			(int)switch_message.player_list_index);
 	}
 	return TRUE;
 }

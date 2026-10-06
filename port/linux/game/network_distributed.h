@@ -125,6 +125,14 @@ void network_objects_client_ready(long machine_index);
 void network_objects_handle_changes(void const *entries, short count);
 void network_objects_handle_synchronized(void);
 void network_objects_resynchronize(void);
+/* (the host) a player's new team (a switch, network_client_manager.c), for
+when its unit's death has come: FALSE on a client, which takes it at once
+(its game engine does not run the players' per-tick scoring) */
+boolean network_distributed_defer_team(long player_index, char team_index);
+/* (every machine) a player's team switched while its unit lived: its death to
+come is the switch's (game_engine_player_killed neither scores nor announces it) */
+void network_distributed_note_team_switch(long player_index);
+boolean network_distributed_team_switch_death(long dead_player_index);
 void network_objects_handle_states(void const *entries, short count);
 void network_objects_handle_inventories(void const *entries, short count);
 void network_objects_handle_vehicle_prediction(long machine_index, void const *entries, short count);

@@ -260,17 +260,28 @@ describe("the lobby team picker", () => {
     expect(teamCalls.length).toBe(before);
   });
 
-  it("keeps showing the teams while the mouse is in the match", async () => {
+  it("hides the teams while the mouse is in the match, and shows them again in the Esc menu", async () => {
     (window as unknown as { HaloHostedUI: { controller: { pointerLock: (locked: boolean) => void } } })
       .HaloHostedUI.controller.pointerLock(true);
     await tick();
     expect(visible("hosted-overlay")).toBe(false);
-    expect(visible("hosted-teams")).toBe(true);
-    expect(byId("hosted-teams").classList.contains("playing")).toBe(true);
-    expect(byId("hosted-teams").parentElement?.id).toBe("hosted-ui");
-    expect(byId("hosted-teams").getAttribute("data-interactive")).toBe("false");
+    expect(visible("hosted-teams")).toBe(false);
+    status = { ...status, view: "spectating" };
+    await tick();
+    expect(visible("hosted-overlay"), "a spectator's menu, first").toBe(true);
+    expect(byId("hosted-teams").parentElement?.id).toBe("hosted-overlay-main");
+    (window as unknown as { HaloHostedUI: { controller: { spectateMenu: (open: boolean) => void } } })
+      .HaloHostedUI.controller.spectateMenu(false);
+    await tick();
+    expect(visible("hosted-overlay")).toBe(false);
+    expect(visible("hosted-teams"), "nor over a match watched").toBe(false);
+    status = { ...status, view: "match" };
     (window as unknown as { HaloHostedUI: { controller: { pointerLock: (locked: boolean) => void } } })
       .HaloHostedUI.controller.pointerLock(false);
+    await tick();
+    expect(visible("hosted-overlay")).toBe(true);
+    expect(visible("hosted-teams")).toBe(true);
+    expect(byId("hosted-teams").parentElement?.id).toBe("hosted-overlay-main");
   });
 
   it("shows the teams on the results, still locked", async () => {
