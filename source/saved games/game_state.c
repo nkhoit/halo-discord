@@ -120,6 +120,8 @@ symbols in this file:
 #include "data.h"
 #include "lruv_cache.h"
 #include "memory_pool.h"
+/* port: object_bounds_cache.c's */
+void object_bounds_cache_invalidate(void);
 
 /* ---------- constants */
 
@@ -268,6 +270,9 @@ void game_state_initialize_for_new_map(
 {
 	const char *name;
 
+	/* port: (the objects are put back: object_bounds_cache.c) */
+	object_bounds_cache_invalidate();
+
 	game_state_globals.locked = TRUE;
 	game_state_globals.saved_game_valid = FALSE;
 	game_state_globals.revert_time = NONE;
@@ -307,6 +312,8 @@ void game_state_save(
 void game_state_revert(
 	void)
 {
+	/* port: (the objects are put back: object_bounds_cache.c) */
+	object_bounds_cache_invalidate();
 	if (!game_state_globals.saved_game_valid && !recover_saved_games_hack)
 	{
 		main_reset_map();
@@ -602,6 +609,9 @@ void game_state_try_and_load_from_persistent_storage(
 {
 	struct game_state_header header;
 
+	/* port: (the objects are put back: object_bounds_cache.c) */
+	object_bounds_cache_invalidate();
+
 	if (game_state_read_header_from_persistent_storage(
 			&header,
 			&header.checksum,
@@ -627,6 +637,9 @@ void game_state_load_core(
 	const char *name)
 {
 	struct game_state_header header;
+
+	/* port: (the objects are put back: object_bounds_cache.c) */
+	object_bounds_cache_invalidate();
 
 	if (game_state_read_core_header(name, &header, sizeof(header))
 		&& code_001af4f0(&header, TRUE))
