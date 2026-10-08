@@ -3203,6 +3203,17 @@ int network_game_client_game_has_teams(
 	return client->game.variant.universal_variant.teams ? 1 : 0;
 }
 
+void network_game_client_get_settings(
+	struct network_game_client *client,
+	char *map_name,
+	long map_name_size,
+	struct game_variant *variant)
+{
+	csstrncpy(map_name, client->game.map.name, map_name_size - 1);
+	map_name[map_name_size - 1] = 0;
+	csmemcpy(variant, &client->game.variant, sizeof(*variant));
+}
+
 boolean network_game_team_switch_balance_ok(
 	struct network_game *game,
 	char from_team,

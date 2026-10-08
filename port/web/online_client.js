@@ -586,14 +586,34 @@
     return true;
   }
 
+  /* What the network game holds, read back from Halo (web_online_ui.c
+  platform_web_online_current_game): null without one; a map or mode the
+  page does not offer is null. */
+  function currentGame() {
+    var read = global.Module && global.Module._platform_web_online_current_game;
+    var packed = typeof read === "function" ? read() : 0;
+    if (!packed) return null;
+    var mapIndex = (packed >> 8) & 0xff;
+    var modeIndex = (packed >> 16) & 0xff;
+    mapIndex = mapIndex <= LAST_MAP_INDEX ? mapIndex : null;
+    modeIndex = modeIndex <= LAST_MODE_INDEX ? modeIndex : null;
+    return {
+      mapIndex: mapIndex,
+      modeIndex: modeIndex,
+      mapName: mapIndex === null ? null : selectedLabel(elements.map, mapIndex),
+      modeName: modeIndex === null ? null : selectedLabel(elements.mode, modeIndex),
+    };
+  }
+
   /* (the host) what its room's server-wide listing shows */
   function hostListingDetails(clientState, phase) {
     var settings = session.hostSettings || readHostSettings();
+    var game = currentGame();
     var details = {
       state: clientState === CLIENT_STATE.INGAME ? "match" : clientState === CLIENT_STATE.POSTGAME ? "postgame" :
         phase.inMatch ? "starting" : "lobby",
-      map: settings.mapIndex,
-      mode: settings.modeIndex,
+      map: game && game.mapIndex !== null ? game.mapIndex : settings.mapIndex,
+      mode: game && game.modeIndex !== null ? game.modeIndex : settings.modeIndex,
       watchable: !!phase.watchable,
     };
     var channel = activity() && typeof activity().channelName === "function" ? activity().channelName() : null;
@@ -794,6 +814,8 @@
       playerCount: session.active ? players.length : (summary.players || 0),
       notice: hostedLobby.notice,
       settings: session.hostSettings || readHostSettings(),
+      /* what Halo's game holds (the settings are the page's choice) */
+      game: session.active ? currentGame() : null,
       shareUrl: activity() || !hostedPage() ? null : global.location.href,
       spectating: gameSpectating(),
       /* (Join pressed: the game adds the player in a moment) */

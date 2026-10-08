@@ -3,7 +3,9 @@
    the server. A guest, the lobby, and a closed room do not. The host's
    Start match counts the lobby down from about five seconds (not Halo's own
    start: thirty, or five off), again while a machine coming in stops it;
-   and a page with its own picker takes the next match from Halo's. */
+   and a page with its own picker takes the next match from Halo's. With that
+   picker the lobby holds the page's map and game mode: anything else that
+   set them is put back, and Start match puts them back first or refuses. */
 
 #include "web_online_ui.h"
 
@@ -16,6 +18,7 @@ int web_online_ui_page_picks_next_match(void);
 int platform_web_online_host_configured(int map_index, int mode_index);
 int platform_web_online_request(int command);
 int platform_web_online_get_state(void);
+int platform_web_online_current_game(void);
 void web_online_ui_update(int main_menu_loaded, float seconds);
 
 struct network_game_server;
@@ -34,6 +37,13 @@ static int start_calls;
 static long start_milliseconds;
 static int unpause_calls;
 static char server_object;
+/* the map and game mode the lobby holds (player_ui_configure_network_server_game
+sets them, unless configure_sticks is off), and whether the match is starting */
+static long lobby_map = -1;
+static long lobby_mode = -1;
+static int configure_calls;
+static int configure_sticks = 1;
+static int match_starting;
 static char client_object;
 
 static void expect(int condition, const char *message)
@@ -95,9 +105,19 @@ void player_ui_set_active_player_profile(short local_player_index, long profile_
 }
 unsigned char player_ui_configure_network_server_game(long map_index, long mode_index)
 {
-	(void)map_index;
-	(void)mode_index;
+	configure_calls++;
+	if (configure_sticks)
+	{
+		lobby_map = map_index;
+		lobby_mode = mode_index;
+	}
 	return 1;
+}
+unsigned char player_ui_network_game_current(long *map_index, long *mode_index)
+{
+	*map_index = lobby_map;
+	*mode_index = lobby_mode;
+	return server_on || client_on;
 }
 void game_connection_set(short value) { connection = value; }
 void main_goto_main_menu(void) {}
@@ -157,7 +177,7 @@ unsigned char network_game_server_watchable_in_game(struct network_game_server *
 unsigned char network_game_server_match_starting(struct network_game_server *server)
 {
 	(void)server;
-	return 0;
+	return match_starting ? 1 : 0;
 }
 unsigned char network_game_server_countdown_active(struct network_game_server *server)
 {
@@ -319,6 +339,85 @@ int main(void)
 	platform_web_online_end_match();
 	frame();
 	expect(end_calls == ends, "a guest cannot end the match");
+
+	/* the next match: the lobby holds the page's map and game mode */
+	expect(platform_web_online_request(3) == 1, "cancel the guest");
+	frame();
+	expect(platform_web_online_host_configured(9, 2) == 1, "host Blood Gulch, capture the flag");
+	frame();
+	client_state = 2;
+	engine_running = 0;
+	expect(lobby_map == 9 && lobby_mode == 2, "the lobby holds the host's choice");
+	frame();
+	expect(platform_web_online_current_game() == (1 | 9 << 8 | 2 << 16), "the page reads back what the game holds");
+	platform_web_online_set_page_picker(1);
+	{
+		int calls = configure_calls;
+
+		lobby_mode = 0;
+		frame();
+		expect(lobby_mode == 2 && configure_calls == calls + 1,
+			"a lobby set up with another game type (Halo's own next game) gets the page's back");
+		frame();
+		expect(configure_calls == calls + 1, "and is left alone once it holds it");
+		frame();
+		expect(platform_web_online_current_game() == (1 | 9 << 8 | 2 << 16), "the page reads back the page's choice");
+	}
+	{
+		int calls;
+		int index;
+
+		configure_sticks = 0;
+		lobby_map = 7;
+		frame();
+		calls = configure_calls;
+		for (index = 0; index < 5; index++)
+			frame();
+		expect(configure_calls == calls, "a lobby that will not take it is not set again every frame");
+		for (index = 0; index < 7; index++)
+			frame();
+		expect(configure_calls == calls + 1, "but again a second later");
+		frame();
+		expect(platform_web_online_current_game() == (1 | 7 << 8 | 2 << 16), "the page sees the map the game holds");
+
+		calls = start_calls;
+		expect(platform_web_online_start_match() == 1, "start request accepted");
+		frame();
+		expect(start_calls == calls, "Start match refuses a lobby that does not hold the page's choice");
+
+		configure_sticks = 1;
+		lobby_map = 7;
+		lobby_mode = 0;
+		web_online_ui_update(1, 0.0f);
+		calls = start_calls;
+		expect(platform_web_online_start_match() == 1, "start request accepted");
+		web_online_ui_update(1, 0.0f);
+		expect(start_calls == calls + 1 && lobby_map == 9 && lobby_mode == 2,
+			"Start match puts the page's choice back first, then starts");
+	}
+	{
+		int calls;
+
+		platform_web_online_set_page_picker(0);
+		lobby_mode = 0;
+		calls = configure_calls;
+		frame();
+		frame();
+		frame();
+		expect(configure_calls == calls, "without the page's picker Halo's own choice stands");
+
+		platform_web_online_set_page_picker(1);
+		match_starting = 1;
+		frame();
+		frame();
+		expect(configure_calls == calls, "nor is a lobby whose match is starting changed");
+		match_starting = 0;
+		configure_sticks = 0;
+		lobby_map = -1;
+		frame();
+		expect((platform_web_online_current_game() & 0xff00) == 0xff00, "a map the page does not offer reads back as 0xff");
+		configure_sticks = 1;
+	}
 
 	if (failures)
 	{
