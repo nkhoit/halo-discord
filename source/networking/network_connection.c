@@ -1377,6 +1377,11 @@ static boolean network_client_reliable_connection_read(
 	return success;
 }
 
+#ifdef HALO_LINUX
+/* (port) whether the client's last read came in a datagram */
+static boolean network_connection_last_read_unreliable;
+#endif
+
 boolean network_connection_read(
 	struct network_connection *connection,
 	void *buffer,
@@ -1397,13 +1402,30 @@ boolean network_connection_read(
 		connection->flags&FLAG(_connection_create_serverside_client_bit));
 
 	result = network_client_reliable_connection_read(connection, buffer, buffer_size, source_address);
+#ifdef HALO_LINUX
+	network_connection_last_read_unreliable = FALSE;
+#endif
 	if (!result && TEST_FLAG(connection->flags, _connection_create_clientside_client_bit))
 	{
 		result = network_client_unreliable_connection_read(connection, buffer, buffer_size, source_address);
+#ifdef HALO_LINUX
+		network_connection_last_read_unreliable = result;
+#endif
 	}
 
 	return result;
 }
+
+#ifdef HALO_LINUX
+/* port: whether the message network_connection_read last gave a client came
+in a datagram (which anyone can send as the host) rather than over its
+connection to the host */
+boolean network_connection_last_read_was_unreliable(
+	void)
+{
+	return network_connection_last_read_unreliable;
+}
+#endif
 
 boolean network_server_close_client_connection(
 	struct network_connection *server_connection,

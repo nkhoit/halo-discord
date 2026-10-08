@@ -36,9 +36,14 @@ with ideas from VALORANT's netcode articles, keeping the 30 Hz tick:
   vehicle are only corrected past a tolerance, so prediction does not
   rubber-band.
 - **Shooter's hits.** A client reports what its own players hit; the host
-  checks the report (the player's, a weapon they carry, the target where
-  the host has it, no faster than weapons fire) and deals the damage. What
-  the shooter saw hit, hits.
+  checks the report (the player's, a weapon they carry or a grenade the
+  host saw them throw, numbers the game can take and the target's own
+  node, region and material, the target where the host has it, no faster
+  than weapons fire) and deals the damage. What the shooter saw hit, hits.
+- **The host's word over its connection.** A client takes the game's
+  messages only over its connection to the host; in a datagram, which
+  anyone can send as the host, only the host's advertisement, its answer
+  to a ping and the distributed netcode's own messages.
 
 Every machine in a game must use the same netcode.
 

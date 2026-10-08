@@ -55,6 +55,10 @@ boolean network_connection_connect(
 struct network_connection *network_connection_new(
 	unsigned long flags,
 	word well_known_port);
+#ifdef HALO_LINUX
+boolean network_connection_last_read_was_unreliable(
+	void);
+#endif
 boolean network_connection_read(
 	struct network_connection *connection,
 	void *buffer,
