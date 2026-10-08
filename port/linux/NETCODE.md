@@ -104,7 +104,9 @@ Every machine in a game must use the same netcode.
      melee and vehicles hit, it reports to the host (reliably).
    - The host deals a report once it has checked it: from that machine's
      player; damage one of their weapons (now or in the last ten seconds),
-     their grenades or their vehicle can deal (its projectiles' impacts and
+     a grenade the host saw them throw (its explosion once: that
+     explosion's other hits that tick with it) or their vehicle can deal
+     (its projectiles' impacts and
      detonations, followed through the tags); the target within a few
      world units of where the shooter saw it (more for a fast one); the
      impact at the target (an explosion within its reach); and no more

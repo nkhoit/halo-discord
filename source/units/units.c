@@ -1023,6 +1023,8 @@ static void unit_drop_item(long unit_index, long item_index);
 boolean network_objects_creating_host_object(void);
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
+/* port/linux/game/network_damage.c's */
+void network_damage_note_grenade(long unit_index, short grenade_type);
 #endif
 static void unit_drop_grenades(
 	long unit_index);
@@ -7697,6 +7699,11 @@ static void unit_throw_grenade_move_to_hand(
 		object_attach_to_node(unit_index, object_index, marker.node_index);
 		unit->unit.grenade_object_index = object_index;
 		unit->unit.grenade_throw_state = _unit_grenade_throw_in_hand;
+#ifdef HALO_LINUX
+		/* port: the host takes a client's report of the grenade's damage
+		only from a grenade thrown (network_damage.c) */
+		network_damage_note_grenade(unit_index, unit->unit.current_grenade_index);
+#endif
 	}
 	else
 	{
