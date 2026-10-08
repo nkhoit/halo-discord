@@ -1,12 +1,18 @@
 /* Drives port/web/src/web_online_ui.c: the host's End match mailbox calls
    game_engine_end_game only while a match is running, and never disposes
-   the server. A guest, the lobby, and a closed room do not. */
+   the server. A guest, the lobby, and a closed room do not. The host's
+   Start match counts the lobby down from about five seconds (not Halo's own
+   start: thirty, or five off), again while a machine coming in stops it;
+   and a page with its own picker takes the next match from Halo's. */
 
 #include "web_online_ui.h"
 
 #include <stdio.h>
 
 int platform_web_online_end_match(void);
+int platform_web_online_start_match(void);
+void platform_web_online_set_page_picker(int enabled);
+int web_online_ui_page_picks_next_match(void);
 int platform_web_online_host_configured(int map_index, int mode_index);
 int platform_web_online_request(int command);
 int platform_web_online_get_state(void);
@@ -24,6 +30,9 @@ static int engine_running;
 static int end_calls;
 static int dispose_server_calls;
 static int dispose_client_calls;
+static int start_calls;
+static long start_milliseconds;
+static int unpause_calls;
 static char server_object;
 static char client_object;
 
@@ -107,7 +116,15 @@ unsigned char network_game_client_request_start_time_change(struct network_game_
 void network_game_server_pause_countdown(struct network_game_server *server, unsigned char pause)
 {
 	(void)server;
-	(void)pause;
+	if (!pause)
+		unpause_calls++;
+}
+unsigned char network_game_server_start_countdown_within(struct network_game_server *server, long milliseconds)
+{
+	(void)server;
+	start_calls++;
+	start_milliseconds = milliseconds;
+	return 1;
 }
 short network_game_client_get_error(struct network_game_client *client)
 {
@@ -210,6 +227,31 @@ int main(void)
 	frame();
 	expect(platform_web_online_get_state() == _web_online_state_hosting, "lobby is up");
 
+	expect(!web_online_ui_page_picks_next_match(), "Halo picks the next match unless the page says it does");
+	platform_web_online_set_page_picker(1);
+	expect(web_online_ui_page_picks_next_match(), "the hosting page picks the next match");
+	expect(platform_web_online_start_match() == 1, "start request accepted");
+	frame();
+	expect(start_calls == 1 && start_milliseconds == 5999, "Start match counts down from about five seconds");
+	expect(unpause_calls == 1, "Start match lifts the pause Halo's map select (or the next match's lobby) sets");
+	{
+		int index;
+
+		for (index = 0; index < 12; index++)
+			frame();
+	}
+	expect(start_calls == 2, "a countdown a machine coming in stopped starts again a second later");
+	client_state = 3;
+	frame();
+	client_state = 2;
+	{
+		int index;
+
+		for (index = 0; index < 12; index++)
+			frame();
+	}
+	expect(start_calls == 2, "once the match has started, the request is over");
+
 	engine_running = 0;
 	client_state = 2;
 	expect(platform_web_online_end_match() == 1, "end request accepted");
@@ -257,6 +299,7 @@ int main(void)
 	frame();
 	expect(end_calls == 2, "closing the room drops a pending end");
 	expect(platform_web_online_get_state() == _web_online_state_idle, "the room closed");
+	expect(!web_online_ui_page_picks_next_match(), "a closed room hosts nothing");
 
 	ends = end_calls;
 	expect(platform_web_online_host_configured(0, 0) == 1, "host again");

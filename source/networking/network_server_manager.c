@@ -3236,6 +3236,42 @@ void network_game_server_update_countdown(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* (the browser's host page, its Start match) the lobby counts down from at
+most this long: started if it was not counting down (Halo's own start, A,
+starts the full NETWORK_GAME_COUNTDOWN_TIME), shortened if it counts from
+longer (A takes off NETWORK_GAME_COUNTDOWN_ADJUSTMENT). Halo's rules for a
+countdown still hold: not paused, enough players and teams, and another
+machine in the lobby or joining in progress on. FALSE when they do not
+allow one yet. */
+boolean network_game_server_start_countdown_within(
+	struct network_game_server *server,
+	long milliseconds)
+{
+	if (!server || server->state != _network_game_server_state_pregame ||
+		server->countdown_state.paused || !server_ok_to_countdown(server) ||
+		!(network_game_should_accept_remote_connections() == FALSE ||
+			network_game_server_get_client_machine_count(server) > 1 ||
+			network_game_join_in_progress_enabled()))
+	{
+		return FALSE;
+	}
+	if (!server->countdown_state.active)
+	{
+		server->countdown_state.active = TRUE;
+		countdown_timer_set_time_remaining(&server->countdown_state.timer, milliseconds);
+		server->countdown_state.adjusted_time_this_tick = FALSE;
+		server->countdown_state.last_countdown_message_time = 0;
+	}
+	else if (countdown_timer_get_time_remaining(&server->countdown_state.timer) > milliseconds)
+	{
+		countdown_timer_set_time_remaining(&server->countdown_state.timer, milliseconds);
+		server->countdown_state.last_countdown_message_time = 0;
+	}
+	return TRUE;
+}
+#endif
+
 /* ---------- private code */
 
 void get_unique_random_name(

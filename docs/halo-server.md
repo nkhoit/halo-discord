@@ -112,8 +112,12 @@ chrome they hide; local development keeps upstream's shell as it is):
   loads); while the host's match is starting or full the page shows
   "<host> is in a match" (the host tells the relay when its match starts,
   whether it takes players, and when it ends). The host can start alone.
-- In Halo's lobby a bar shows the room (the host's "Start match" presses A
-  for it). In a match, whenever the game does not have the mouse an overlay
+- In Halo's lobby a bar shows the room. The host's "Start match" counts the
+  lobby down from about five seconds; a click in Halo's lobby is its A (the
+  countdown from 30 seconds, then 5 off for each). After a match the results
+  lead ("Next match", or A) to Halo's lobby with the page's map and game type
+  picker over it, never Halo's own map select; the lobby waits for the host's
+  Start match. In a match, whenever the game does not have the mouse an overlay
   offers Play/Resume, sound on/off and volume (kept in the browser), Game
   menu (Halo's Start, its pause menu). The host can End match (the results,
   then the lobby — everyone stays) or Close room. A guest can Leave game.
