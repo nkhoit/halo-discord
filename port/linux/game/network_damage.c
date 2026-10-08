@@ -15,7 +15,8 @@ being hit looks and feels like on the clients).
 - A client deals no damage itself. What its own players' shots, grenades,
   melee and vehicles hit it reports to the host, which deals it once it has
   checked it: the report is of that machine's player, the damage one that
-  player's weapons (now or lately), grenades or vehicle deal, the target
+  player's weapons (now or lately), a grenade the host saw them throw (its
+  explosion once) or their vehicle deal, the target
   about where the host has it, the impact at the target, and no more
   reports than any weapon could fire. What the shooter saw hit, hits. The
   host's own copies of a client's projectiles deal nothing (the client's
@@ -28,8 +29,10 @@ being hit looks and feels like on the clients).
 #include "game/players.h"
 #include "networking/network_game_globals.h"
 #include "objects/objects.h"
+#include "objects/object_definitions.h"
 #include "objects/damage.h"
 #include "objects/damage_effect_definitions.h"
+#include "physics/collision_model_definitions.h"
 #include "items/weapon_definitions.h"
 #include "items/projectile_definitions.h"
 #include "scenario/scenario.h"
@@ -62,6 +65,12 @@ enum
 	died or dropped the launcher) */
 	MAXIMUM_RECENT_WEAPONS = 8,
 	RECENT_WEAPON_TICKS = 10 * TICKS_PER_SECOND,
+	/* the grenades a player has thrown lately, as the host's own game threw
+	them, whose damage the host takes from them: each goes off once, within
+	RECENT_WEAPON_TICKS of its throw; one that hits nothing is kept that
+	long, so this is more than a player throws in it (a throw takes most of
+	a second); past it the oldest gives way (upstream de520606) */
+	MAXIMUM_GRENADE_THROWS = 32,
 	/* a player's hits: a bucket of this many, filling at this many a
 	second, which no weapon (a shotgun's pellets, a grenade among a crowd)
 	empties */
@@ -91,6 +100,11 @@ from the target */
 #define REPORT_TARGET_TOLERANCE 3.0f
 #define REPORT_TARGET_LEAD_TICKS 15.0f
 #define REPORT_IMPACT_TOLERANCE 2.0f
+/* world units: the furthest from the origin a report's point may be (the
+maps are far smaller); and the hardest a report's damage may be (an
+airborne melee blow's) */
+#define REPORT_WORLD_BOUND 32768.0f
+#define REPORT_MAXIMUM_SCALE 1.5f
 
 /* the host's struct damage_data, as the other machines have it */
 struct distributed_damage
@@ -227,6 +241,13 @@ static struct
 	long vehicle_time;
 	real hit_reports;
 	long hit_reports_time;
+	/* the grenades thrown and not gone off (NONE: none), and the tick's
+	grenade explosion whose other hits come with it: when (NONE: none) and
+	its epicenter */
+	long throw_times[MAXIMUM_GRENADE_THROWS];
+	short throw_types[MAXIMUM_GRENADE_THROWS];
+	long explosion_time;
+	real_point3d explosion_epicenter;
 } damage_players[MAXIMUM_TRACKED_PLAYERS];
 /* for the automated tests' reports (network_test.c) */
 static long damage_rejected_reports;
@@ -535,15 +556,64 @@ static boolean distributed_weapon_deals(
 	return FALSE;
 }
 
-/* whether the player could have dealt the damage: their weapons, lately,
-their grenades, their vehicle */
+/* the oldest grenade of the type thrown within RECENT_WEAPON_TICKS of now
+that has not gone off, NONE for none */
+static short distributed_grenade_throw(
+	long const *times,
+	short const *types,
+	short grenade_type,
+	long now)
+{
+	short index;
+	short oldest = NONE;
+
+	for (index = 0; index < MAXIMUM_GRENADE_THROWS; index++)
+	{
+		if (times[index] != NONE && types[index] == grenade_type && now - times[index] <= RECENT_WEAPON_TICKS &&
+			(oldest == NONE || times[index] < times[oldest]))
+		{
+			oldest = index;
+		}
+	}
+	return oldest;
+}
+
+/* a throw noted, in a free place, else the oldest's */
+static void distributed_grenade_note(
+	long *times,
+	short *types,
+	short grenade_type,
+	long now)
+{
+	short index;
+	short slot = 0;
+
+	for (index = 0; index < MAXIMUM_GRENADE_THROWS; index++)
+	{
+		if (times[index] == NONE)
+		{
+			slot = index;
+			break;
+		}
+		if (times[index] < times[slot])
+			slot = index;
+	}
+	times[slot] = now;
+	types[slot] = grenade_type;
+}
+
+/* whether the player could have dealt the damage: their weapons, lately, a
+grenade (grenade_type: which, when nothing else of theirs deals it, else
+NONE), their vehicle */
 static boolean distributed_player_deals(
 	short player_index,
-	long damage_index)
+	long damage_index,
+	short *grenade_type)
 {
 	struct game_globals *globals = scenario_get_game_globals();
 	short index;
 
+	*grenade_type = NONE;
 	for (index = 0; index < MAXIMUM_RECENT_WEAPONS; index++)
 	{
 		if (damage_players[player_index].definition_indices[index] != NONE &&
@@ -552,14 +622,6 @@ static boolean distributed_player_deals(
 		{
 			return TRUE;
 		}
-	}
-	for (index = 0; index < globals->grenades.count; index++)
-	{
-		struct game_globals_grenade *grenade = TAG_BLOCK_GET_ELEMENT(&globals->grenades, index,
-			struct game_globals_grenade);
-
-		if (distributed_projectile_deals(grenade->projectile.index, damage_index, 0))
-			return TRUE;
 	}
 	if (game_time_get() - damage_players[player_index].vehicle_time <= RECENT_WEAPON_TICKS &&
 		globals->falling_damage.count > 0)
@@ -570,6 +632,17 @@ static boolean distributed_player_deals(
 		if (falling_damage->vehicle_killed_unit_damage_effect.index == damage_index ||
 			falling_damage->vehicle_collision_damage.index == damage_index)
 		{
+			return TRUE;
+		}
+	}
+	for (index = 0; index < globals->grenades.count && index < NUMBER_OF_UNIT_GRENADE_TYPES; index++)
+	{
+		struct game_globals_grenade *grenade = TAG_BLOCK_GET_ELEMENT(&globals->grenades, index,
+			struct game_globals_grenade);
+
+		if (distributed_projectile_deals(grenade->projectile.index, damage_index, 0))
+		{
+			*grenade_type = index;
 			return TRUE;
 		}
 	}
@@ -633,6 +706,70 @@ static void distributed_note_weapons(
 	}
 }
 
+/* whether the number is finite (NaN and the infinities less themselves are
+not 0) */
+static boolean distributed_real_valid(
+	real value)
+{
+	return value - value == 0.0f;
+}
+
+/* whether the point is finite and within bound of the origin */
+static boolean distributed_point_valid(
+	real_point3d const *point,
+	real bound)
+{
+	return distributed_real_valid(point->x) && distributed_real_valid(point->y) && distributed_real_valid(point->z) &&
+		fabsf(point->x) <= bound && fabsf(point->y) <= bound && fabsf(point->z) <= bound;
+}
+
+/* whether a report's numbers are ones the game can take: finite, its points
+in the world, its direction and normal no longer than a unit's few, its
+damage no harder than a blow can be (upstream e7d1ed3a, 0d548798) */
+static boolean distributed_report_numbers_valid(
+	struct distributed_hit_report const *report)
+{
+	struct distributed_damage const *damage = &report->damage;
+
+	return distributed_point_valid(&damage->origin, REPORT_WORLD_BOUND) &&
+		distributed_point_valid(&damage->epicenter, REPORT_WORLD_BOUND) &&
+		distributed_point_valid((real_point3d const *)&damage->direction, 2.0f) &&
+		distributed_point_valid(&report->target_position, REPORT_WORLD_BOUND) &&
+		(!report->has_normal || distributed_point_valid((real_point3d const *)&report->object_normal, 2.0f)) &&
+		distributed_real_valid(damage->multiplier) && distributed_real_valid(damage->material_effect_scale) &&
+		damage->scale >= 0.0f && damage->scale <= REPORT_MAXIMUM_SCALE;
+}
+
+/* whether a report's node, region and material are its target's (or NONE):
+object_cause_damage asserts on a region past the object's (upstream
+e7d1ed3a, 671cc9ed) */
+static boolean distributed_report_indices_valid(
+	struct distributed_hit_report const *report)
+{
+	struct object_datum *object = object_get(report->object_index);
+	long collision_model_index = object_definition_get(object->definition_index)->object.collision_model.index;
+	struct collision_model *collision_model = collision_model_index != NONE ?
+		collision_model_definition_get(collision_model_index) : NULL;
+
+	if (report->node_index != NONE &&
+		(report->node_index < 0 || !object_has_node(report->object_index, report->node_index)))
+	{
+		return FALSE;
+	}
+	if (report->region_index != NONE && (report->region_index < 0 ||
+		report->region_index >= MAXIMUM_REGIONS_PER_OBJECT || !collision_model ||
+		report->region_index >= collision_model->resistance.regions.count))
+	{
+		return FALSE;
+	}
+	if (report->material_index != NONE && (report->material_index < 0 || !collision_model ||
+		report->material_index >= collision_model->resistance.materials.count))
+	{
+		return FALSE;
+	}
+	return TRUE;
+}
+
 /* whether the host takes the report */
 static boolean distributed_report_valid(
 	long machine_index,
@@ -645,6 +782,9 @@ static boolean distributed_report_valid(
 	real dx, dy, dz;
 	real impact_distance_squared;
 	real reach;
+	short grenade_type;
+	short throw_index = NONE;
+	boolean area = TEST_FLAG(report->damage.flags, _damage_area_of_effect_bit) != 0;
 
 	/* that machine's player */
 	if (player_index == NO_PLAYER || player_index >= MAXIMUM_TRACKED_PLAYERS ||
@@ -657,8 +797,11 @@ static boolean distributed_report_valid(
 		_object_mask_biped | _object_mask_vehicle | _object_mask_weapon | _object_mask_equipment);
 	if (!target || !tag_index_is_group(report->damage.definition_index, DAMAGE_EFFECT_DEFINITION_TAG))
 		return FALSE;
+	/* numbers the game can take; the target's own node, region and material */
+	if (!distributed_report_numbers_valid(report) || !distributed_report_indices_valid(report))
+		return FALSE;
 	/* damage that player could deal */
-	if (!distributed_player_deals(player_index, report->damage.definition_index))
+	if (!distributed_player_deals(player_index, report->damage.definition_index, &grenade_type))
 		return FALSE;
 	/* the target about where the host has it */
 	tolerance = REPORT_TARGET_TOLERANCE + REPORT_TARGET_LEAD_TICKS *
@@ -672,8 +815,11 @@ static boolean distributed_report_valid(
 		return FALSE;
 	/* the impact at the target (an explosion's within its reach) */
 	definition = damage_effect_definition_get(report->damage.definition_index);
+	/* (of its shape: dealt over an area only by a damage with a reach) */
+	if (area && !(definition->cutoff_radius > 0.0f))
+		return FALSE;
 	reach = target->object.bounding_sphere_radius + REPORT_IMPACT_TOLERANCE;
-	if (TEST_FLAG(report->damage.flags, _damage_area_of_effect_bit))
+	if (area)
 		reach += definition->cutoff_radius;
 	dx = report->damage.origin.x - report->target_position.x;
 	dy = report->damage.origin.y - report->target_position.y;
@@ -685,6 +831,27 @@ static boolean distributed_report_valid(
 	impact_distance_squared = MIN(impact_distance_squared, dx * dx + dy * dy + dz * dz);
 	if (impact_distance_squared > reach * reach)
 		return FALSE;
+	/* what only a grenade of theirs deals, from one the host saw them throw
+	that has not gone off: its explosion once (all its damage that tick, at
+	its epicenter, comes with it: a grenade's detonation deals more than one
+	damage effect), what it hits at a point while it is about (upstream
+	de520606) */
+	if (grenade_type != NONE)
+	{
+		boolean same_explosion =
+			damage_players[player_index].explosion_time == game_time_get() &&
+			damage_players[player_index].explosion_epicenter.x == report->damage.epicenter.x &&
+			damage_players[player_index].explosion_epicenter.y == report->damage.epicenter.y &&
+			damage_players[player_index].explosion_epicenter.z == report->damage.epicenter.z;
+
+		if (!same_explosion)
+		{
+			throw_index = distributed_grenade_throw(damage_players[player_index].throw_times,
+				damage_players[player_index].throw_types, grenade_type, game_time_get());
+			if (throw_index == NONE)
+				return FALSE;
+		}
+	}
 	/* no more than any weapon fires */
 	{
 		real *hit_reports = &damage_players[player_index].hit_reports;
@@ -696,6 +863,14 @@ static boolean distributed_report_valid(
 		if (*hit_reports < 1.0f)
 			return FALSE;
 		*hit_reports -= 1.0f;
+	}
+	/* (the grenade gone off: its throw spent, its explosion's other hits
+	this tick free) */
+	if (throw_index != NONE && area)
+	{
+		damage_players[player_index].throw_times[throw_index] = NONE;
+		damage_players[player_index].explosion_time = game_time_get();
+		damage_players[player_index].explosion_epicenter = report->damage.epicenter;
 	}
 	return TRUE;
 }
@@ -914,7 +1089,32 @@ void network_damage_new_game(
 
 		for (index = 0; index < MAXIMUM_RECENT_WEAPONS; index++)
 			damage_players[player_index].definition_indices[index] = NONE;
+		for (index = 0; index < MAXIMUM_GRENADE_THROWS; index++)
+			damage_players[player_index].throw_times[index] = NONE;
+		damage_players[player_index].explosion_time = NONE;
 		damage_players[player_index].vehicle_time = -RECENT_WEAPON_TICKS - 1;
 		damage_players[player_index].hit_reports = HIT_REPORT_BURST;
 	}
+}
+
+/* the host: a grenade a player's unit threw (units.c), as the host's own
+game threw it, whose damage that player's machine reports
+(distributed_report_valid) */
+void network_damage_note_grenade(
+	long unit_index,
+	short grenade_type)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	long player_index;
+
+	if (!network_game_distributed() || game_connection() != _game_connection_network_server ||
+		unit->unit.player_index == NONE || grenade_type < 0 || grenade_type >= NUMBER_OF_UNIT_GRENADE_TYPES)
+	{
+		return;
+	}
+	player_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(unit->unit.player_index);
+	if (player_index < 0 || player_index >= MAXIMUM_TRACKED_PLAYERS)
+		return;
+	distributed_grenade_note(damage_players[player_index].throw_times, damage_players[player_index].throw_types,
+		grenade_type, game_time_get());
 }

@@ -191,6 +191,7 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#include "cseries/cseries_windows.h"
 #include "bungie_net/common/message_header.h"
 #include "bungie_net/network/transport.h"
 #include "bungie_net/network/transport_endpoint_winsock.h"
@@ -203,6 +204,8 @@ symbols in this file:
 #ifdef HALO_LINUX
 /* port/linux/game/network_distributed.c's */
 void network_distributed_handle_message(long machine_index, word const *message, word size);
+/* network_connection.c's */
+boolean network_connection_last_read_was_unreliable(void);
 #endif
 
 /* ---------- constants */
@@ -534,6 +537,28 @@ boolean network_game_client_handle_message(
 	{
 		network_event("client received client message with invalid flags");
 	}
+#ifdef HALO_LINUX
+	/* port: the host sends every message of the game over its connection,
+	only its advertisement and its answer to a ping in datagrams (and the
+	distributed netcode's messages, _message_type_data, which are checked as
+	the host's elsewhere): a datagram, which anyone can send as the host, is
+	taken for nothing else (upstream 54abd344) */
+	else if (message_type == _message_type_packet && network_connection_last_read_was_unreliable() &&
+		((byte *)message)[message_size - 1] != _message_server_game_advertise &&
+		((byte *)message)[message_size - 1] != _message_server_pong)
+	{
+		static unsigned long last_logged_time;
+		static boolean logged;
+		unsigned long now = system_milliseconds();
+
+		if (!logged || now - last_logged_time >= 1000)
+		{
+			network_event("ignoring a game message of type %d in a datagram", ((byte *)message)[message_size - 1]);
+			last_logged_time = now;
+			logged = TRUE;
+		}
+	}
+#endif
 	else
 	{
 		switch (message_type)
