@@ -54,6 +54,12 @@ window.addEventListener("error", (event) => {
   reportError("error", event.error || event.message);
 });
 
+/* A stage of the start-up, for the start-up report (hosted.js's boot recorder,
+   which runs before this script and reads the queue). */
+function bootStage(name, detail = null) {
+  (window.HaloBootEvents = window.HaloBootEvents || []).push([name, performance.now(), detail]);
+}
+
 function meta(name) {
   const element = document.querySelector(`meta[name="${name}"]`);
   return element ? element.content : null;
@@ -192,8 +198,10 @@ async function main() {
 
   await status("Connecting to Discord…");
   await sdk.ready();
+  bootStage("sdk-ready");
 
   if (!self.crossOriginIsolated) {
+    bootStage("failed", "not-isolated");
     const box = await panel(
       "Halo can't run in this Discord client",
       "Halo needs cross-origin isolation for threaded WebAssembly, which this Discord client does not " +
@@ -209,6 +217,7 @@ async function main() {
 
   await status("Signing in with Discord…");
   let session = await signIn(sdk, clientId);
+  bootStage("signed-in");
   let channelName = null;
   voiceChannelName(sdk).then((name) => { channelName = name; });
   window.HaloActivity = Object.freeze({
@@ -238,12 +247,15 @@ function startGame() {
   module.locateFile = (path, directory) => directory + path + (path === "halo.wasm" ? suffix : "");
   const script = document.createElement("script");
   script.src = `halo.js${suffix}`;
+  script.addEventListener("load", () => bootStage("halo-js"));
+  script.addEventListener("error", () => bootStage("failed", "halo-js"));
   document.head.append(script);
 }
 
 main().catch(async (error) => {
   console.error("Halo Activity start-up failed:", error);
   reportError("startup", error);
+  bootStage("failed", "startup");
   await panel("Halo could not start", error && error.message ? error.message : String(error),
     [{ label: "Try again", run: () => location.reload() }]);
 });

@@ -442,6 +442,39 @@ Existing Headers" makes the origin authoritative everywhere.
   (144 sockets), 16 KiB frames, 64 KiB
   batches; malformed frames close the socket (1003/1008/1009).
 - Rotating `TOKEN_SECRET` signs everyone out.
+- Start-ups: each launch of the page posts one `boot` line (`POST
+  /v1/client-boot`, rate-limited like `client-error`). Each line has the
+  Discord user ID (or `null` before sign-in) and `boot.kind`:
+  - `done`: the lobby or the room showed;
+  - `stalled`: no stage advanced for 30 s, at most three a launch;
+  - `failed`: the start gave up;
+  - `unload`: the page went before any of those.
+
+  `boot.stages` gives when each stage was reached, in milliseconds from the
+  navigation. In order: `page`, `sdk-ready` (Activity), `signed-in`, `halo-js`,
+  `storage`, `runtime` (the wasm compiled, instantiated and initialized),
+  `renderer` (first GL context), `presented` (first frame shown), `menu`
+  (Halo's main menu), `relay` (the room's relay socket ready) and `shown`
+  (the lobby or the room shows, over the game's first frames).
+  A launch that never connects lacks `relay`, and a lone picker never needs
+  it.
+
+  `stalled` and `unload` lines name the last stage reached (`stuck`), how
+  long ago (`stuckMs`), and the last few console errors (`lines`, with
+  addresses and quoted text removed). `failed` lines add `reason`:
+  `not-isolated`, `halo-js`, `startup`, `runtime-error` or `runtime-abort`.
+
+  Other fields:
+  - `js` and `wasm`: when each had arrived, `cached` (from the browser's
+    cache) and size;
+  - `storage`: `opfs` or `memory`, with the storage lock's answer (`held`:
+    another copy of the game has it);
+  - `shaders`: programs built ahead and their time;
+  - `hidden`: the page was hidden at some point (browsers throttle hidden
+    pages);
+  - `view`: what showed.
+
+  For example, `sudo docker logs halo-server 2>&1 | grep '"event":"boot"'`.
 
 ## Teardown
 

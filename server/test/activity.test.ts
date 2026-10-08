@@ -25,6 +25,7 @@ async function launch() {
   const element = () => ({ style: {}, append() {}, setAttribute() {}, addEventListener() {} });
   const context: Record<string, unknown> = {
     console: fakeConsole,
+    performance: { now: () => 7 },
     location: new URL("http://localhost:8090/?frame_id=f&instance_id=i-1&dev_user=Alice"),
     URL, URLSearchParams, setTimeout, clearTimeout, Promise, Error, JSON, Object, Array, Boolean, String, Date,
     crossOriginIsolated: true,
@@ -62,6 +63,9 @@ describe("the Activity start-up script", () => {
     const { context, appended, fakeConsole, info } = await launch();
     expect(appended.map((child) => child.src)).toEqual(["halo.js?v=abc"]);
     expect((context.HaloActivity as { roomId: string }).roomId).toBe("room");
+    /* the start-up report's stages, for hosted.js's boot recorder */
+    expect((context.HaloBootEvents as [string, number, unknown][]).map((event) => event[0]))
+      .toEqual(["sdk-ready", "signed-in"]);
     /* With console capture on, the stand-in (like the SDK) wraps console.info
        and Discord rejects long lines, which became a fatal start-up error. */
     expect(fakeConsole.info).toBe(info);

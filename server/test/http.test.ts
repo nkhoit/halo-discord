@@ -598,3 +598,39 @@ describe("client error reports", () => {
     expect((await post(JSON.stringify({ message: "x".repeat(3000) }), `halo_session=${token("44")}`)).status).toBe(413);
   });
 });
+
+describe("start-up reports", () => {
+  const post = (body: string, cookie?: string) => fetch(`${server.base}/v1/client-boot`, {
+    method: "POST", body, headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
+  });
+  const report = {
+    kind: "stalled", context: "activity", build: "0123abcd", elapsedMs: 41234.6,
+    stages: { "page": 120, "sdk-ready": 900, "signed-in": 1800, "halo-js": 2500 },
+    stuck: "halo-js", stuckMs: 38734, isolated: true, hidden: false,
+    wasm: { ms: 2600, cached: false, kb: 2826 }, lines: ["halo-linux: could not open\u0007 the map"],
+    secret: "dropped", extra: { nested: true },
+  };
+
+  it("log the report's known fields with the player's ID, a few at a time", async () => {
+    expect((await post(JSON.stringify(report), `halo_session=${token("42")}`)).status).toBe(204);
+    expect(server.logs.find((entry) => entry.event === "boot")).toEqual({
+      event: "boot", user: "42", boot: {
+        kind: "stalled", context: "activity", build: "0123abcd", elapsedMs: 41235,
+        stages: { "page": 120, "sdk-ready": 900, "signed-in": 1800, "halo-js": 2500 },
+        stuck: "halo-js", stuckMs: 38734, isolated: true, hidden: false,
+        wasm: { ms: 2600, cached: false, kb: 2826 }, lines: ["halo-linux: could not open the map"],
+      },
+    });
+    expect((await post(JSON.stringify(report), `halo_session=${token("42")}`)).status).toBe(429);
+    expect((await post(JSON.stringify(report))).status).toBe(204);
+    expect(server.logs.filter((entry) => entry.event === "boot").at(-1)).toMatchObject({ user: null });
+  });
+
+  it("refuse what is not a report", async () => {
+    expect((await post("[]", `halo_session=${token("43")}`)).status).toBe(400);
+    await new Promise((resolve) => setTimeout(resolve, 520));
+    expect((await post(JSON.stringify({ ...report, kind: "other" }), `halo_session=${token("43")}`)).status).toBe(400);
+    expect((await post(JSON.stringify({ ...report, lines: ["x".repeat(5000)] }), `halo_session=${token("44")}`)).status)
+      .toBe(413);
+  });
+});

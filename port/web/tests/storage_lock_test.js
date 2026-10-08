@@ -12,6 +12,8 @@ two loads model two tabs in one browser profile. */
 function loadPage(held, options = {}) {
   const dependencies = new Set();
   const context = {
+    window: {},
+    performance: { now: () => 1234 },
     ENVIRONMENT_IS_PTHREAD: !!options.pthread,
     Module: {},
     navigator: options.noLocks ? {} : {
@@ -31,7 +33,7 @@ function loadPage(held, options = {}) {
   };
   vm.runInNewContext(source, context);
   for (const callback of context.Module.preRun || []) callback();
-  return { Module: context.Module, dependencies };
+  return { Module: context.Module, dependencies, boot: () => JSON.parse(JSON.stringify(context.window.HaloBootEvents || [])) };
 }
 
 const held = new Set();
@@ -39,11 +41,14 @@ const first = loadPage(held);
 assert.equal(first.Module.haloStorageExclusive, true);
 assert.equal(first.dependencies.size, 0, 'the lock answer must release the run dependency');
 assert(held.has('halo-storage'), 'the first copy must keep the lock while it runs');
+assert.deepEqual(first.boot(), [['storage', 1234, { mode: 'opfs', lock: 'granted' }]],
+  'the start-up report learns the storage and the lock\'s answer');
 
 const second = loadPage(held);
 assert.equal(second.Module.haloStorageExclusive, false,
   'a second copy in the same profile must fall back to in-memory storage');
 assert.equal(second.dependencies.size, 0);
+assert.deepEqual(second.boot()[0][2], { mode: 'memory', lock: 'held' });
 
 const otherProfile = loadPage(new Set());
 assert.equal(otherProfile.Module.haloStorageExclusive, true);
@@ -51,6 +56,7 @@ assert.equal(otherProfile.Module.haloStorageExclusive, true);
 const noLocks = loadPage(new Set(), { noLocks: true });
 assert.equal(noLocks.Module.haloStorageExclusive, true,
   'browsers without Web Locks keep the previous OPFS behaviour');
+assert.deepEqual(noLocks.boot()[0][2], { mode: 'opfs', lock: 'none' });
 
 const worker = loadPage(new Set(), { pthread: true });
 assert.equal(worker.Module.preRun, undefined, 'pthread workers must not take the lock');
@@ -64,5 +70,6 @@ for (const [label, locks] of [
     assert.equal(refused.dependencies.size, 0,
       `a lock request that ${label} must still release startup`);
     assert.equal(refused.Module.haloStorageExclusive, true);
+    assert.deepEqual(refused.boot()[0][2], { mode: 'opfs', lock: 'refused' });
   });
 }
