@@ -1094,6 +1094,13 @@ void update_client_handle_server_update(
 			update_client_relayed_actions[action_index].pending_control_flags |= update->actions[action_index].control_flags;
 		}
 #endif
+		/* port: the distributed client plays on its own clock
+		(update_client_dequeue_distributed) and takes only the relayed
+		actions from the host's update. Its stock queue follows this
+		machine's ticks, not the host's update numbers, which arrive
+		behind them, so queueing the update failed (logging "failed to get
+		an update") on every tick (upstream 84ed39e2's network half). */
+		return;
 	}
 #endif
 	if (client_update)
@@ -1132,12 +1139,26 @@ void update_client_handle_server_update(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* port: the distributed netcode's record of each player's latest input,
+forgotten for a new game (network_distributed_new_game) as after loading
+one: a game numbers its updates from the start again, so the last game's
+latest, kept, would be later than any of this game's, and a client would
+drop every relayed update as old (the other players driven by the last
+game's last input) until this game's numbers passed it */
+void update_queues_distributed_reset(
+	void)
+{
+	csmemset(update_server_pending_control_flags, 0, sizeof(update_server_pending_control_flags));
+	update_client_relayed_reset();
+}
+
+#endif
 void update_queues_reset_and_fill_with_lies(
 	void)
 {
 #ifdef HALO_LINUX
-	csmemset(update_server_pending_control_flags, 0, sizeof(update_server_pending_control_flags));
-	update_client_relayed_reset();
+	update_queues_distributed_reset();
 #endif
 	if (update_server_globals.initialized)
 	{

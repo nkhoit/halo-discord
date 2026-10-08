@@ -77,6 +77,8 @@ void network_player_show_pickup(long player_index, short kind, long definition_i
 void game_engine_client_respawned(long player_index);
 long game_engine_write_network_state(byte *buffer, long size);
 void game_engine_read_network_state(byte const *buffer, long size);
+/* player_queues_new.c's */
+void update_queues_distributed_reset(void);
 
 enum
 {
@@ -2178,6 +2180,8 @@ void network_distributed_new_game(
 #endif
 	distributed_statistics_due = FALSE;
 	distributed_pickup_count = 0;
+	/* (each player's latest input: player_queues_new.c) */
+	update_queues_distributed_reset();
 #ifdef HALO_WEB
 	distributed_game_state_sent_size = 0;
 	distributed_game_state_sent_time = NONE;

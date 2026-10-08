@@ -23,7 +23,10 @@ with ideas from VALORANT's netcode articles, keeping the 30 Hz tick:
   catches up two a tick where that changes no press or release; with none
   in hand it holds the last (`source/game/player_queues_new.c`,
   `tests/relayed_input_test`). The native builds run the newest, held until
-  a newer arrives.
+  a newer arrives. Each game numbers its updates from the start, so what a
+  machine kept of the last game's (the newest relayed update, its queue)
+  is forgotten when the next game's map is set up
+  (`network_distributed_new_game`).
 - **Host authoritative.** The host alone decides damage, deaths, spawns,
   pickups, scores and the game's objects; clients do not decide them but
   apply what the host sends.

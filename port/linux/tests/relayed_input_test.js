@@ -23,6 +23,9 @@ try {
   fs.writeFileSync(path.join(temp, 'relayed_input.inc'), lines(queues,
     '/* the distributed netcode (port/linux/NETCODE.md): the action a client\'s',
     '\t\tupdate_client_relayed_queue.window_ticks = 0;\n\t}\n}\n') + '\n');
+  fs.writeFileSync(path.join(temp, 'distributed_reset.inc'), lines(queues,
+    'void update_queues_distributed_reset(',
+    '\tupdate_client_relayed_reset();\n}\n') + '\n');
   const cc = process.env.CC || 'cc';
   const web = /emcc/.test(path.basename(cc));
   const output = path.join(temp, web ? 'relayed-input-test.js' : 'relayed-input-test');
