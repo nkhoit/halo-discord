@@ -29,8 +29,10 @@ being hit looks and feels like on the clients).
 #include "game/players.h"
 #include "networking/network_game_globals.h"
 #include "objects/objects.h"
+#include "objects/object_definitions.h"
 #include "objects/damage.h"
 #include "objects/damage_effect_definitions.h"
+#include "physics/collision_model_definitions.h"
 #include "items/weapon_definitions.h"
 #include "items/projectile_definitions.h"
 #include "scenario/scenario.h"
@@ -98,6 +100,11 @@ from the target */
 #define REPORT_TARGET_TOLERANCE 3.0f
 #define REPORT_TARGET_LEAD_TICKS 15.0f
 #define REPORT_IMPACT_TOLERANCE 2.0f
+/* world units: the furthest from the origin a report's point may be (the
+maps are far smaller); and the hardest a report's damage may be (an
+airborne melee blow's) */
+#define REPORT_WORLD_BOUND 32768.0f
+#define REPORT_MAXIMUM_SCALE 1.5f
 
 /* the host's struct damage_data, as the other machines have it */
 struct distributed_damage
@@ -699,6 +706,70 @@ static void distributed_note_weapons(
 	}
 }
 
+/* whether the number is finite (NaN and the infinities less themselves are
+not 0) */
+static boolean distributed_real_valid(
+	real value)
+{
+	return value - value == 0.0f;
+}
+
+/* whether the point is finite and within bound of the origin */
+static boolean distributed_point_valid(
+	real_point3d const *point,
+	real bound)
+{
+	return distributed_real_valid(point->x) && distributed_real_valid(point->y) && distributed_real_valid(point->z) &&
+		fabsf(point->x) <= bound && fabsf(point->y) <= bound && fabsf(point->z) <= bound;
+}
+
+/* whether a report's numbers are ones the game can take: finite, its points
+in the world, its direction and normal no longer than a unit's few, its
+damage no harder than a blow can be (upstream e7d1ed3a, 0d548798) */
+static boolean distributed_report_numbers_valid(
+	struct distributed_hit_report const *report)
+{
+	struct distributed_damage const *damage = &report->damage;
+
+	return distributed_point_valid(&damage->origin, REPORT_WORLD_BOUND) &&
+		distributed_point_valid(&damage->epicenter, REPORT_WORLD_BOUND) &&
+		distributed_point_valid((real_point3d const *)&damage->direction, 2.0f) &&
+		distributed_point_valid(&report->target_position, REPORT_WORLD_BOUND) &&
+		(!report->has_normal || distributed_point_valid((real_point3d const *)&report->object_normal, 2.0f)) &&
+		distributed_real_valid(damage->multiplier) && distributed_real_valid(damage->material_effect_scale) &&
+		damage->scale >= 0.0f && damage->scale <= REPORT_MAXIMUM_SCALE;
+}
+
+/* whether a report's node, region and material are its target's (or NONE):
+object_cause_damage asserts on a region past the object's (upstream
+e7d1ed3a, 671cc9ed) */
+static boolean distributed_report_indices_valid(
+	struct distributed_hit_report const *report)
+{
+	struct object_datum *object = object_get(report->object_index);
+	long collision_model_index = object_definition_get(object->definition_index)->object.collision_model.index;
+	struct collision_model *collision_model = collision_model_index != NONE ?
+		collision_model_definition_get(collision_model_index) : NULL;
+
+	if (report->node_index != NONE &&
+		(report->node_index < 0 || !object_has_node(report->object_index, report->node_index)))
+	{
+		return FALSE;
+	}
+	if (report->region_index != NONE && (report->region_index < 0 ||
+		report->region_index >= MAXIMUM_REGIONS_PER_OBJECT || !collision_model ||
+		report->region_index >= collision_model->resistance.regions.count))
+	{
+		return FALSE;
+	}
+	if (report->material_index != NONE && (report->material_index < 0 || !collision_model ||
+		report->material_index >= collision_model->resistance.materials.count))
+	{
+		return FALSE;
+	}
+	return TRUE;
+}
+
 /* whether the host takes the report */
 static boolean distributed_report_valid(
 	long machine_index,
@@ -726,6 +797,9 @@ static boolean distributed_report_valid(
 		_object_mask_biped | _object_mask_vehicle | _object_mask_weapon | _object_mask_equipment);
 	if (!target || !tag_index_is_group(report->damage.definition_index, DAMAGE_EFFECT_DEFINITION_TAG))
 		return FALSE;
+	/* numbers the game can take; the target's own node, region and material */
+	if (!distributed_report_numbers_valid(report) || !distributed_report_indices_valid(report))
+		return FALSE;
 	/* damage that player could deal */
 	if (!distributed_player_deals(player_index, report->damage.definition_index, &grenade_type))
 		return FALSE;
@@ -741,8 +815,11 @@ static boolean distributed_report_valid(
 		return FALSE;
 	/* the impact at the target (an explosion's within its reach) */
 	definition = damage_effect_definition_get(report->damage.definition_index);
+	/* (of its shape: dealt over an area only by a damage with a reach) */
+	if (area && !(definition->cutoff_radius > 0.0f))
+		return FALSE;
 	reach = target->object.bounding_sphere_radius + REPORT_IMPACT_TOLERANCE;
-	if (TEST_FLAG(report->damage.flags, _damage_area_of_effect_bit))
+	if (area)
 		reach += definition->cutoff_radius;
 	dx = report->damage.origin.x - report->target_position.x;
 	dy = report->damage.origin.y - report->target_position.y;
