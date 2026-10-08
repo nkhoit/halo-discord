@@ -26,6 +26,7 @@ import {
 } from "./protocol.ts";
 import { type Access, consoleLog, type Log, Relay } from "./relay.ts";
 import { activityBundle } from "./bundle.ts";
+import { cleanBootReport, MAXIMUM_BOOT_REPORT_BYTES } from "./boot.ts";
 import {
   ACTIVITY_CSP,
   buildFile,
@@ -82,6 +83,8 @@ const MAXIMUM_NETSTATS_BYTES = 16 * 1024;
 const CLIENT_ERROR_INTERVAL_MILLISECONDS = 1000;
 const MAXIMUM_CLIENT_ERRORS_PER_MINUTE = 60;
 const MAXIMUM_CLIENT_ERROR_BYTES = 2048;
+const BOOT_REPORT_INTERVAL_MILLISECONDS = 500;
+const MAXIMUM_BOOT_REPORTS_PER_MINUTE = 120;
 
 async function readSmallJson(request: IncomingMessage, limit: number): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -232,6 +235,33 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
     reply(204);
   }
 
+  /* A page's start-up report (hosted.js's boot recorder; server/src/boot.ts):
+     how long each stage of a launch took, and where it stalled. As
+     client-errors: also before sign-in, keyed by the user or else the
+     address, and a global cap; only the report's known fields are logged. */
+  const bootLast = new Map<string, number>();
+  const bootMinute = { start: 0, count: 0 };
+  async function receiveBootReport(request: IncomingMessage, response: ServerResponse,
+      headers: Record<string, string>): Promise<void> {
+    const reply = (status: number) => response.writeHead(status, headers).end();
+    const session = requestSession(config, request);
+    const key = session?.sub ?? clientAddress(config, request);
+    const now = Date.now();
+    if (now - bootMinute.start >= 60_000) Object.assign(bootMinute, { start: now, count: 0 });
+    if (now - (bootLast.get(key) ?? 0) < BOOT_REPORT_INTERVAL_MILLISECONDS ||
+        ++bootMinute.count > MAXIMUM_BOOT_REPORTS_PER_MINUTE) {
+      return void reply(429);
+    }
+    bootLast.set(key, now);
+    if (bootLast.size > 10_000) bootLast.clear();
+    const body = await readSmallJson(request, MAXIMUM_BOOT_REPORT_BYTES);
+    if (body === "too large") return void reply(413);
+    const boot = cleanBootReport(body);
+    if (!boot) return void reply(400);
+    log({ event: "boot", user: session?.sub ?? null, boot });
+    reply(204);
+  }
+
   async function versions(): Promise<AssetVersions> {
     return { app: await appVersion(), activity: contentVersion(await activityBundle()), icons: iconVersions,
       hostedScript: hosted["hosted.js"]!.version, hostedStyle: hosted["hosted.css"]!.version };
@@ -253,6 +283,7 @@ export function createApp(config: Config, discord: DiscordApi | null, log: Log =
       if (await auth.handle(request, response, new URL(path + url.search, url))) return;
       if (path === "/v1/netstats" && request.method === "POST") return receiveNetstats(request, response, headers);
       if (path === "/v1/client-errors" && request.method === "POST") return receiveClientError(request, response, headers);
+      if (path === "/v1/client-boot" && request.method === "POST") return receiveBootReport(request, response, headers);
       if (request.method !== "GET" && request.method !== "HEAD") {
         response.writeHead(405, { Allow: "GET, HEAD", "Cache-Control": NO_STORE }).end();
         return;

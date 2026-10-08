@@ -134,6 +134,8 @@ static atomic_int web_online_requested_start = ATOMIC_VAR_INIT(0);
 /* the page picks the next match (its picker after the results), so Halo's
 host goes from the results to its lobby, not to its own map select */
 static atomic_int web_online_page_picker = ATOMIC_VAR_INIT(0);
+/* Halo's main menu has loaded (the page's start-up report) */
+static atomic_int web_online_main_menu_loaded = ATOMIC_VAR_INIT(0);
 /* the host asks to end the running match (1), as a score or time limit does */
 static atomic_int web_online_requested_end = ATOMIC_VAR_INIT(0);
 /* the page's choice whether a host lets players join its running match
@@ -910,12 +912,20 @@ static void update_join(float seconds)
 		fail_session(_web_online_error_join_failed);
 }
 
+/* (the hosted page's start-up report) whether Halo's main menu has loaded */
+EMSCRIPTEN_KEEPALIVE int platform_web_online_main_menu_loaded(void)
+{
+	return atomic_load_explicit(&web_online_main_menu_loaded, memory_order_acquire);
+}
+
 void web_online_ui_update(int main_menu_loaded, float seconds)
 {
 	int join_in_progress = atomic_exchange_explicit(
 		&web_online_requested_join_in_progress, -1, memory_order_acq_rel);
 	int request;
 
+	if (main_menu_loaded)
+		atomic_store_explicit(&web_online_main_menu_loaded, 1, memory_order_release);
 	/* The lobby's red/blue choice, and the roster every machine is showing.
 	   Both run whether or not a browser session is opening: a team click only
 	   lands in pregame, and an idle client publishes an empty roster. */

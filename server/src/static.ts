@@ -143,19 +143,23 @@ function scriptPattern(source: string): RegExp {
    pthread workers reuse) and, through Module.locateFile, halo.wasm?v=. It
    waits for the shell script, which defines Module. Shared with activity.js. */
 export const START_GAME =
+  `function haloBoot(n,d){(window.HaloBootEvents=window.HaloBootEvents||[]).push([n,performance.now(),d||null])}\n` +
   `function haloStartGame(){var m=document.querySelector('meta[name="halo-asset-version"]');` +
   `var v=m&&m.content?"?v="+encodeURIComponent(m.content):"";` +
   `var go=function(){var M=window.Module=window.Module||{};` +
   `M.locateFile=function(p,d){return d+p+(p==="halo.wasm"?v:"")};` +
-  `var s=document.createElement("script");s.src="halo.js"+v;document.head.appendChild(s)};` +
+  `var s=document.createElement("script");s.src="halo.js"+v;` +
+  `s.onload=function(){haloBoot("halo-js")};s.onerror=function(){haloBoot("failed","halo-js")};` +
+  `document.head.appendChild(s)};` +
   `if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",go,{once:true});else go()}\n`;
 
+/* (the start-up report's stages, hosted.js: signed in, halo.js loaded) */
 export const LOGIN_SCRIPT = START_GAME +
   `fetch("auth/session",{credentials:"same-origin",cache:"no-store"}).then(function(r){` +
   `if(r.status===401){location.replace("auth/login?return="+encodeURIComponent(location.pathname+location.search+location.hash));return}` +
   `if(!r.ok)throw new Error("session "+r.status);` +
-  `return r.json().then(function(s){window.HaloHostedUser=s&&s.user||null;haloStartGame()})})` +
-  `.catch(function(e){console.error("Halo could not start:",e)});\n`;
+  `return r.json().then(function(s){window.HaloHostedUser=s&&s.user||null;haloBoot("signed-in");haloStartGame()})})` +
+  `.catch(function(e){console.error("Halo could not start:",e);haloBoot("failed","startup")});\n`;
 
 /* Binds handlers that were inline attributes (data-halo-on<event>). */
 export const HANDLERS_SCRIPT =

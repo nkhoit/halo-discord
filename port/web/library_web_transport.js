@@ -1690,6 +1690,10 @@ addToLibrary({
         try { message = JSON.parse(data); } catch (error) { return; }
         if (message.type === 'ready' && socket === relay.reliable) {
           relay.ready = true;
+          /* (the hosted page's start-up report, server/client/hosted.js) */
+          if (!relay.everReady && typeof window !== 'undefined') {
+            (window.HaloBootEvents = window.HaloBootEvents || []).push(['relay', performance.now(), null]);
+          }
           runtime.relaySendPhase(relay);
           relay.reconnectAttempt = 0;
           if (relay.everReady) relay.reconnects++;

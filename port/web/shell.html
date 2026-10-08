@@ -1806,6 +1806,8 @@
     }
 
     function sendRuntimeTelemetry(event, stage = runtimeStage, details = {}) {
+      // The hosted page's start-up report (server/client/hosted.js) reads these.
+      (window.HaloBootEvents = window.HaloBootEvents || []).push([event, performance.now(), details.errorCategory || null]);
       if (/^(localhost|127\.0\.0\.1)$/u.test(location.hostname)) return;
       const capabilities = runtimeCapabilitySnapshot();
       const payload = JSON.stringify({

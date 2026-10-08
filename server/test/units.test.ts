@@ -293,6 +293,7 @@ describe("the game loader", () => {
       location: { pathname: "/", search: "", hash: "", replace() {} },
       fetch: async () => ({ status: 200, ok: true, json: async () => ({ user: { id: "7", name: "Chief" } }) }),
       console,
+      performance: { now: () => 42 },
     };
     context.window = context;
     vm.runInNewContext(LOGIN_SCRIPT, context);
@@ -309,6 +310,8 @@ describe("the game loader", () => {
     expect(module.locateFile("halo.wasm", "https://halo.example/")).toBe("https://halo.example/halo.wasm?v=abc123");
     expect(module.locateFile("other.data", "https://halo.example/")).toBe("https://halo.example/other.data");
     expect(waiting.context.HaloHostedUser).toEqual({ id: "7", name: "Chief" });
+    (waiting.appended[0] as { onload: () => void }).onload();
+    expect(JSON.parse(JSON.stringify(waiting.context.HaloBootEvents))).toEqual([["signed-in", 42, null], ["halo-js", 42, null]]);
     const ready = await run("complete");
     expect(ready.appended.map((element) => element.src)).toEqual(["halo.js?v=abc123"]);
   });

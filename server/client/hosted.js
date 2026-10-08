@@ -439,10 +439,166 @@
     };
   }
 
+  /* ---------- the start-up report
+
+     When each stage of this page's start-up was reached, in milliseconds from
+     the navigation (POST v1/client-boot, logged by the server as "boot"), so
+     a launch that hangs or is slow can be read from the server's log. The
+     scripts that see a stage queue it on window.HaloBootEvents as [name,
+     performance.now(), detail]: the shell (its page_loaded,
+     runtime_initialized, renderer_ready and game_presented telemetry, and
+     its failures), activity.js and the login script (sdk-ready, signed-in,
+     halo-js), storage_lock.js (storage) and the relay transport (relay);
+     this page adds menu (Halo's main menu has loaded) and shown (the lobby or
+     the room shows, over the game's first frames: the page shows nothing
+     before). One report when shown; a "stalled" one when no stage
+     has advanced for BOOT_STALL_MILLISECONDS (once a stage, at most
+     BOOT_MAXIMUM_STALLS); a "failed" one when start-up gives up; an "unload"
+     one, by beacon, if the page goes before any of those. */
+  var BOOT_STALL_MILLISECONDS = 30000;
+  var BOOT_MAXIMUM_STALLS = 3;
+  var BOOT_MAXIMUM_LINES = 6;
+  var BOOT_SHOWN_VIEWS = ["pick", "hosting", "joined", "match", "spectating", "postgame"];
+  var BOOT_SHELL_STAGES = {
+    page_loaded: "page", runtime_initialized: "runtime", renderer_ready: "renderer", game_presented: "presented",
+  };
+  var BOOT_SHELL_FAILURES = { runtime_error: "runtime-error", runtime_abort: "runtime-abort" };
+  var BOOT_STAGE = /^[a-z][a-z0-9-]{0,23}$/;
+  var BOOT_LINE = /error|fail|abort|exception|could not|cannot|unable|refused|denied|timed? ?out/i;
+  var BOOT_SHADERS = /built (\d+) programs ahead for \S+ in (\d+) ms/;
+
+  /* a console line for a report: no addresses, nothing quoted (player names
+     are), no control characters, short */
+  function bootLine(text) {
+    return String(text).replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "<url>")
+      .replace(/(["'`])[^"'`]{0,120}\1/g, "$1…$1")
+      .replace(/\s+/g, " ").trim().slice(0, 200);
+  }
+
+  /* environment: now() (milliseconds from the navigation), send(report,
+     beacon), context() ("activity" or "page"), build() (the page's asset
+     version), resources() (halo.js and halo.wasm: { js, wasm }, each
+     { ms, cached, kb }), isolated */
+  function createBootRecorder(environment) {
+    var stages = {};
+    var latest = 0;
+    var latestStage = "start";
+    var storage = null;
+    var shaders = null;
+    var lines = [];
+    var ended = false;
+    var hidden = false;
+    var stalls = 0;
+    var stalledAt = null;
+
+    function stage(name, at) {
+      if (ended || Object.prototype.hasOwnProperty.call(stages, name)) return;
+      var time = typeof at === "number" && isFinite(at) ? at : environment.now();
+      stages[name] = Math.max(0, Math.round(time));
+      if (time >= latest) {
+        latest = time;
+        latestStage = name;
+      }
+    }
+
+    function stuck() {
+      return { stuck: latestStage, stuckMs: Math.round(Math.max(0, environment.now() - latest)), lines: lines.slice() };
+    }
+
+    function report(kind, extra) {
+      var body = {
+        kind: kind,
+        context: environment.context(),
+        build: environment.build() || null,
+        elapsedMs: Math.round(environment.now()),
+        stages: {},
+      };
+      Object.keys(stages).forEach(function(name) { body.stages[name] = stages[name]; });
+      var resources = environment.resources ? environment.resources() : {};
+      if (resources.js) body.js = resources.js;
+      if (resources.wasm) body.wasm = resources.wasm;
+      if (storage) body.storage = storage;
+      if (shaders) body.shaders = shaders;
+      body.isolated = !!environment.isolated;
+      body.hidden = hidden;
+      Object.keys(extra || {}).forEach(function(key) { body[key] = extra[key]; });
+      environment.send(body, kind === "unload");
+    }
+
+    function fail(reason, at) {
+      if (ended) return;
+      var where = stuck();
+      stage("failed", at);
+      ended = true;
+      where.reason = BOOT_STAGE.test(reason) ? reason : "unknown";
+      report("failed", where);
+    }
+
+    return {
+      /* a queued [name, time, detail] */
+      event: function(entry) {
+        if (!entry || typeof entry[0] !== "string") return;
+        var name = entry[0];
+        if (BOOT_SHELL_STAGES[name]) stage(BOOT_SHELL_STAGES[name], entry[1]);
+        else if (BOOT_SHELL_FAILURES[name]) fail(BOOT_SHELL_FAILURES[name], entry[1]);
+        else if (name === "failed") fail(typeof entry[2] === "string" ? entry[2] : "unknown", entry[1]);
+        else if (BOOT_STAGE.test(name)) {
+          if (name === "storage" && entry[2] && typeof entry[2] === "object") {
+            storage = { mode: entry[2].mode, lock: entry[2].lock };
+          }
+          stage(name, entry[1]);
+        }
+      },
+      /* Halo's main menu has loaded */
+      menu: function() { stage("menu"); },
+      /* the page's view (HaloOnline.status()), and whether the game shows:
+         the lobby or the room over it ends the start */
+      view: function(name, presented) {
+        if (ended || !presented || BOOT_SHOWN_VIEWS.indexOf(name) < 0) return;
+        stage("shown");
+        ended = true;
+        report("done", { view: name });
+      },
+      /* a console warning or error: the shaders built ahead, and lines that
+         say something failed (the last few go with a stalled report) */
+      line: function(level, text) {
+        var built = BOOT_SHADERS.exec(text);
+        if (built && !ended) {
+          shaders = shaders || { count: 0, ms: 0 };
+          shaders.count += Number(built[1]);
+          shaders.ms += Number(built[2]);
+          return;
+        }
+        if (ended || (level !== "warn" && level !== "error") || !BOOT_LINE.test(text)) return;
+        lines.push(bootLine(text));
+        if (lines.length > BOOT_MAXIMUM_LINES) lines.shift();
+      },
+      hide: function() { hidden = true; },
+      /* (every so often) a stage that has not advanced for too long */
+      check: function() {
+        if (ended || stalls >= BOOT_MAXIMUM_STALLS || stalledAt === latestStage ||
+            environment.now() - latest < BOOT_STALL_MILLISECONDS) {
+          return;
+        }
+        stalls++;
+        stalledAt = latestStage;
+        report("stalled", stuck());
+      },
+      /* the page goes before the start ended */
+      pagehide: function() {
+        if (ended) return;
+        ended = true;
+        report("unload", stuck());
+      },
+      stages: function() { return Object.assign({}, stages); },
+    };
+  }
   global.HaloHostedUI = { createController: createController, surfaceFor: surfaceFor, MAPS: MAPS, MODES: MODES,
     isLockCooldown: isLockCooldown, pointerLock: null, createInputSettings: createInputSettings,
     inputFromEvent: inputFromEvent, inputLabel: inputLabel, sensitivityFromSlider: sensitivityFromSlider,
-    sliderFromSensitivity: sliderFromSensitivity, CONTROLS: CONTROLS, ACTIVITY_DEFAULTS: ACTIVITY_DEFAULTS };
+    sliderFromSensitivity: sliderFromSensitivity, CONTROLS: CONTROLS, ACTIVITY_DEFAULTS: ACTIVITY_DEFAULTS,
+    createBootRecorder: createBootRecorder };
 
   var document = global.document;
   if (!document || typeof document.createElement !== "function" || !document.documentElement ||
@@ -1313,11 +1469,92 @@
     renderGuildRooms();
   }
 
+  /* (the start-up report) halo.js and halo.wasm as Resource Timing saw them:
+     when they had arrived, whether from the browser's cache, their size */
+  function bootResources() {
+    var found = {};
+    try {
+      global.performance.getEntriesByType("resource").forEach(function(entry) {
+        var match = /\/halo\.(js|wasm)(\?|$)/.exec(entry.name);
+        if (!match || found[match[1]]) return;
+        found[match[1]] = {
+          ms: Math.round(entry.responseEnd),
+          cached: entry.transferSize === 0 && entry.decodedBodySize > 0,
+          kb: Math.round(entry.encodedBodySize / 1024),
+        };
+      });
+    } catch (error) {
+      /* best effort */
+    }
+    return found;
+  }
+
+  function sendBootReport(body, beacon) {
+    try {
+      var payload = JSON.stringify(body);
+      if (beacon && typeof global.navigator.sendBeacon === "function" &&
+          global.navigator.sendBeacon("v1/client-boot", new global.Blob([payload], { type: "application/json" }))) {
+        return;
+      }
+      global.fetch("v1/client-boot", {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      }).catch(function() {});
+    } catch (failure) {
+      /* best effort */
+    }
+  }
+
+  /* (read when a report goes: the loader's tags come after this script) */
+  var boot = global.HaloHostedUI.boot = createBootRecorder({
+    now: function() { return global.performance.now(); },
+    send: sendBootReport,
+    context: function() { return document.querySelector('meta[name="halo-activity"]') ? "activity" : "page"; },
+    build: function() {
+      var version = document.querySelector('meta[name="halo-asset-version"]');
+      return version && version.content || null;
+    },
+    resources: bootResources,
+    isolated: !!global.crossOriginIsolated,
+  });
+  ["warn", "error"].forEach(function(level) {
+    var original = global.console[level];
+    if (typeof original !== "function") return;
+    global.console[level] = function() {
+      try {
+        boot.line(level, Array.prototype.map.call(arguments, String).join(" "));
+      } catch (failure) {
+        /* the console comes first */
+      }
+      return original.apply(global.console, arguments);
+    };
+  });
+  /* the stages queued since the last frame */
+  function drainBoot() {
+    var queue = global.HaloBootEvents;
+    if (queue && queue.length) queue.splice(0, queue.length).forEach(boot.event);
+    var menuLoaded = module("platform_web_online_main_menu_loaded");
+    if (menuLoaded && menuLoaded()) boot.menu();
+  }
+  if (document.visibilityState === "hidden") boot.hide();
+  document.addEventListener("visibilitychange", function() {
+    if (document.visibilityState === "hidden") boot.hide();
+  });
+  global.addEventListener("pagehide", function() {
+    drainBoot();
+    boot.pagehide();
+  });
   function render() {
     var gameArea = byId("game-area");
     var presented = !!gameArea && gameArea.dataset.presented === "true";
     status = global.HaloOnline && typeof global.HaloOnline.status === "function" ?
       global.HaloOnline.status() : { view: "booting" };
+    drainBoot();
+    boot.view(status.view, presented);
+    boot.check();
     if (status.view !== "booting" && !audioApplied && module("platform_web_set_volume")) {
       audioApplied = true;
       controller.applyAudio();
