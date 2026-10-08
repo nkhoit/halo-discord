@@ -46,7 +46,7 @@ unsigned char player_ui_configure_network_server_game(
 void game_connection_set(short connection);
 void main_goto_main_menu(void);
 short network_game_client_get_state(struct network_game_client *client, short *state_data);
-unsigned char network_game_client_request_start_time_change(struct network_game_client *client, short request_type);
+unsigned char network_game_server_start_countdown_within(struct network_game_server *server, long milliseconds);
 void network_game_server_pause_countdown(struct network_game_server *server, unsigned char pause);
 short network_game_client_get_error(struct network_game_client *client);
 unsigned char network_game_client_join_first_available_game(void);
@@ -93,6 +93,9 @@ enum
 	/* Retry slowly enough to avoid duplicate in-game queue entries, but soon
 	 * enough to recover when a pregame add crosses the match transition. */
 	WEB_ONLINE_PLAYER_RETRY_SECONDS = 1,
+	/* the page's Start match: the lobby counts down from this (Halo's own
+	start counts down 30 seconds, and a press while it does takes off 5) */
+	WEB_ONLINE_START_COUNTDOWN_MILLISECONDS = 5999,
 
 	_game_connection_local = 0,
 	_game_connection_network_client,
@@ -126,8 +129,11 @@ static atomic_int web_online_requested_request = ATOMIC_VAR_INIT(_web_online_com
 /* the host's next match, set in its pregame lobby: 1 | map << 8 | mode << 16,
 0 for none (its own mailbox: it never starts or ends a session) */
 static atomic_int web_online_requested_configuration = ATOMIC_VAR_INIT(0);
-/* the host asks for its match to start (1), as A on Halo's lobby does */
+/* the host asks for its match to start (1) */
 static atomic_int web_online_requested_start = ATOMIC_VAR_INIT(0);
+/* the page picks the next match (its picker after the results), so Halo's
+host goes from the results to its lobby, not to its own map select */
+static atomic_int web_online_page_picker = ATOMIC_VAR_INIT(0);
 /* the host asks to end the running match (1), as a score or time limit does */
 static atomic_int web_online_requested_end = ATOMIC_VAR_INIT(0);
 /* the page's choice whether a host lets players join its running match
@@ -260,8 +266,8 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_configure(
 	return 1;
 }
 
-/* The host's lobby starts its match: the request Halo's lobby makes when the
-host presses A ("start faster", network_game_client_request_start_time_change),
+/* The host's lobby starts its match: it counts down from at most
+WEB_ONLINE_START_COUNTDOWN_MILLISECONDS (network_game_server_start_countdown_within),
 whichever of the lobby's menus has the focus. Ignored unless this machine
 hosts and is in its lobby. */
 EMSCRIPTEN_KEEPALIVE int platform_web_online_start_match(void)
@@ -270,6 +276,21 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_start_match(void)
 	return 1;
 }
 
+/* The page shows its own picker for the next match (the hosted page), so the
+host's results lead to Halo's lobby (network_game_reset_to_pregame_ui), its
+countdown paused until the page's Start match, not to Halo's map select. */
+EMSCRIPTEN_KEEPALIVE void platform_web_online_set_page_picker(int enabled)
+{
+	atomic_store_explicit(&web_online_page_picker, enabled ? 1 : 0, memory_order_release);
+}
+
+/* (ui_widget.c, on the game thread) this machine hosts for a page with its
+own next-match picker */
+int web_online_ui_page_picks_next_match(void)
+{
+	return atomic_load_explicit(&web_online_page_picker, memory_order_acquire) &&
+		web_online.command == _web_online_command_host && web_online.setup;
+}
 /* The host ends the running match the way a score or time limit does
 (game_engine_end_game): its results, then the lobby, and nobody leaves.
 The browser only sets a flag. web_online_ui_update() applies it on the
@@ -1039,7 +1060,8 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 			the host leaves it; the page's picker stands in for it) */
 			platform_log("web online: starting the match");
 			network_game_server_pause_countdown(global_network_game_server_get(), WEB_FALSE);
-			network_game_client_request_start_time_change(client, WEB_TRUE);
+			network_game_server_start_countdown_within(global_network_game_server_get(),
+				WEB_ONLINE_START_COUNTDOWN_MILLISECONDS);
 			web_online.start_requested = WEB_TRUE;
 			web_online.start_retry_seconds = 0.0f;
 		}
@@ -1054,13 +1076,14 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 		{
 			/* a machine that came into the lobby meanwhile stopped the
 			countdown (Halo stops it while a machine has no player yet):
-			once a second, start it again, as the host would press A */
+			once a second, start it again */
 			web_online.start_retry_seconds += seconds;
 			if (web_online.start_retry_seconds >= 1.0f)
 			{
 				web_online.start_retry_seconds = 0.0f;
 				network_game_server_pause_countdown(global_network_game_server_get(), WEB_FALSE);
-				network_game_client_request_start_time_change(client, WEB_TRUE);
+				network_game_server_start_countdown_within(global_network_game_server_get(),
+					WEB_ONLINE_START_COUNTDOWN_MILLISECONDS);
 			}
 		}
 		update_host(seconds);

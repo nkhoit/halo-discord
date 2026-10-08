@@ -139,6 +139,12 @@ unsigned char network_game_client_request_start_time_change(struct network_game_
 	(void)request_type;
 	return 1;
 }
+unsigned char network_game_server_start_countdown_within(struct network_game_server *server, long milliseconds)
+{
+	(void)server;
+	(void)milliseconds;
+	return 1;
+}
 void network_game_server_pause_countdown(struct network_game_server *server, unsigned char pause)
 {
 	(void)server;

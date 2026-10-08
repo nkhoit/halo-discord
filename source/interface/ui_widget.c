@@ -4348,6 +4348,11 @@ void display_error_damaged_media(
 	return;
 }
 
+#ifdef HALO_WEB
+/* port/web/src/web_online_ui.c */
+int web_online_ui_page_picks_next_match(void);
+#endif
+
 void network_game_reset_to_pregame_ui(
 	void)
 {
@@ -4378,6 +4383,23 @@ void network_game_reset_to_pregame_ui(
 		if (global_network_game_server_get())
 		{
 			network_game_server_pause_countdown(global_network_game_server_get(), TRUE);
+#ifdef HALO_WEB
+			/* (the hosted page) its picker stands in for the map select: the
+			lobby, its countdown paused until the page's Start match (the
+			lobby screen lifts the pause as it loads; nobody's A starts the
+			next match while the host picks it) */
+			if (web_online_ui_page_picks_next_match())
+			{
+				if (!ui_widget_load_by_name_or_tag(
+					"ui\\shell\\main_menu\\multiplayer_type_select\\connected\\pregame\\connected_pregame_screen",
+					NONE, NULL, NONE, NONE, NONE, NONE))
+				{
+					error(_error_silent, "failed to load networked pregame status screen");
+				}
+				network_game_server_pause_countdown(global_network_game_server_get(), TRUE);
+			}
+			else
+#endif
 			if (!ui_widget_load_by_name_or_tag(
 				"ui\\shell\\main_menu\\multiplayer_type_select\\connected\\connected_map_select_postgame_wrapper",
 				NONE, NULL, NONE, NONE, NONE, NONE))
@@ -5587,6 +5609,19 @@ static boolean ui_mouse_menus_active(
 	return virtual_keyboard_active() || ui_mouse_menu() != NULL;
 }
 
+#ifdef HALO_WEB
+/* the menu the mouse drives is the networked lobby (connected_pregame_screen) */
+static boolean ui_mouse_menu_is_networked_lobby(
+	void)
+{
+	struct widget_instance *menu = ui_mouse_menu();
+
+	return menu && menu->definition_tag_index != NONE &&
+		menu->definition_tag_index == tag_loaded(UI_WIDGET_DEFINITION_TAG,
+			"ui\\shell\\main_menu\\multiplayer_type_select\\connected\\pregame\\connected_pregame_screen");
+}
+#endif
+
 /* the pointer's motion, clicks and wheel since the last frame, as the first
 player's controller events */
 static void ui_widgets_process_mouse(
@@ -5693,8 +5728,18 @@ static void ui_widgets_process_mouse(
 					if (ui_mouse_targets[index].kind != _ui_mouse_target_button)
 						break;
 				}
-				if (index == ui_mouse_target_count)
+				if (index == ui_mouse_target_count
+#ifdef HALO_WEB
+					/* (the browser builds) and in the networked lobby, whose
+					team game shows each player's team as a list: a click
+					beside it is A, the countdown's start (or a shorter one),
+					as in a lobby without teams */
+					|| ui_mouse_menu_is_networked_lobby()
+#endif
+					)
+				{
 					ui_mouse_press(_gamepad_analog_button_a);
+				}
 			}
 		}
 		if (ui_mouse_press_count)

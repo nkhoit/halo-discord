@@ -1122,6 +1122,9 @@
   var status = { view: "booting" };
   var audioApplied = false;
   var inputApplied = false;
+  /* (this page picks the next match: Halo's host goes from its results to its
+     lobby, not to its own map select) */
+  var pickerDeclared = false;
 
   function text(id, value) {
     var node = byId(id);
@@ -1320,6 +1323,10 @@
       controller.applyAudio();
     }
     if (status.view !== "booting" && !inputApplied && module("platform_web_bind_input")) inputApplied = inputSettings.apply();
+    if (!pickerDeclared && module("platform_web_online_set_page_picker")) {
+      module("platform_web_online_set_page_picker")(1);
+      pickerDeclared = true;
+    }
     controller.update(presented, status.view);
     if (status.view === "match") lobby.playedMatch = true;
     else if (!status.role) lobby.playedMatch = false;
