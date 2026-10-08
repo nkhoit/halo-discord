@@ -367,7 +367,7 @@ struct program_entry
 	unsigned long constant_count;
 	BOOL constants_consecutive;
 	/* constants_serial at the program's last constant upload (constants_store) */
-	unsigned long constants_serial;
+	unsigned long long constants_serial;
 	/* draw_uniforms_serial when the uniforms below were brought up to date */
 	unsigned long uniforms_serial;
 	/* what the program's other uniforms hold (all ones: unknown) */
@@ -1201,9 +1201,14 @@ void WINAPI Direct3D_SetPushBufferSize(DWORD push_buffer_size, DWORD segment_cou
 
 /* each vertex constant register's serial is the value constants_serial took
 when the register last changed; a program's registers are current up to
-the serial it recorded when it last uploaded them */
-static unsigned long constant_serials[XGPU_VERTEX_CONSTANT_COUNT];
-static unsigned long constants_serial;
+the serial it recorded when it last uploaded them. The serials are 64-bit:
+the count rises with every register a draw changes (a skinned model changes
+up to 132), and 32 bits wrapped within minutes at a high frame rate, after
+which every program's next draw found none of its registers changed and
+drew with what it last uploaded (another object's node matrices: vertices
+flung across the screen for a frame). */
+static unsigned long long constant_serials[XGPU_VERTEX_CONSTANT_COUNT];
+static unsigned long long constants_serial;
 /* the register each of the latest serials changed, so a program that is
 only a little behind finds its changed registers without a full scan */
 #define CONSTANT_LOG_SIZE 1024
@@ -2993,6 +2998,10 @@ static void feedback_snapshot_copy(void)
 
 static void bind_textures(struct nv2a_pixel_shader_key *key, float texture_scale[4][4])
 {
+	/* Bind only after resolving every stage, since texture uploads can
+	overwrite the active unit's binding. */
+	GLenum gl_targets[D3DTSS_MAXSTAGES];
+	GLuint gl_textures[D3DTSS_MAXSTAGES];
 	int stage;
 
 #ifdef HALO_WEB
@@ -3010,7 +3019,8 @@ static void bind_textures(struct nv2a_pixel_shader_key *key, float texture_scale
 		texture_scale[stage][2] = texture_scale[stage][3] = 1.0f;
 		if (!texture || !texture->Data || mode == 0 || mode == 0x04 || mode == 0x05 || mode == 0x11)
 		{
-			state_texture(stage, GL_TEXTURE_2D, 0);
+			gl_targets[stage] = GL_TEXTURE_2D;
+			gl_textures[stage] = 0;
 			key->sampler_type[stage] = mode == 0x11 ? _xgpu_sampler_2d : _xgpu_sampler_none;
 			continue;
 		}
@@ -3052,13 +3062,16 @@ static void bind_textures(struct nv2a_pixel_shader_key *key, float texture_scale
 					texture_scale[stage][1] = 1.0f / (float)description.height;
 				}
 			}
-			state_texture(stage, gl_target, gl_texture);
+			gl_targets[stage] = gl_target;
+			gl_textures[stage] = gl_texture;
 			state_sampler(stage, device.samplers[stage]);
 			configure_sampler(stage, description.levels > 1);
 			key->sampler_type[stage] = gl_target == GL_TEXTURE_CUBE_MAP ? _xgpu_sampler_cube :
 				gl_target == GL_TEXTURE_3D ? _xgpu_sampler_3d : _xgpu_sampler_2d;
 		}
 	}
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+		state_texture(stage, gl_targets[stage], gl_textures[stage]);
 }
 
 static GLenum stencil_operation(DWORD operation)
@@ -3390,7 +3403,7 @@ static struct program_entry *prepare_draw(BOOL immediate)
 
 		if (constants_serial - entry->constants_serial <= XGPU_VERTEX_CONSTANT_COUNT)
 		{
-			unsigned long serial;
+			unsigned long long serial;
 
 			for (serial = entry->constants_serial + 1; serial <= constants_serial; serial++)
 			{
