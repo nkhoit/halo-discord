@@ -64,3 +64,11 @@ jobs:
         run: node --test port/linux/tests/compact_input_test.js
       - name: Test browser JavaScript
         run: node --test port/web/tests/*.js
+      - name: Check prototypes and pointer conversions (the browser build's C, natively with clang)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang gcc-multilib libgles-dev >/dev/null
+          SDL_VERSION=$(python3 -c "import re; print(re.search(r'VERSION = \"([^\"]+)\"', open('port/web/halo_sdl3.py').read()).group(1))")
+          mkdir -p "$RUNNER_TEMP/sdl3"
+          curl -sSfL "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VERSION/SDL3-$SDL_VERSION.tar.gz" |
+            tar xz -C "$RUNNER_TEMP/sdl3" --wildcards '*/include/SDL3/*'
+          PROTOTYPE_CHECK_INCLUDES="$RUNNER_TEMP/sdl3/SDL3-$SDL_VERSION/include" CC=clang python3 tools/check_prototypes.py
