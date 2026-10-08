@@ -35,6 +35,9 @@ struct server_update
 
 #include "relayed_input.inc"
 
+static unsigned long update_server_pending_control_flags[MAXIMUM_NUMBER_OF_PLAYERS];
+#include "distributed_reset.inc"
+
 static int failures;
 
 static void check(int condition, const char *what)
@@ -237,6 +240,44 @@ int main(void)
 		update_client_relayed_push(&update, 1);
 		update_client_relayed_tick();
 		check(update_client_relayed_actions[0].valid, "two: replay starts");
+	}
+
+	/* the next game numbers its updates from 0 again: what was kept of the
+	last game's (its newest number) dropped them all as old, and the other
+	players ran the last game's last input; forgotten at the new game
+	(update_queues_distributed_reset, from network_distributed_new_game),
+	the new game's updates play */
+	{
+		struct server_update update;
+		long number;
+
+		update_client_relayed_reset();
+		memset(&update, 0, sizeof(update));
+		update.action_count = 1;
+		for (number = 0; number < 9000; number++)
+		{
+			update_client_relayed_push(&update, number);
+			update_client_relayed_tick();
+		}
+		update.actions[0].primary_trigger = 1.0f;
+		for (number = 0; number < 4; number++)
+		{
+			update_client_relayed_push(&update, number);
+			update_client_relayed_tick();
+		}
+		check(update_client_relayed_actions[0].action.primary_trigger == 0.0f,
+			"kept from the last game, the next game's updates are dropped as old");
+		update_server_pending_control_flags[0] = JUMP;
+		update_queues_distributed_reset();
+		check(update_server_pending_control_flags[0] == 0, "the new game: no button pending from the last");
+		check(!update_client_relayed_actions[0].valid, "the new game: no action kept from the last");
+		for (number = 0; number < 4; number++)
+		{
+			update_client_relayed_push(&update, number);
+			update_client_relayed_tick();
+		}
+		check(update_client_relayed_actions[0].action.primary_trigger == 1.0f,
+			"forgotten at the new game, its updates play");
 	}
 
 	if (!failures)

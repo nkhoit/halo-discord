@@ -57,6 +57,11 @@ enum
 	INVENTORY_INTERVAL_TICKS = 3,
 	/* the host's objects at rest sent each tick, round them all */
 	RESTING_STATES_PER_TICK = 4,
+	/* an object come to rest is sent to every client this many times, this
+	many ticks apart: lost, a falling body would hang until its turn round
+	all of them, which in a large game is many seconds (upstream 9d8e471f) */
+	REST_STATE_REPEATS = 3,
+	REST_STATE_REPEAT_TICKS = 8,
 	/* a client asks for the host's objects again this often until it has
 	them (a host still loading misses the asking) */
 	CLIENT_READY_INTERVAL_TICKS = TICKS_PER_SECOND,
@@ -158,6 +163,11 @@ struct distributed_inventory_message
 (the object's datum index), NONE for none */
 static long objects_host_told[MAXIMUM_TRACKED_OBJECTS];
 static short objects_host_resting_cursor;
+/* ... whether each was moving at the last tick, and when each last came to
+rest (NONE: not since it was told of), to send it to every client
+(REST_STATE_REPEATS) */
+static boolean objects_host_state_moving[MAXIMUM_TRACKED_OBJECTS];
+static long objects_host_rest_times[MAXIMUM_TRACKED_OBJECTS];
 /* a client: the host's objects it has, by absolute index */
 static long objects_client_has[MAXIMUM_TRACKED_OBJECTS];
 /* ... all of them (the host said so), and when it last asked for them */
@@ -514,6 +524,16 @@ static void distributed_host_send_states(
 				continue;
 		}
 		send = !TEST_FLAG(object->object.flags, _object_at_rest_bit);
+		/* (come to rest: to every client REST_STATE_REPEATS times) */
+		if (!send && objects_host_state_moving[absolute_index])
+			objects_host_rest_times[absolute_index] = game_time_get();
+		objects_host_state_moving[absolute_index] = send;
+		if (!send && objects_host_rest_times[absolute_index] != NONE)
+		{
+			long since = game_time_get() - objects_host_rest_times[absolute_index];
+
+			send = since < REST_STATE_REPEATS * REST_STATE_REPEAT_TICKS && since % REST_STATE_REPEAT_TICKS == 0;
+		}
 		/* (the resting ones round the lot, a few a tick) */
 		if (!send && resting < RESTING_STATES_PER_TICK &&
 			((absolute_index - objects_host_resting_cursor) & 63) == 0)
@@ -1079,6 +1099,8 @@ void network_objects_handle_states(
 		struct distributed_object_state const *state = &states[index];
 		struct object_datum *object;
 		real tolerance = REMOTE_OBJECT_TOLERANCE;
+		boolean own_vehicle = FALSE;
+		boolean at_rest = TEST_FLAG(state->flags, _distributed_object_at_rest_bit);
 		real dx, dy, dz;
 
 		if (!network_objects_client_has(state->object_index))
@@ -1098,8 +1120,15 @@ void network_objects_handle_states(
 				distributed_player_is_local(unit_get(vehicle->unit.driver_object_index)->unit.player_index))
 			{
 				tolerance = LOCAL_VEHICLE_TOLERANCE;
+				own_vehicle = TRUE;
 			}
 		}
+		/* (at rest as the host has it, however close: a copy left at rest
+		while the host's falls would hang there; but not a vehicle this
+		machine drives, which the host's word, a round trip old, would stop
+		as it sets off: upstream 9d8e471f) */
+		if (!own_vehicle)
+			SET_FLAG(object->object.flags, _object_at_rest_bit, at_rest);
 		dx = state->position.x - object->object.position.x;
 		dy = state->position.y - object->object.position.y;
 		dz = state->position.z - object->object.position.z;
@@ -1108,7 +1137,9 @@ void network_objects_handle_states(
 		distributed_count_correction();
 		network_objects_correct(state->object_index, &state->position, &state->forward, &state->up,
 			&state->translational_velocity, &state->angular_velocity);
-		SET_FLAG(object->object.flags, _object_at_rest_bit, TEST_FLAG(state->flags, _distributed_object_at_rest_bit));
+		/* (one it drives, put where the host has it, is as the host has it) */
+		if (own_vehicle)
+			SET_FLAG(object->object.flags, _object_at_rest_bit, at_rest);
 	}
 }
 
@@ -1313,6 +1344,8 @@ void network_objects_new_game(
 	for (absolute_index = 0; absolute_index < MAXIMUM_TRACKED_OBJECTS; absolute_index++)
 	{
 		objects_host_told[absolute_index] = NONE;
+		objects_host_state_moving[absolute_index] = FALSE;
+		objects_host_rest_times[absolute_index] = NONE;
 		objects_client_has[absolute_index] = NONE;
 	}
 	objects_host_resting_cursor = 0;

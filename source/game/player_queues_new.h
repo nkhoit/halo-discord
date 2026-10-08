@@ -60,6 +60,11 @@ void update_client_handle_server_update(
 
 void update_queues_reset_and_fill_with_lies(
 	void);
+#ifdef HALO_LINUX
+/* each player's latest input forgotten, for a new game */
+void update_queues_distributed_reset(
+	void);
+#endif
 long player_new_queue(
 	long player_index);
 

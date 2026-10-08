@@ -77,6 +77,8 @@ void network_player_show_pickup(long player_index, short kind, long definition_i
 void game_engine_client_respawned(long player_index);
 long game_engine_write_network_state(byte *buffer, long size);
 void game_engine_read_network_state(byte const *buffer, long size);
+/* player_queues_new.c's */
+void update_queues_distributed_reset(void);
 
 enum
 {
@@ -97,6 +99,10 @@ enum
 	the most, until the unit is there */
 	MISSING_UNIT_TICKS = 3 * TICKS_PER_SECOND,
 	MISSING_UNIT_MAXIMUM_TICKS = 30 * TICKS_PER_SECOND,
+	/* how long a client waits for a player's killing blow
+	(network_damage.c) once the host's states say the player died, before
+	its unit dies here without it */
+	DEATH_BLOW_WAIT_TICKS = TICKS_PER_SECOND / 2,
 };
 
 /* struct distributed_unit_state flags */
@@ -737,6 +743,10 @@ this machine does not have, NONE for not, and the ticks before it asks for
 the host's objects for that player (again) */
 static long distributed_missing_unit_times[MAXIMUM_TRACKED_PLAYERS];
 static long distributed_missing_unit_waits[MAXIMUM_TRACKED_PLAYERS];
+/* a client: since when the host's states have said each player is dead
+while its unit here lives (NONE: not), to give the killing blow its while
+(DEATH_BLOW_WAIT_TICKS) */
+static long distributed_dead_since[MAXIMUM_TRACKED_PLAYERS];
 /* (the host) a player's team waiting for its unit's death (a team switch),
 NONE for none, and since when */
 static long distributed_deferred_teams[MAXIMUM_TRACKED_PLAYERS];
@@ -1804,10 +1814,24 @@ static void distributed_handle_unit_states(
 		}
 		if (!alive)
 		{
-			/* died on the host (who counts it; the damage that killed it,
-			network_damage.c, usually kills it here first) */
-			if (unit_index != NONE)
+			/* died on the host, who counts it. Its killing blow
+			(network_damage.c) kills it here with the death the host's had,
+			push and kill message; it comes once unreliably and once reliably,
+			so it is given a while before the unit dies without it (upstream
+			4d35b9cb) */
+			if (unit_index != NONE && state->player_index < MAXIMUM_TRACKED_PLAYERS)
+			{
+				long *dead_since = &distributed_dead_since[state->player_index];
+
+				if (*dead_since == NONE)
+					*dead_since = game_time_get();
+				else if (game_time_get() - *dead_since >= DEATH_BLOW_WAIT_TICKS)
+					unit_kill_no_statistics(unit_index);
+			}
+			else if (unit_index != NONE)
+			{
 				unit_kill_no_statistics(unit_index);
+			}
 			/* the host's respawn timer, which this machine counts down between
 			ticks (game_engine_client_respawn_countdown): taken when it is
 			further off than the host's word is late */
@@ -1820,6 +1844,8 @@ static void distributed_handle_unit_states(
 			}
 			continue;
 		}
+		if (state->player_index < MAXIMUM_TRACKED_PLAYERS)
+			distributed_dead_since[state->player_index] = NONE;
 		/* spawned on the host: the host's unit is the player's here too, once
 		this machine has it (network_objects.c) */
 		if (state->unit_index == NONE || !network_objects_client_has(state->unit_index) ||
@@ -2170,6 +2196,7 @@ void network_distributed_new_game(
 	csmemset(distributed_seat_disagreements, 0, sizeof(distributed_seat_disagreements));
 	csmemset(distributed_missing_unit_times, 0xFF, sizeof(distributed_missing_unit_times));
 	csmemset(distributed_missing_unit_waits, 0, sizeof(distributed_missing_unit_waits));
+	csmemset(distributed_dead_since, 0xFF, sizeof(distributed_dead_since));
 	csmemset(distributed_deferred_teams, 0xFF, sizeof(distributed_deferred_teams));
 	csmemset(distributed_team_switch_times, 0xFF, sizeof(distributed_team_switch_times));
 #if defined(HALO_WEB) && OWN_UNIT_STATE_INTERVAL_TICKS > 1
@@ -2178,6 +2205,8 @@ void network_distributed_new_game(
 #endif
 	distributed_statistics_due = FALSE;
 	distributed_pickup_count = 0;
+	/* (each player's latest input: player_queues_new.c) */
+	update_queues_distributed_reset();
 #ifdef HALO_WEB
 	distributed_game_state_sent_size = 0;
 	distributed_game_state_sent_time = NONE;

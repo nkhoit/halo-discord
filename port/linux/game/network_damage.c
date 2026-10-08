@@ -384,7 +384,8 @@ void network_damage_aftermath(
 	short body_part,
 	short node_index,
 	short region_index,
-	short material_index)
+	short material_index,
+	long victim_player_index)
 {
 	struct distributed_damage_event *event;
 	struct unit_datum *unit;
@@ -412,14 +413,16 @@ void network_damage_aftermath(
 	event->node_index = node_index;
 	event->region_index = region_index;
 	event->material_index = material_index;
-	/* a player's killing blow, with who the host says dealt it */
-	if (TEST_FLAG(being_damaged_flags, _object_being_damaged_body_depleted_bit) && unit->unit.player_index != NONE)
+	/* a player's killing blow, with who the host says dealt it (the player
+	the unit had before the blow: its aftermath has already taken the unit
+	from its player, unit_died) */
+	if (TEST_FLAG(being_damaged_flags, _object_being_damaged_body_depleted_bit) && victim_player_index != NONE)
 	{
 		boolean friendly_fire = FALSE;
 		boolean killed_by_vehicle = FALSE;
 
 		event->kind = _damage_event_kill;
-		distributed_get_death((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(unit->unit.player_index), &event->player_index,
+		distributed_get_death((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(victim_player_index), &event->player_index,
 			&friendly_fire, &killed_by_vehicle);
 		SET_FLAG(event->kill_flags, _damage_event_friendly_fire_bit, friendly_fire);
 		SET_FLAG(event->kill_flags, _damage_event_killed_by_vehicle_bit, killed_by_vehicle);
@@ -723,6 +726,39 @@ void network_damage_handle_reports(
 	}
 }
 
+/* the tick's killing blows once more, reliably, to every client: sent with
+the rest they may be lost, and a body killed without its blow falls without
+the death the host's had (a client replays one blow of a unit only: one
+already dead takes no other; upstream 4d35b9cb) */
+static void distributed_send_kills_reliably(
+	void)
+{
+	struct distributed_damage_event_message message;
+	short limit = MIN(MAXIMUM_ENTRIES_PER_MESSAGE, RELIABLE_ENTRIES(struct distributed_damage_event));
+	short count = 0;
+	short index;
+
+	for (index = 0; index < damage_event_count; index++)
+	{
+		if (damage_events[index].kind != _damage_event_kill)
+			continue;
+		message.events[count++] = damage_events[index];
+		if (count == limit)
+		{
+			distributed_send(&message, _distributed_message_damage_events, count,
+				(word)(sizeof(message.header) + count * sizeof(struct distributed_damage_event)),
+				_distributed_to_clients_reliably);
+			count = 0;
+		}
+	}
+	if (count)
+	{
+		distributed_send(&message, _distributed_message_damage_events, count,
+			(word)(sizeof(message.header) + count * sizeof(struct distributed_damage_event)),
+			_distributed_to_clients_reliably);
+	}
+}
+
 void network_damage_host_tick(
 	void)
 {
@@ -749,6 +785,7 @@ void network_damage_host_tick(
 			(word)(sizeof(message.header) + count * sizeof(struct distributed_damage_event)),
 			_distributed_to_clients);
 	}
+	distributed_send_kills_reliably();
 	damage_event_count = 0;
 }
 

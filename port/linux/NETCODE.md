@@ -23,7 +23,10 @@ with ideas from VALORANT's netcode articles, keeping the 30 Hz tick:
   catches up two a tick where that changes no press or release; with none
   in hand it holds the last (`source/game/player_queues_new.c`,
   `tests/relayed_input_test`). The native builds run the newest, held until
-  a newer arrives.
+  a newer arrives. Each game numbers its updates from the start, so what a
+  machine kept of the last game's (the newest relayed update, its queue)
+  is forgotten when the next game's map is set up
+  (`network_distributed_new_game`).
 - **Host authoritative.** The host alone decides damage, deaths, spawns,
   pickups, scores and the game's objects; clients do not decide them but
   apply what the host sends.
@@ -87,9 +90,13 @@ Every machine in a game must use the same netcode.
      longer than a round trip), and the CTF flags and oddballs are the same
      objects everywhere.
 4. (Done) Corrections: every tick the host sends where its moving objects
-   are (vehicles, items, bodies) and a few of those at rest, round them
-   all. A client puts its copies there, and the difference is drawn fading
-   over a few ticks (`render_interpolation.c`) instead of a jump. A client
+   are (vehicles, items, bodies), each object that came to rest three
+   times over half a second (one lost would leave a falling body
+   hanging until its turn), and a few of those at rest, round them all. A
+   client puts its copies there, and the difference is drawn fading over a
+   few ticks (`render_interpolation.c`) instead of a jump; it takes the
+   host's word on whether each is at rest from every state, however close
+   its copy is, except for the vehicle it drives. A client
    drives its own player's vehicle and sends where it is, which the host
    takes within a tolerance, as it does its own player's unit.
 5. (Done) Hits (`port/linux/game/network_damage.c`):
@@ -109,7 +116,10 @@ Every machine in a game must use the same netcode.
      sound, knockback and stun, the scope it knocks the player out of, and
      who the HUD shows hit them. A killing blow it replays whole, so the
      body falls as the shot had it and the kill is announced with the
-     host's killer.
+     host's killer. Killing blows go out twice, with the tick's damage and
+     once more reliably (a unit already dead takes no second blow), and a
+     client whose units' states say a player died waits half a second for
+     the blow before the unit dies without it.
 
 ## Bandwidth (the browser builds)
 
