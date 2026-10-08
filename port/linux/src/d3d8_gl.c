@@ -493,6 +493,9 @@ struct gl_device
 	unsigned long buffer_ring;
 #endif
 	unsigned long stream_offset;
+	/* SetIndices' BaseVertexIndex: added to every index of the indexed draws
+	that follow, as the Xbox's vertex fetch does */
+	unsigned long base_vertex_index;
 	GLuint index_buffer;
 	unsigned long index_offset;
 	GLuint samplers[D3DTSS_MAXSTAGES];
@@ -4390,8 +4393,12 @@ void WINAPI D3DDevice_SetStreamSource(UINT stream_number, D3DVertexBuffer *strea
 
 void WINAPI D3DDevice_SetIndices(D3DIndexBuffer *index_data, UINT base_vertex_index)
 {
-	(void)base_vertex_index;
 	D3D__IndexData = index_data ? (WORD *)index_data->Data : NULL;
+	/* (a dynamic vertex buffer's triangles count from its first vertex in its
+	group's buffer: rasterizer_draw_dynamic_triangles_dynamic_vertices,
+	rasterizer_draw_static_triangles_dynamic_vertices; contrails, which share
+	their vertex type with the particles drawn before them) */
+	device.base_vertex_index = base_vertex_index;
 }
 
 void WINAPI D3DDevice_DrawVertices(D3DPRIMITIVETYPE primitive_type, UINT start_vertex, UINT vertex_count)
@@ -4438,7 +4445,9 @@ void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT 
 		mirror_range((unsigned long)index_data, vertex_count * sizeof(WORD), &index_buffer, &index_offset, &generation);
 	index_extent(index_data, vertex_count, generation, mirrored, &minimum, &maximum);
 	trace_draw("indexed", primitive_type, vertex_count, NULL);
-	setup_streams(minimum, maximum - minimum + 1);
+	/* the vertices start at index minimum after the base: each draw below
+	takes index i as vertex i - minimum of the streams */
+	setup_streams(minimum + device.base_vertex_index, maximum - minimum + 1);
 	#ifndef HALO_WEB
 	if (mirrored)
 	{
