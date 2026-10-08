@@ -50,6 +50,8 @@ jobs:
         run: node --test port/linux/tests/gl_base_vertex_test.js
       - name: Test the audio decoder and 3D distances (native C, no game assets)
         run: node --test port/linux/tests/dsound_decode_test.js
+      - name: Test hit report validation and wire names (native C, no game assets)
+        run: node --test port/linux/tests/hit_report_validation_test.js
       - name: Test a spectator's view scope (native C, no game assets)
         run: node --test port/linux/tests/spectator_view_test.js
       - name: Test a spectator's effects (native C, no game assets)
