@@ -58,6 +58,13 @@ void network_game_server_change_map_name(
 void network_game_server_change_game_variant(
 	struct network_game_server *server,
 	struct game_variant *variant);
+#ifdef HALO_LINUX
+void network_game_server_get_settings(
+	struct network_game_server *server,
+	char *map_name,
+	long map_name_size,
+	struct game_variant *variant);
+#endif
 
 /* ---------- globals */
 

@@ -1138,11 +1138,10 @@
         global.HaloOnline.host(settings);
         return;
       }
-      /* the next match: the lobby takes the map and game type, then starts
-      (a moment later, once the game has applied them) */
-      var current = status.settings || {};
-      var changed = current.mapIndex !== settings.mapIndex || current.modeIndex !== settings.modeIndex;
-      if (changed && typeof global.HaloOnline.configure === "function") global.HaloOnline.configure(settings);
+      /* the next match: the lobby takes the map and game type (always: the
+      lobby Halo sets up after a match need not hold the last ones), then
+      starts (a moment later, once the game has applied them) */
+      if (typeof global.HaloOnline.configure === "function") global.HaloOnline.configure(settings);
       lobby.playedMatch = false;
       play();
       startMatch();
@@ -1297,6 +1296,13 @@
       (MODES[settings.modeIndex] ? MODES[settings.modeIndex][1] : "");
   }
 
+  /* What the match will run: Halo's own settings read back (status.game),
+     else the page's choice. */
+  function gameSettings(current) {
+    var game = current.game;
+    return game && game.mapIndex !== null && game.modeIndex !== null ? game : current.settings;
+  }
+
   function players(count) {
     return count === 1 ? "1 player" : count + " players";
   }
@@ -1307,7 +1313,7 @@
     if (current.teams && typeof current.teams.enabled === "boolean") {
       return current.teams.enabled ? current.teams : null;
     }
-    var mode = current.settings && current.settings.modeIndex;
+    var mode = (gameSettings(current) || {}).modeIndex;
     if (!TEAM_MODES[mode]) return null;
     return { enabled: true, pregame: current.view === "hosting" || current.view === "joined", players: [] };
   }
@@ -1610,11 +1616,13 @@
 
     show(bar, surface === "bar");
     if (status.view === "hosting") {
-      text("hosted-bar-text", "Your lobby · " + settingsLabel(status.settings) + " · " + players(status.playerCount || 1));
+      text("hosted-bar-text", "Your lobby · " + settingsLabel(gameSettings(status)) + " · " + players(status.playerCount || 1));
     } else if (status.view === "joined") {
+      var joinedGame = status.game && status.game.mapIndex !== null && status.game.modeIndex !== null ?
+        settingsLabel(status.game) + " · " : "";
       text("hosted-bar-text", (status.spectating ? "Spectating · " : "") +
         (lobby.playedMatch ? "Waiting for " + host + " to pick the next match…" :
-          "In " + host + "'s lobby · waiting for " + host + " to start"));
+          "In " + host + "'s lobby · " + joinedGame + "waiting for " + host + " to start"));
     } else if (status.view === "postgame") {
       text("hosted-bar-text", status.role === "host" ? "Match over" :
         (status.spectating ? "Spectating · " : "") + "Match over · waiting for " + host);

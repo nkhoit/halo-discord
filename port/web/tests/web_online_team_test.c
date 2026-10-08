@@ -125,6 +125,12 @@ unsigned char player_ui_configure_network_server_game(long map_index, long mode_
 	(void)mode_index;
 	return 1;
 }
+unsigned char player_ui_network_game_current(long *map_index, long *mode_index)
+{
+	*map_index = -1;
+	*mode_index = -1;
+	return 0;
+}
 void game_connection_set(short value) { (void)value; }
 void main_goto_main_menu(void) {}
 short network_game_client_get_state(struct network_game_client *client, short *state_data)

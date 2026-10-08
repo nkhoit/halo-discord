@@ -154,6 +154,7 @@ symbols in this file:
 #include "interface/hud_messaging.h"
 #include "memory/data.h"
 #include "networking/network_game_globals.h"
+#include "networking/network_client_manager.h"
 #include "networking/network_server_manager.h"
 #include "saved games/player_profile.h"
 #include "saved games/playlist_profile.h"
@@ -654,35 +655,42 @@ void player_ui_fast_setup_network_server(
 	return;
 }
 
+/* the browser page's maps and game modes, by its indices (web_online_ui.h) */
+static char const *const multiplayer_levels[] =
+{
+	"levels\\test\\beavercreek\\beavercreek",
+	"levels\\test\\sidewinder\\sidewinder",
+	"levels\\test\\damnation\\damnation",
+	"levels\\test\\ratrace\\ratrace",
+	"levels\\test\\prisoner\\prisoner",
+	"levels\\test\\hangemhigh\\hangemhigh",
+	"levels\\test\\chillout\\chillout",
+	"levels\\test\\carousel\\carousel",
+	"levels\\test\\boardingaction\\boardingaction",
+	"levels\\test\\bloodgulch\\bloodgulch",
+	"levels\\test\\wizard\\wizard",
+	"levels\\test\\putput\\putput",
+	"levels\\test\\longest\\longest",
+};
+static char const *const game_modes[] =
+{
+	"slayer",
+	"team_slayer",
+	"ctf",
+	"oddball",
+	"king",
+	"race",
+};
+#define MULTIPLAYER_LEVEL_COUNT ((long)(sizeof(multiplayer_levels) / sizeof(multiplayer_levels[0])))
+#define GAME_MODE_COUNT ((long)(sizeof(game_modes) / sizeof(game_modes[0])))
+
+/* game_engine.c's */
+void game_engine_playlist_next(long parameter0, long parameter1, long playlist_type);
+
 boolean player_ui_configure_network_server_game(
 	long multiplayer_level_index,
 	long game_mode_index)
 {
-	static char const *const multiplayer_levels[] =
-	{
-		"levels\\test\\beavercreek\\beavercreek",
-		"levels\\test\\sidewinder\\sidewinder",
-		"levels\\test\\damnation\\damnation",
-		"levels\\test\\ratrace\\ratrace",
-		"levels\\test\\prisoner\\prisoner",
-		"levels\\test\\hangemhigh\\hangemhigh",
-		"levels\\test\\chillout\\chillout",
-		"levels\\test\\carousel\\carousel",
-		"levels\\test\\boardingaction\\boardingaction",
-		"levels\\test\\bloodgulch\\bloodgulch",
-		"levels\\test\\wizard\\wizard",
-		"levels\\test\\putput\\putput",
-		"levels\\test\\longest\\longest",
-	};
-	static char const *const game_modes[] =
-	{
-		"slayer",
-		"team_slayer",
-		"ctf",
-		"oddball",
-		"king",
-		"race",
-	};
 	struct network_game_server *server;
 	struct game_variant variant;
 	char const *map_name;
@@ -693,12 +701,12 @@ boolean player_ui_configure_network_server_game(
 	stale mailbox must still result in a real playable game rather than an
 	arbitrary path or an all-zero variant. */
 	if (multiplayer_level_index < 0 ||
-		multiplayer_level_index >= (long)(sizeof(multiplayer_levels) / sizeof(multiplayer_levels[0])))
+		multiplayer_level_index >= MULTIPLAYER_LEVEL_COUNT)
 	{
 		multiplayer_level_index = 0;
 	}
 	if (game_mode_index < 0 ||
-		game_mode_index >= (long)(sizeof(game_modes) / sizeof(game_modes[0])))
+		game_mode_index >= GAME_MODE_COUNT)
 	{
 		game_mode_index = 0;
 	}
@@ -715,6 +723,56 @@ boolean player_ui_configure_network_server_game(
 	game_engine_get_variant_by_name(&variant, variant_name);
 	player_ui_set_game_variant(&variant);
 	network_game_server_change_game_variant(server, &variant);
+	/* port: and the stage Halo sets the next lobby up from
+	(network_game_server_setup_game_from_playlist, after a match), or the
+	match after this one went back to the stage's map and game type */
+	game_engine_playlist_next(0, 0, 2);
+	return TRUE;
+}
+
+/* port: the page's indices of the map and game mode the host's lobby holds
+(or this client's copy of the game), NONE for one the page does not offer:
+FALSE without a network game */
+boolean player_ui_network_game_current(
+	long *multiplayer_level_index,
+	long *game_mode_index)
+{
+	struct network_game_server *server = global_network_game_server_get();
+	struct network_game_client *client = global_network_game_client_get();
+	char map_name[0x80];
+	struct game_variant variant;
+	long index;
+
+	*multiplayer_level_index = NONE;
+	*game_mode_index = NONE;
+	if (server)
+		network_game_server_get_settings(server, map_name, sizeof(map_name), &variant);
+	else if (client)
+		network_game_client_get_settings(client, map_name, sizeof(map_name), &variant);
+	else
+		return FALSE;
+	for (index = 0; index < MULTIPLAYER_LEVEL_COUNT; index++)
+	{
+		if (!csstrcmp(map_name, multiplayer_levels[index]))
+		{
+			*multiplayer_level_index = index;
+			break;
+		}
+	}
+	for (index = 0; index < GAME_MODE_COUNT; index++)
+	{
+		struct game_variant mode;
+
+		game_engine_get_variant_by_name(&mode, game_modes[index]);
+		if (mode.game_engine_index == variant.game_engine_index &&
+			mode.universal_variant.teams == variant.universal_variant.teams &&
+			!memcmp(mode.human_readable_game_description, variant.human_readable_game_description,
+				sizeof(mode.human_readable_game_description)))
+		{
+			*game_mode_index = index;
+			break;
+		}
+	}
 	return TRUE;
 }
 

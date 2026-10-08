@@ -36,6 +36,12 @@ short network_game_client_get_state(
 	struct network_game_client *client,
 	short *state_data);
 #ifdef HALO_LINUX
+/* port: the map and game variant this client's copy of the game holds */
+void network_game_client_get_settings(
+	struct network_game_client *client,
+	char *map_name,
+	long map_name_size,
+	struct game_variant *variant);
 boolean network_game_client_join_first_available_game(
 	void);
 boolean network_game_client_has_local_player(

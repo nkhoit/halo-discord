@@ -43,6 +43,9 @@ void player_ui_set_active_player_profile(
 unsigned char player_ui_configure_network_server_game(
 	long multiplayer_level_index,
 	long game_mode_index);
+unsigned char player_ui_network_game_current(
+	long *multiplayer_level_index,
+	long *game_mode_index);
 void game_connection_set(short connection);
 void main_goto_main_menu(void);
 short network_game_client_get_state(struct network_game_client *client, short *state_data);
@@ -161,6 +164,10 @@ enum
 static atomic_uint web_online_roster_sequence = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_roster_count = ATOMIC_VAR_INIT(0);
 static atomic_int web_online_roster_teams = ATOMIC_VAR_INIT(0);
+/* the map and game mode the network game holds, as the page numbers them
+(Halo's, read back: 1 | map << 8 | mode << 16, 0xff for one the page does
+not offer), 0 without a network game */
+static atomic_int web_online_current_game = ATOMIC_VAR_INIT(0);
 /* whether this machine's player may switch onto red (0) and blue (1) now,
 with the roster (the balance rule reads the game's players) */
 static atomic_int web_online_roster_switch_allowed[2];
@@ -199,6 +206,8 @@ static struct
 	/* (the host) the page started the match, which has not begun loading */
 	int start_requested;
 	float start_retry_seconds;
+	/* (the host) until the lobby's map and game mode may be put back again */
+	float keep_choice_seconds;
 	float seconds;
 	float player_retry_seconds;
 } web_online;
@@ -505,6 +514,11 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_teams(void)
 	return atomic_load_explicit(&web_online_roster_teams, memory_order_acquire);
 }
 
+EMSCRIPTEN_KEEPALIVE int platform_web_online_current_game(void)
+{
+	return atomic_load_explicit(&web_online_current_game, memory_order_acquire);
+}
+
 EMSCRIPTEN_KEEPALIVE int platform_web_online_roster_team(int index)
 {
 	if (index < 0 || index >= WEB_ONLINE_ROSTER_LIMIT)
@@ -561,6 +575,15 @@ static void publish_lobby_roster(void)
 		&web_online_roster_teams,
 		network_game_client_game_has_teams() ? 1 : 0,
 		memory_order_relaxed);
+	{
+		long map_index;
+		long mode_index;
+		int current = 0;
+
+		if (player_ui_network_game_current(&map_index, &mode_index))
+			current = pack_request(1, map_index >= 0 ? (int)map_index : 0xff, mode_index >= 0 ? (int)mode_index : 0xff);
+		atomic_store_explicit(&web_online_current_game, current, memory_order_relaxed);
+	}
 	for (team = 0; team < 2; team++)
 	{
 		atomic_store_explicit(&web_online_roster_switch_allowed[team],
@@ -918,6 +941,32 @@ EMSCRIPTEN_KEEPALIVE int platform_web_online_main_menu_loaded(void)
 	return atomic_load_explicit(&web_online_main_menu_loaded, memory_order_acquire);
 }
 
+/* (the host, its page picking the next match, in its lobby) the lobby holds
+the map and game mode the page chose: whatever else set them (Halo's own
+next game, the playlist the lobby after a match is set up from) is put back,
+at once when now is set, else at most once a second. Whether it holds them. */
+static int keep_page_choice(int now)
+{
+	long map_index;
+	long mode_index;
+
+	if (!player_ui_network_game_current(&map_index, &mode_index))
+		return 0;
+	if (map_index == web_online.host_map_index && mode_index == web_online.host_mode_index)
+		return 1;
+	if (!now && web_online.keep_choice_seconds > 0.0f)
+		return 0;
+	web_online.keep_choice_seconds = 1.0f;
+	platform_log("web online: the lobby holds %ld/%ld, not the page's %d/%d: putting the page's back",
+		map_index, mode_index, web_online.host_map_index, web_online.host_mode_index);
+	if (!player_ui_configure_network_server_game(web_online.host_map_index, web_online.host_mode_index) ||
+		!player_ui_network_game_current(&map_index, &mode_index))
+	{
+		return 0;
+	}
+	return map_index == web_online.host_map_index && mode_index == web_online.host_mode_index;
+}
+
 void web_online_ui_update(int main_menu_loaded, float seconds)
 {
 	int join_in_progress = atomic_exchange_explicit(
@@ -1062,18 +1111,35 @@ void web_online_ui_update(int main_menu_loaded, float seconds)
 				platform_log("web online: next match %d/%d", map_index, mode_index);
 			}
 		}
+		if (web_online.keep_choice_seconds > 0.0f)
+			web_online.keep_choice_seconds -= seconds;
+		if (web_online_ui_page_picks_next_match() && global_network_game_server_get() && client &&
+			network_game_client_get_state(client, NULL) == _network_client_pregame &&
+			!network_game_server_match_starting(global_network_game_server_get()))
+		{
+			keep_page_choice(WEB_FALSE);
+		}
 		if (atomic_exchange_explicit(&web_online_requested_start, 0, memory_order_acq_rel) &&
 			global_network_game_server_get() && client &&
 			network_game_client_get_state(client, NULL) == _network_client_pregame)
 		{
 			/* (after a match Halo's own map select pauses the countdown until
 			the host leaves it; the page's picker stands in for it) */
-			platform_log("web online: starting the match");
-			network_game_server_pause_countdown(global_network_game_server_get(), WEB_FALSE);
-			network_game_server_start_countdown_within(global_network_game_server_get(),
-				WEB_ONLINE_START_COUNTDOWN_MILLISECONDS);
-			web_online.start_requested = WEB_TRUE;
-			web_online.start_retry_seconds = 0.0f;
+			if (web_online_ui_page_picks_next_match() &&
+				!network_game_server_match_starting(global_network_game_server_get()) &&
+				!keep_page_choice(WEB_TRUE))
+			{
+				platform_log("web online: not starting: the lobby does not hold the page's map and game mode");
+			}
+			else
+			{
+				platform_log("web online: starting the match");
+				network_game_server_pause_countdown(global_network_game_server_get(), WEB_FALSE);
+				network_game_server_start_countdown_within(global_network_game_server_get(),
+					WEB_ONLINE_START_COUNTDOWN_MILLISECONDS);
+				web_online.start_requested = WEB_TRUE;
+				web_online.start_retry_seconds = 0.0f;
+			}
 		}
 		if (!client || network_game_client_get_state(client, NULL) != _network_client_pregame ||
 			!global_network_game_server_get() ||

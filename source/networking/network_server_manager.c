@@ -2752,6 +2752,21 @@ void network_game_server_change_game_variant(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* port: the map and game variant the server's game holds (player_ui.c, for
+the browser's page) */
+void network_game_server_get_settings(
+	struct network_game_server *server,
+	char *map_name,
+	long map_name_size,
+	struct game_variant *variant)
+{
+	csstrncpy(map_name, server->game.map.name, map_name_size - 1);
+	map_name[map_name_size - 1] = 0;
+	csmemcpy(variant, &server->game.variant, sizeof(*variant));
+}
+#endif
+
 boolean network_game_server_remove_client_machine_from_game(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *client)
